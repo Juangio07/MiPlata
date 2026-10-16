@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <title>MiPlata – Control de Finanzas Personales</title>
+    <meta name="description" content="Tu dinero claro, tus metas cerca. Administra ingresos, gastos ocasionales, pagos fijos mensuales y metas de ahorro en pesos colombianos (COP)." />
+    <meta property="og:title" content="MiPlata – Control de Finanzas Personales" />
+    <meta property="og:description" content="Tu dinero claro, tus metas cerca. Administra ingresos, gastos ocasionales, pagos fijos mensuales y metas de ahorro en pesos colombianos (COP)." />
+    <meta property="og:type" content="website" />
+    <link rel="icon" type="image/png" href="assets/Logo.png" />
+    <link rel="apple-touch-icon" href="assets/Logo.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <!-- Tailwind CSS CDN to reproduce exact utility classes and appearance -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              brand: {
+                blue: '#0058bc',
+                dark: '#0b1c30',
+                green: '#006c49',
+                mint: '#6cf8bb',
+                light: '#f8f9ff',
+                soft: '#d8e2ff',
+                card: '#eff4ff',
+              }
+            },
+            fontFamily: {
+              sans: ['Inter', '-apple-system', 'BlinkMacSystemFont', 'sans-serif'],
+            }
+          }
+        }
+      }
+    </script>
+    <link rel="stylesheet" href="css/style.css" />
+  </head>
+  <body class="bg-[#f8f9ff] text-[#0b1c30] antialiased selection:bg-[#d8e2ff] selection:text-[#001a41]">
+    <!-- App Root Wrapper -->
+    <div id="app" class="min-h-screen flex flex-col font-sans">
+      <!-- Top Sticky Header -->
+      <header id="header-container" class="fixed top-0 inset-x-0 z-40 bg-[#f8f9ff]/85 backdrop-blur-xl pt-safe shadow-[0_1px_8px_rgba(11,28,48,0.04)] border-b border-slate-100 hidden">
+        <div class="h-16 px-4 max-w-xl mx-auto flex items-center justify-between">
+          <!-- Logo Brand Lockup -->
+          <div id="header-brand" class="flex items-center gap-2 cursor-pointer group">
+            <!-- Rendered by JS -->
+          </div>
+
+          <!-- Right Action Icons -->
+          <div class="flex items-center gap-1">
+            <button
+              id="header-search-btn"
+              aria-label="Buscar movimientos"
+              class="w-10 h-10 flex items-center justify-center rounded-full text-slate-600 hover:text-[#0b1c30] hover:bg-slate-100/80 transition-colors active:scale-95 cursor-pointer"
+            >
+              <!-- Search Icon rendered by JS -->
+            </button>
+
+            <button
+              id="header-profile-btn"
+              aria-label="Ver perfil"
+              class="flex items-center justify-center rounded-full transition-all group p-0.5 hover:opacity-90 cursor-pointer"
+            >
+              <!-- Avatar rendered by JS -->
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <!-- Main Dynamic Content Views -->
+      <main id="main-content" class="flex-1 w-full pt-16 pb-20 pb-safe">
+        <!-- Auth View (Shown when not authenticated) -->
+        <section id="view-auth" class="min-h-screen flex flex-col justify-center items-center px-4 py-8"></section>
+
+        <!-- Tab 1: Inicio / Dashboard -->
+        <section id="tab-inicio" class="tab-pane hidden"></section>
+
+        <!-- Tab 2: Ingresos -->
+        <section id="tab-ingresos" class="tab-pane hidden"></section>
+
+        <!-- Tab 3: Gastos -->
+        <section id="tab-gastos" class="tab-pane hidden"></section>
+
+        <!-- Tab 4: Obligaciones / Fijos -->
+        <section id="tab-obligaciones" class="tab-pane hidden"></section>
+
+        <!-- Tab 5: Metas de Ahorro -->
+        <section id="tab-metas" class="tab-pane hidden"></section>
+
+        <!-- Tab 6: Perfil -->
+        <section id="tab-perfil" class="tab-pane hidden"></section>
+      </main>
+
+      <!-- Floating Action Button (+) -->
+      <div id="fab-container" class="fixed bottom-20 right-4 sm:right-6 md:right-8 z-40 pointer-events-auto pb-safe hidden">
+        <button
+          id="fab-button"
+          aria-label="Registrar movimiento en 10 segundos"
+          class="flex items-center justify-center w-14 h-14 rounded-full bg-[#0058bc] text-white shadow-[0_4px_16px_rgba(0,88,188,0.35)] active:scale-95 hover:bg-[#004bb0] hover:shadow-[0_6px_20px_rgba(0,88,188,0.45)] transition-all cursor-pointer group"
+        >
+          <!-- Plus Icon rendered by JS -->
+        </button>
+      </div>
+
+      <!-- Bottom Navigation Bar -->
+      <nav id="bottom-nav" class="fixed bottom-0 inset-x-0 z-40 pb-safe bg-[#f8f9ff]/92 backdrop-blur-xl border-t border-slate-200/70 shadow-[0_-2px_16px_rgba(11,28,48,0.06)] hidden">
+        <div id="nav-items-container" class="flex justify-between items-center h-16 max-w-xl mx-auto px-1 sm:px-2">
+          <!-- Nav items rendered by JS -->
+        </div>
+      </nav>
+
+      <!-- Quick Add Transaction Modal (<10s Keypad) -->
+      <div id="modal-quick-add" class="fixed inset-0 z-50 bg-black/60 backdrop-blur-md flex flex-col justify-end sm:justify-center items-center p-0 sm:p-4 hidden">
+        <!-- Rendered by JS -->
+      </div>
+
+      <!-- Quick Search Overlay Modal -->
+      <div id="modal-search" class="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex flex-col justify-start pt-16 px-4 hidden">
+        <div class="bg-white rounded-2xl p-4 shadow-2xl max-w-lg mx-auto w-full animate-in fade-in duration-200">
+          <div class="flex items-center justify-between pb-3 border-b border-slate-100">
+            <div class="flex items-center gap-2 flex-1">
+              <span id="search-input-icon"></span>
+              <input
+                id="search-input"
+                type="text"
+                placeholder="Buscar gastos, ingresos o conceptos..."
+                class="w-full text-sm text-slate-800 focus:outline-none bg-transparent"
+              />
+            </div>
+            <button
+              id="search-close-btn"
+              class="w-7 h-7 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 hover:text-slate-800 cursor-pointer"
+            >
+              <!-- X icon rendered by JS -->
+            </button>
+          </div>
+          <div id="search-results-list" class="max-h-60 overflow-y-auto mt-2">
+            <p class="text-xs text-slate-400 py-4 text-center">
+              Escribe para buscar cualquier movimiento registrado...
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Modal: Detalle y Ajuste de Dinero Disponible -->
+      <div id="modal-cash-detail" class="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 hidden">
+        <!-- Rendered by JS -->
+      </div>
+
+      <!-- Modal: Add / Edit Fixed Obligation -->
+      <div id="modal-fixed-obligation" class="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 hidden">
+        <!-- Rendered by JS -->
+      </div>
+
+      <!-- Modal: Add / Edit Savings Goal -->
+      <div id="modal-savings-goal" class="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 hidden">
+        <!-- Rendered by JS -->
+      </div>
+
+      <!-- Modal: Aporte a Meta de Ahorro -->
+      <div id="modal-aporte-goal" class="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 hidden">
+        <!-- Rendered by JS -->
+      </div>
+
+      <!-- Modal: Edit / Delete Transaction Action Sheet -->
+      <div id="modal-edit-transaction" class="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 hidden">
+        <!-- Rendered by JS -->
+      </div>
+
+      <!-- Modal: Edit Profile -->
+      <div id="modal-edit-profile" class="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 hidden">
+        <!-- Rendered by JS -->
+      </div>
+
+      <!-- Modal: Edit Monthly Salary / Budget -->
+      <div id="modal-edit-budget" class="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 hidden">
+        <!-- Rendered by JS -->
+      </div>
+
+      <!-- Modal: Confirm Delete Account -->
+      <div id="modal-confirm-delete" class="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 hidden">
+        <!-- Rendered by JS -->
+      </div>
+
+      <!-- Floating Toast Notification -->
+      <div id="toast-container" class="fixed top-20 left-1/2 -translate-x-1/2 z-50 max-w-sm w-[90%] pointer-events-none transition-all duration-300 hidden">
+        <div id="toast-pill" class="bg-[#213145] text-white px-4 py-2.5 rounded-full shadow-xl flex items-center justify-center gap-2 text-xs sm:text-sm font-medium border border-slate-700/50">
+          <span id="toast-icon"></span>
+          <span id="toast-text" class="truncate"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Application Script Entrypoint -->
+    <script type="module" src="js/app.js"></script>
+  </body>
+</html>
