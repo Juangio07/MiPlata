@@ -12,8 +12,7 @@ import {
   getTodayISODate, 
   getInitials, 
   getCurrentMonthKey, 
-  formatMonthKeyToLabel, 
-  getAvailableMonthsList 
+  formatMonthKeyToLabel
 } from './formatters.js';
 import { 
   getLogoSvg, 
@@ -310,6 +309,18 @@ function computeMetrics() {
   };
 }
 
+function getRecordMonthsList() {
+  const monthKeys = new Set(
+    state.transactions
+      .map((transaction) => String(transaction.date || '').slice(0, 7))
+      .filter((monthKey) => /^\d{4}-\d{2}$/.test(monthKey))
+  );
+
+  return [...monthKeys]
+    .sort((a, b) => b.localeCompare(a))
+    .map((key) => ({ key, label: formatMonthKeyToLabel(key) }));
+}
+
 // Navigation Handler
 function switchTab(tabId) {
   // Incomes and expenses now live together in the Registros module.
@@ -478,7 +489,7 @@ function renderDashboardLegacy() {
   const greeting = getDynamicGreetingStatus(contextData);
   const alerts = getFinancialAlerts(contextData);
   const tips = getFinancialTips(contextData);
-  const months = getAvailableMonthsList(6);
+  const months = getRecordMonthsList();
   const currentMonthLabel = formatMonthKeyToLabel(state.selectedMonth);
   const currentTip = tips.length > 0 ? tips[state.activeTipIndex % tips.length] : null;
 
@@ -924,7 +935,7 @@ function renderDashboard() {
   const user = state.currentUser || {};
   const firstName = (user.name || 'Camila').split(' ')[0];
   const monthLabel = formatMonthKeyToLabel(state.selectedMonth);
-  const months = getAvailableMonthsList(6);
+  const months = getRecordMonthsList();
   const pending = state.fixedObligations.filter((o) => o.status === 'pending');
   const pendingAmount = pending.reduce((sum, item) => sum + item.amount, 0);
   const budgetLimit = metrics.monthlyBudgetLimit;
@@ -1290,7 +1301,7 @@ function renderPastMonthSummaryView(monthKey) {
             <div class="p-3 rounded-2xl bg-white/5 border border-white/10 flex flex-col justify-between">
               <div class="flex items-center justify-between text-slate-300">
                 <span class="text-[11px] font-medium">Ahorro Neto</span>
-                <span class="text-emerald-400">${getIconSvg('piggyBank', 'w-3.5 h-3.5')}</span>
+                <span class="text-emerald-400">${getIconSvg('banknote', 'w-3.5 h-3.5')}</span>
               </div>
               <div class="mt-2">
                 <p class="text-base sm:text-lg font-bold ${netSavings >= 0 ? 'text-[#6cf8bb]' : 'text-rose-400'} tabular-nums tracking-tight">
@@ -1344,18 +1355,10 @@ function renderPastMonthSummaryView(monthKey) {
           </div>
           <span class="text-[11px] font-semibold text-[#0058bc]">Mes anterior</span>
         </div>
-        <div class="grid grid-cols-3 gap-2 mt-3">
-          <button id="btn-past-export-csv" class="h-10 rounded-2xl bg-[#eef3ff] text-[#0058bc] text-xs font-semibold flex items-center justify-center gap-1 cursor-pointer hover:bg-[#dce8ff] transition-colors">
-            ${getIconSvg('download', 'w-3.5 h-3.5')}
-            <span>CSV</span>
-          </button>
-          <button id="btn-past-print-pdf" class="h-10 rounded-2xl bg-[#eef3ff] text-[#0058bc] text-xs font-semibold flex items-center justify-center gap-1 cursor-pointer hover:bg-[#dce8ff] transition-colors">
+        <div class="mt-3">
+          <button id="btn-past-print-pdf" class="w-full h-10 rounded-2xl bg-[#eef3ff] text-[#0058bc] text-xs font-semibold flex items-center justify-center gap-1 cursor-pointer hover:bg-[#dce8ff] transition-colors">
             ${getIconSvg('printer', 'w-3.5 h-3.5')}
-            <span>PDF</span>
-          </button>
-          <button id="btn-past-copy-summary" class="h-10 rounded-2xl bg-[#eef3ff] text-[#0058bc] text-xs font-semibold flex items-center justify-center gap-1 cursor-pointer hover:bg-[#dce8ff] transition-colors" title="Copiar texto resumen">
-            ${getIconSvg('copy', 'w-3.5 h-3.5')}
-            <span>Copiar</span>
+            <span>Descargar PDF</span>
           </button>
         </div>
       </section>
@@ -1457,7 +1460,7 @@ function renderPastMonthSummaryView(monthKey) {
         </div>
 
         <!-- List -->
-        <div class="divide-y divide-slate-100 max-h-80 overflow-y-auto">
+        <div class="divide-y divide-slate-100 max-h-80 overflow-y-auto no-scrollbar">
           ${
             displayedTransactions.length === 0
               ? '<p class="text-xs text-slate-400 py-4 text-center">No hay movimientos que coincidan con la búsqueda.</p>'
@@ -1493,22 +1496,8 @@ function renderPastMonthSummaryView(monthKey) {
     renderDashboard();
   };
 
-  document.getElementById('btn-past-export-csv').onclick = () => {
-    window.location.href = `/api/export/csv?month=${monthKey}`;
-  };
-
   document.getElementById('btn-past-print-pdf').onclick = () => {
     window.print();
-  };
-
-  document.getElementById('btn-past-copy-summary').onclick = async () => {
-    const summaryText = `Resumen Financiero MiPlata - ${monthLabel}\n-----------------------------\nIngresos: ${formatCOP(totalIncome)} COP\nGastos: ${formatCOP(totalExpenses)} COP\nAhorro Neto: ${formatCOP(netSavings)} COP\nTasa de Ahorro: ${savingsRate.toFixed(1)}%\nPresupuesto consumido: ${budgetConsumedPercent}%`;
-    try {
-      await navigator.clipboard.writeText(summaryText);
-      showToast(`Resumen de ${monthLabel} copiado al portapapeles`);
-    } catch {
-      showToast('No se pudo copiar al portapapeles', 'info');
-    }
   };
 
   document.getElementById('filter-pm-all').onclick = () => {
