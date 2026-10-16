@@ -19,6 +19,7 @@ import {
   getLogoSvg, 
   getLogoIcon,
   getImagotipoHorizontal,
+  getFixelarImagotipo,
   getIconSvg, 
   getCategoryIconSvg 
 } from './icons.js';
@@ -138,6 +139,7 @@ function renderAvatarHtml(name, avatarUrl, size = 'md', showBadge = false) {
     md: 'w-10 h-10 text-xs font-semibold',
     lg: 'w-14 h-14 text-base font-bold',
     xl: 'w-20 h-20 text-xl font-bold',
+    profile: 'w-24 h-24 text-2xl font-bold',
   };
 
   const badgeSizeClasses = {
@@ -160,9 +162,10 @@ function renderAvatarHtml(name, avatarUrl, size = 'md', showBadge = false) {
   const gradClass = palettes[charCode % palettes.length];
 
   const hasImg = Boolean(avatarUrl);
+  const fallbackInitials = `<span class="tracking-tight select-none font-bold uppercase">${initials}</span>`;
   const inner = hasImg
-    ? `<img src="${avatarUrl}" alt="${name}" class="w-full h-full object-cover" onerror="this.style.display='none'" />`
-    : `<span class="tracking-tight select-none font-bold uppercase">${initials}</span>`;
+    ? `<img src="${avatarUrl}" alt="${name}" class="w-full h-full object-cover" onerror="this.style.display='none'; this.parentElement.classList.remove('bg-slate-100'); this.parentElement.classList.add('bg-gradient-to-br', '${gradClass}'); this.nextElementSibling.style.display='flex'" /><span style="display:none" class="w-full h-full items-center justify-center tracking-tight select-none font-bold uppercase">${initials}</span>`
+    : fallbackInitials;
 
   const badge = showBadge
     ? `<span class="absolute bottom-0 right-0 rounded-full bg-[#006c49] ring-2 ring-white flex items-center justify-center text-white ${badgeSizeClasses[size] || 'w-3 h-3'}">${getIconSvg('check', 'w-2 h-2')}</span>`
@@ -178,28 +181,75 @@ function renderAvatarHtml(name, avatarUrl, size = 'md', showBadge = false) {
   `;
 }
 
+const FIXED_OBLIGATION_CATEGORIES = [
+  'Vivienda',
+  'Servicios públicos',
+  'Internet y telefonía',
+  'Transporte',
+  'Deudas y créditos',
+  'Salud y seguros',
+  'Suscripciones y membresías',
+  'Educación y familia',
+  'Otros',
+];
+
+function normalizeFixedObligationCategory(category) {
+  const aliases = {
+    Servicios: 'Servicios públicos',
+    'Servicios Públicos': 'Servicios públicos',
+    Entretenimiento: 'Suscripciones y membresías',
+    Salud: 'Salud y seguros',
+    Educación: 'Educación y familia',
+  };
+  const value = String(category || '').trim();
+  return aliases[value] || (FIXED_OBLIGATION_CATEGORIES.includes(value) ? value : 'Otros');
+}
+
+function inferFixedObligationCategory(category, name = '') {
+  const lower = String(name || '').toLowerCase();
+  if (lower.includes('arriendo') || lower.includes('casa') || lower.includes('apartamento')) return 'Vivienda';
+  if (lower.includes('internet') || lower.includes('fibra') || lower.includes('wifi') || lower.includes('claro') || lower.includes('celular') || lower.includes('tigo') || lower.includes('movistar')) return 'Internet y telefonía';
+  if (lower.includes('servicios') || lower.includes('agua') || lower.includes('luz') || lower.includes('epm') || lower.includes('energía')) return 'Servicios públicos';
+  if (lower.includes('transporte') || lower.includes('parqueadero') || lower.includes('soat') || lower.includes('vehículo')) return 'Transporte';
+  if (lower.includes('crédito') || lower.includes('prestamo') || lower.includes('banco') || lower.includes('cuota') || lower.includes('tarjeta')) return 'Deudas y créditos';
+  if (lower.includes('salud') || lower.includes('seguro') || lower.includes('eps') || lower.includes('medicina')) return 'Salud y seguros';
+  if (lower.includes('netflix') || lower.includes('spotify') || lower.includes('streaming') || lower.includes('hbo') || lower.includes('disney') || lower.includes('gimnasio')) return 'Suscripciones y membresías';
+  if (lower.includes('educación') || lower.includes('colegio') || lower.includes('universidad') || lower.includes('guardería')) return 'Educación y familia';
+  return normalizeFixedObligationCategory(category);
+}
+
 // Obligation Context Icon Resolver
-function getObligationContextIcon(name) {
+function getObligationContextIcon(name, category = '') {
+  const categoryKey = inferFixedObligationCategory(category, name).toLowerCase();
   const lower = (name || '').toLowerCase();
-  if (lower.includes('arriendo') || lower.includes('casa') || lower.includes('apartamento')) {
+  if (categoryKey === 'vivienda' || lower.includes('arriendo') || lower.includes('casa') || lower.includes('apartamento')) {
     return `<span class="text-[#0058bc]">${getIconSvg('home', 'w-5 h-5')}</span>`;
   }
-  if (lower.includes('internet') || lower.includes('fibra') || lower.includes('claro') || lower.includes('wifi')) {
+  if (categoryKey === 'internet y telefonía' || lower.includes('internet') || lower.includes('fibra') || lower.includes('claro') || lower.includes('wifi')) {
     return `<span class="text-indigo-600">${getIconSvg('wifi', 'w-5 h-5')}</span>`;
   }
-  if (lower.includes('servicios') || lower.includes('agua') || lower.includes('luz') || lower.includes('epm') || lower.includes('energía')) {
+  if (categoryKey === 'servicios públicos' || lower.includes('servicios') || lower.includes('agua') || lower.includes('luz') || lower.includes('epm') || lower.includes('energía')) {
     return `<span class="text-[#006c49]">${getIconSvg('droplet', 'w-5 h-5')}</span>`;
   }
-  if (lower.includes('crédito') || lower.includes('prestamo') || lower.includes('banco') || lower.includes('cuota') || lower.includes('tarjeta')) {
-    return `<span class="text-amber-700">${getIconSvg('landmark', 'w-5 h-5')}</span>`;
+  if (categoryKey === 'transporte' || lower.includes('transporte') || lower.includes('parqueadero') || lower.includes('soat') || lower.includes('vehículo')) {
+    return `<span class="text-[#00826a]">${getIconSvg('car', 'w-5 h-5')}</span>`;
   }
-  if (lower.includes('netflix') || lower.includes('spotify') || lower.includes('streaming') || lower.includes('hbo') || lower.includes('disney')) {
+  if (categoryKey === 'deudas y créditos' || lower.includes('crédito') || lower.includes('prestamo') || lower.includes('banco') || lower.includes('cuota') || lower.includes('tarjeta')) {
+    return `<span class="text-amber-700">${getIconSvg('creditCard', 'w-5 h-5')}</span>`;
+  }
+  if (categoryKey === 'salud y seguros' || lower.includes('salud') || lower.includes('seguro') || lower.includes('eps') || lower.includes('medicina')) {
+    return `<span class="text-rose-600">${getIconSvg('heartPulse', 'w-5 h-5')}</span>`;
+  }
+  if (categoryKey === 'suscripciones y membresías' || lower.includes('netflix') || lower.includes('spotify') || lower.includes('streaming') || lower.includes('hbo') || lower.includes('disney') || lower.includes('gimnasio')) {
     return `<span class="text-purple-600">${getIconSvg('tv', 'w-5 h-5')}</span>`;
+  }
+  if (categoryKey === 'educación y familia' || lower.includes('educación') || lower.includes('colegio') || lower.includes('universidad') || lower.includes('guardería')) {
+    return `<span class="text-[#0058bc]">${getIconSvg('graduationCap', 'w-5 h-5')}</span>`;
   }
   if (lower.includes('celular') || lower.includes('tigo') || lower.includes('movistar') || lower.includes('plan')) {
     return `<span class="text-teal-600">${getIconSvg('smartphone', 'w-5 h-5')}</span>`;
   }
-  return `<span class="text-slate-600">${getIconSvg('creditCard', 'w-5 h-5')}</span>`;
+  return `<span class="text-slate-600">${getIconSvg('banknote', 'w-5 h-5')}</span>`;
 }
 
 // Computed Financial Metrics
@@ -2194,7 +2244,7 @@ function renderObligations() {
                   <div class="p-4 pb-3 flex items-start justify-between gap-3">
                     <div class="flex items-start gap-3 min-w-0 flex-1">
                       <div class="w-14 h-14 rounded-2xl bg-slate-100 flex items-center justify-center shrink-0">
-                        ${getObligationContextIcon(item.name)}
+                        ${getObligationContextIcon(item.name, item.category)}
                       </div>
                       <div class="flex flex-col min-w-0 pt-0.5">
                         <p class="text-base font-semibold text-[#0b1c30] truncate">${item.name}</p>
@@ -2756,28 +2806,6 @@ function renderProfile() {
 
           <div class="flex items-center justify-between py-2.5">
             <div class="flex items-center gap-2.5">
-              <div class="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-slate-600">
-                ${getIconSvg('keyboard', 'w-4 h-4')}
-              </div>
-              <div>
-                <p class="text-xs font-semibold text-slate-800">Teclado numérico al abrir</p>
-                <p class="text-[11px] text-slate-500">Agilizar registro inmediato</p>
-              </div>
-            </div>
-            <button
-              id="toggle-quick-keypad"
-              class="w-11 h-6 rounded-full transition-colors duration-200 p-0.5 relative cursor-pointer ${
-                user.quickKeypad ? 'bg-[#0058bc]' : 'bg-slate-300'
-              }"
-            >
-              <div class="w-5 h-5 rounded-full bg-white shadow-sm transform transition-transform duration-200 ${
-                user.quickKeypad ? 'translate-x-5' : 'translate-x-0'
-              }"></div>
-            </button>
-          </div>
-
-          <div class="flex items-center justify-between py-2.5">
-            <div class="flex items-center gap-2.5">
               <div class="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-[#0058bc]">${getIconSvg('calendar', 'w-4 h-4')}</div>
               <div><p class="text-xs font-semibold text-slate-800">Reinicio mensual</p><p class="text-[11px] text-slate-500">Corte y balance periódico</p></div>
             </div>
@@ -2827,8 +2855,11 @@ function renderProfile() {
 
       <!-- App Branding Footer -->
       <div class="flex flex-col items-center justify-center gap-1.5 py-4 text-center select-none">
-        ${getImagotipoHorizontal('h-6 w-auto opacity-70 hover:opacity-100 transition-opacity')}
         <p class="text-[11px] text-slate-400 font-medium">Control de finanzas personales 100% privado y local</p>
+        <div class="flex items-center justify-center gap-1.5 pt-1.5 text-[11px] text-slate-400 font-medium">
+          <span>By</span>
+          ${getFixelarImagotipo('h-5 w-auto opacity-80')}
+        </div>
       </div>
     </div>
   `;
@@ -2845,13 +2876,6 @@ function renderProfile() {
 
   document.getElementById('toggle-variable-income').onclick = async () => {
     const res = await api.updateProfile({ autoAdjustVariable: !user.autoAdjustVariable });
-    state.currentUser = res.user;
-    renderProfile();
-    showToast('Preferencia actualizada');
-  };
-
-  document.getElementById('toggle-quick-keypad').onclick = async () => {
-    const res = await api.updateProfile({ quickKeypad: !user.quickKeypad });
     state.currentUser = res.user;
     renderProfile();
     showToast('Preferencia actualizada');
@@ -3028,6 +3052,10 @@ function renderAuth() {
             <span>Entrar con cuenta de demostración (Camila Restrepo)</span>
           </button>
         </div>
+      </div>
+      <div class="flex items-center justify-center gap-1.5 pt-1 pb-2 text-[11px] text-slate-400 font-medium">
+        <span>By</span>
+        ${getFixelarImagotipo('h-5 w-auto opacity-80')}
       </div>
     </div>
   `;
@@ -3324,7 +3352,7 @@ function renderQuickAddModalContent() {
           name: desc,
           amount,
           dueDay: todayDay,
-          category: state.quickAdd.category,
+          category: normalizeFixedObligationCategory(state.quickAdd.category),
           status: 'pending',
           notes: `Vence Día ${todayDay} del mes`,
         });
@@ -3548,54 +3576,63 @@ function openAddOrEditObligationModal(obligation = null) {
   DOM.modalFixedObligation.classList.remove('hidden');
 
   const isEdit = Boolean(obligation);
-  const title = isEdit ? 'Modificar Gasto Fijo' : 'Nuevo Gasto Fijo Recurrente';
+  const title = isEdit ? 'Editar Gasto Fijo' : 'Nuevo Gasto Fijo';
+  const reminderEnabled = isEdit ? Number(obligation.reminderDaysBefore ?? 3) > 0 : true;
+  const selectedCategory = inferFixedObligationCategory(isEdit ? obligation.category : 'Servicios públicos', isEdit ? obligation.name : '');
 
   DOM.modalFixedObligation.innerHTML = `
-    <div class="bg-white rounded-3xl p-5 sm:p-6 max-w-md w-full shadow-2xl flex flex-col gap-3.5 border border-slate-100">
-      <div class="flex items-center justify-between pb-1 border-b border-slate-100">
-        <h3 class="font-bold text-sm text-[#0b1c30]">${title}</h3>
-        <button id="ob-modal-close" class="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 cursor-pointer">
+    <div class="bg-white rounded-t-[28px] sm:rounded-[28px] p-5 sm:p-6 max-w-md w-full shadow-2xl flex flex-col border border-slate-100 max-h-[calc(100vh-4px)] overflow-y-auto">
+      <div class="w-12 h-1 rounded-full bg-[#c7d6e8] mx-auto mb-4 sm:hidden"></div>
+      <div class="flex items-center justify-between mb-5">
+        <h3 class="font-extrabold text-lg text-[#0b1c30]">${title}</h3>
+        <button id="ob-modal-close" class="w-9 h-9 rounded-full bg-[#f1f5fa] flex items-center justify-center text-[#607797] cursor-pointer">
           ${getIconSvg('x', 'w-4 h-4')}
         </button>
       </div>
 
-      <form id="form-obligation" class="flex flex-col gap-3">
+      <form id="form-obligation" class="flex flex-col gap-4">
         <div>
-          <label class="text-xs font-bold text-[#0b1c30]">Nombre o concepto</label>
-          <input id="ob-input-name" type="text" placeholder="ej. Arriendo o Internet Fibra" value="${isEdit ? obligation.name : ''}" required class="w-full mt-1 px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#0058bc]" />
+          <label class="text-sm font-medium text-[#607797]">Concepto</label>
+          <input id="ob-input-name" type="text" placeholder="ej. Arriendo Apartamento, Internet, etc." value="${isEdit ? obligation.name : ''}" required class="w-full mt-1.5 h-12 px-4 rounded-2xl border border-[#dce5ef] bg-[#f7f9fc] text-sm font-semibold text-[#25364d] placeholder:text-[#8d99aa] focus:outline-none focus:border-[#0058bc] focus:ring-2 focus:ring-[#dce8ff]" />
         </div>
 
-        <div>
-          <label class="text-xs font-bold text-[#0b1c30]">Monto a pagar (COP)</label>
-          <input id="ob-input-amount" type="text" placeholder="ej. 450.000" value="${isEdit ? obligation.amount.toLocaleString('es-CO') : ''}" required class="w-full mt-1 px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#0058bc] tabular-nums" />
-        </div>
-
-        <div class="grid grid-cols-2 gap-2">
+        <div class="grid grid-cols-2 gap-3">
           <div>
-            <label class="text-xs font-bold text-[#0b1c30]">Día de vencimiento (1-31)</label>
-            <input id="ob-input-day" type="number" min="1" max="31" value="${isEdit ? obligation.dueDay : 5}" required class="w-full mt-1 px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#0058bc]" />
+            <label class="text-sm font-medium text-[#607797]">Valor mensual</label>
+            <div class="relative mt-1.5">
+              <span class="absolute left-4 top-1/2 -translate-y-1/2 text-sm font-bold text-[#91a0b4]">$</span>
+              <input id="ob-input-amount" type="text" inputmode="numeric" placeholder="0" value="${isEdit ? obligation.amount.toLocaleString('es-CO') : ''}" required class="w-full h-12 pl-8 pr-3 rounded-2xl border border-[#dce5ef] bg-[#f7f9fc] text-sm font-bold text-[#25364d] placeholder:text-[#25364d] focus:outline-none focus:border-[#0058bc] focus:ring-2 focus:ring-[#dce8ff] tabular-nums" />
+            </div>
           </div>
 
           <div>
-            <label class="text-xs font-bold text-[#0b1c30]">Categoría</label>
-            <select id="ob-input-category" class="w-full mt-1 px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#0058bc]">
-              <option value="Servicios" ${isEdit && obligation.category === 'Servicios' ? 'selected' : ''}>Servicios</option>
-              <option value="Otros" ${isEdit && obligation.category === 'Otros' ? 'selected' : ''}>Vivienda / Arriendo</option>
-              <option value="Entretenimiento" ${isEdit && obligation.category === 'Entretenimiento' ? 'selected' : ''}>Suscripciones</option>
-              <option value="Salud" ${isEdit && obligation.category === 'Salud' ? 'selected' : ''}>Salud & Seguros</option>
-              <option value="Transporte" ${isEdit && obligation.category === 'Transporte' ? 'selected' : ''}>Transporte</option>
-            </select>
+            <label class="text-sm font-medium text-[#607797]">Día de vencimiento</label>
+            <input id="ob-input-day" type="number" min="1" max="31" value="${isEdit ? obligation.dueDay : 5}" required class="w-full mt-1.5 h-12 px-4 rounded-2xl border border-[#dce5ef] bg-[#f7f9fc] text-sm font-bold text-[#25364d] focus:outline-none focus:border-[#0058bc] focus:ring-2 focus:ring-[#dce8ff]" />
           </div>
         </div>
 
-        <button type="submit" class="w-full py-2.5 mt-2 rounded-xl bg-[#0058bc] text-white font-bold text-xs shadow-md hover:bg-[#004bb0] active:scale-95 transition-all cursor-pointer">
-          ${isEdit ? 'Guardar Cambios' : 'Guardar Obligación'}
+        <div>
+          <label class="text-sm font-medium text-[#607797]">Categoría</label>
+          <select id="ob-input-category" class="w-full mt-1.5 h-12 px-4 rounded-2xl border-2 border-[#0058bc] bg-[#f7f9fc] text-sm font-semibold text-[#25364d] focus:outline-none focus:ring-2 focus:ring-[#dce8ff]">
+            ${FIXED_OBLIGATION_CATEGORIES.map((category) => `<option value="${category}" ${selectedCategory === category ? 'selected' : ''}>${category}</option>`).join('')}
+          </select>
+        </div>
+
+        <div class="flex items-center justify-between h-14 px-4 rounded-2xl border border-[#dce5ef] bg-[#f7f9fc]">
+          <span class="text-sm font-medium text-[#405572]">Recordatorio activo (3 días antes)</span>
+          <button id="ob-reminder-toggle" type="button" role="switch" aria-checked="${reminderEnabled}" class="relative w-12 h-7 rounded-full transition-colors cursor-pointer ${reminderEnabled ? 'bg-[#0058bc]' : 'bg-[#cbd5e1]'}">
+            <span class="absolute top-1 left-1 w-5 h-5 rounded-full bg-white shadow-sm transition-transform ${reminderEnabled ? 'translate-x-5' : 'translate-x-0'}"></span>
+          </button>
+        </div>
+
+        <button type="submit" class="w-full h-12 rounded-full bg-[#0058bc] text-white font-bold text-sm shadow-md hover:bg-[#004bb0] active:scale-95 transition-all cursor-pointer">
+          ${isEdit ? 'Guardar Cambios' : 'Crear Obligación'}
         </button>
 
         ${
           isEdit
             ? `
-          <button type="button" id="ob-delete-btn" class="w-full py-2 rounded-xl text-rose-600 bg-rose-50 hover:bg-rose-100 font-semibold text-xs transition-colors cursor-pointer flex items-center justify-center gap-1.5">
+          <button type="button" id="ob-delete-btn" class="w-full py-2.5 rounded-full text-rose-600 bg-rose-50 hover:bg-rose-100 font-semibold text-sm transition-colors cursor-pointer flex items-center justify-center gap-1.5">
             ${getIconSvg('trash2', 'w-4 h-4')}
             <span>Eliminar obligación</span>
           </button>
@@ -3614,12 +3651,23 @@ function openAddOrEditObligationModal(obligation = null) {
     amountInput.value = isNaN(num) ? '' : num.toLocaleString('es-CO');
   };
 
+  const reminderToggle = document.getElementById('ob-reminder-toggle');
+  if (reminderToggle) {
+    reminderToggle.onclick = () => {
+      const enabled = reminderToggle.getAttribute('aria-checked') !== 'true';
+      reminderToggle.setAttribute('aria-checked', String(enabled));
+      reminderToggle.className = `relative w-12 h-7 rounded-full transition-colors cursor-pointer ${enabled ? 'bg-[#0058bc]' : 'bg-[#cbd5e1]'}`;
+      reminderToggle.firstElementChild.className = `absolute top-1 left-1 w-5 h-5 rounded-full bg-white shadow-sm transition-transform ${enabled ? 'translate-x-5' : 'translate-x-0'}`;
+    };
+  }
+
   document.getElementById('form-obligation').onsubmit = async (e) => {
     e.preventDefault();
     const name = document.getElementById('ob-input-name').value.trim();
     const amount = parseInt(amountInput.value.replace(/\D/g, ''), 10) || 0;
     const dueDay = parseInt(document.getElementById('ob-input-day').value, 10) || 1;
     const category = document.getElementById('ob-input-category').value;
+    const reminderDaysBefore = document.getElementById('ob-reminder-toggle')?.getAttribute('aria-checked') === 'true' ? 3 : 0;
 
     if (!name || amount <= 0) return;
 
@@ -3629,6 +3677,7 @@ function openAddOrEditObligationModal(obligation = null) {
         amount,
         dueDay,
         category,
+        reminderDaysBefore,
         notes: `Vence Día ${dueDay} del mes`,
       });
       showToast('Obligación actualizada');
@@ -3638,6 +3687,7 @@ function openAddOrEditObligationModal(obligation = null) {
         amount,
         dueDay,
         category,
+        reminderDaysBefore,
         status: 'pending',
         notes: `Vence Día ${dueDay} del mes`,
       });
@@ -3931,52 +3981,65 @@ function openEditProfileModal() {
 
   DOM.modalEditProfile.classList.remove('hidden');
   DOM.modalEditProfile.innerHTML = `
-    <div class="bg-white rounded-3xl p-5 sm:p-6 max-w-sm w-full shadow-2xl flex flex-col gap-3.5 border border-slate-100">
-      <div class="flex items-center justify-between pb-1 border-b border-slate-100">
-        <h3 class="font-bold text-sm text-[#0b1c30]">Editar Perfil</h3>
-        <button id="edit-profile-close" class="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 cursor-pointer">
+    <div class="bg-white rounded-t-[28px] sm:rounded-[28px] p-6 max-w-md w-full shadow-2xl flex flex-col max-h-[calc(100vh-4px)] overflow-y-auto">
+      <div class="w-12 h-1 rounded-full bg-[#c7d6e8] mx-auto mb-4 sm:hidden"></div>
+      <div class="flex items-center justify-between mb-6">
+        <h3 class="font-extrabold text-lg text-[#0b1c30]">Editar Información Personal</h3>
+        <button id="edit-profile-close" aria-label="Cerrar" class="w-9 h-9 rounded-full bg-[#f1f5fa] flex items-center justify-center text-[#607797] cursor-pointer">
           ${getIconSvg('x', 'w-4 h-4')}
         </button>
       </div>
 
-      <!-- Avatar Preview & Change -->
-      <div class="flex items-center justify-between p-3 rounded-2xl bg-[#eff4ff] border border-blue-100">
-        <div class="flex items-center gap-3">
-          <div id="profile-modal-avatar-preview">${renderAvatarHtml(user.name, tempAvatarUrl, 'lg')}</div>
-          <div class="flex flex-col">
-            <span class="text-xs font-bold text-[#0b1c30]">Foto de perfil</span>
-            <span class="text-[11px] text-slate-500">Haz clic para cambiar</span>
-          </div>
-        </div>
-        <label class="px-2.5 py-1.5 rounded-full bg-white hover:bg-slate-50 text-[#0058bc] border border-blue-200 text-[11px] font-semibold flex items-center gap-1 cursor-pointer shadow-sm active:scale-95 transition-all">
-          ${getIconSvg('camera', 'w-3.5 h-3.5')}
-          <span>Subir</span>
+      <div class="flex flex-col items-center gap-3 mb-7">
+        <div id="profile-modal-avatar-preview">${renderAvatarHtml(user.name, tempAvatarUrl, 'profile')}</div>
+        <label class="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-[#eef4ff] text-[#0058bc] text-sm font-semibold cursor-pointer active:scale-95 transition-all">
+          ${getIconSvg('camera', 'w-4 h-4')}
+          <span>Subir foto</span>
           <input id="input-profile-avatar" type="file" accept="image/*" class="sr-only" />
         </label>
+        <p id="profile-avatar-hint" class="text-xs text-[#8da0bd] text-center">${tempAvatarUrl ? 'Foto de perfil seleccionada' : `Mostrando iniciales "${getInitials(user.name)}" según tu nombre`}</p>
       </div>
 
       <div class="flex flex-col gap-3">
         <div>
-          <label class="text-xs font-bold text-[#0b1c30]">Nombre completo</label>
-          <input id="edit-name-input" type="text" value="${user.name}" class="w-full mt-1 px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#0058bc]" />
+          <label class="text-sm font-medium text-[#607797]">Nombre completo</label>
+          <input id="edit-name-input" type="text" value="${user.name}" class="w-full mt-1.5 h-12 px-4 rounded-2xl border border-[#dce5ef] bg-[#f7f9fc] text-sm font-semibold text-[#26364d] focus:outline-none focus:ring-2 focus:ring-[#0058bc]" />
         </div>
 
         <div>
-          <label class="text-xs font-bold text-[#0b1c30]">Correo electrónico</label>
-          <input id="edit-email-input" type="email" value="${user.email}" class="w-full mt-1 px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#0058bc]" />
+          <label class="text-sm font-medium text-[#607797]">Correo electrónico</label>
+          <input id="edit-email-input" type="email" value="${user.email}" class="w-full mt-1.5 h-12 px-4 rounded-2xl border border-[#dce5ef] bg-[#f7f9fc] text-sm font-semibold text-[#26364d] focus:outline-none focus:ring-2 focus:ring-[#0058bc]" />
         </div>
 
-        <button id="edit-profile-save-btn" class="w-full py-2.5 mt-2 rounded-xl bg-[#0058bc] text-white font-bold text-xs shadow-md hover:bg-[#004bb0] active:scale-95 transition-all cursor-pointer">
-          Guardar Cambios
-        </button>
+        <div class="grid grid-cols-2 gap-3 pt-3">
+          <button id="edit-profile-cancel-btn" class="h-12 rounded-full bg-[#eff4f8] text-[#50627b] font-semibold text-sm active:scale-95 transition-all cursor-pointer">Cancelar</button>
+          <button id="edit-profile-save-btn" class="h-12 rounded-full bg-[#0058bc] text-white font-bold text-sm shadow-md hover:bg-[#004bb0] active:scale-95 transition-all cursor-pointer">Guardar Cambios</button>
+        </div>
       </div>
     </div>
   `;
 
-  document.getElementById('edit-profile-close').onclick = () => DOM.modalEditProfile.classList.add('hidden');
+  const closeModal = () => DOM.modalEditProfile.classList.add('hidden');
+  document.getElementById('edit-profile-close').onclick = closeModal;
+  document.getElementById('edit-profile-cancel-btn').onclick = closeModal;
 
   const avatarInput = document.getElementById('input-profile-avatar');
   const avatarPreview = document.getElementById('profile-modal-avatar-preview');
+  const nameInput = document.getElementById('edit-name-input');
+  const avatarHint = document.getElementById('profile-avatar-hint');
+
+  const syncAvatarFallback = () => {
+    const name = nameInput.value.trim() || user.name;
+    if (!tempAvatarUrl) {
+      avatarPreview.innerHTML = renderAvatarHtml(name, '', 'profile');
+      avatarHint.textContent = `Mostrando iniciales "${getInitials(name)}" según tu nombre`;
+    } else {
+      avatarHint.textContent = 'Foto de perfil seleccionada';
+    }
+  };
+
+  nameInput.oninput = syncAvatarFallback;
+
   if (avatarInput) {
     avatarInput.onchange = (e) => {
       const file = e.target.files?.[0];
@@ -3984,7 +4047,8 @@ function openEditProfileModal() {
       const reader = new FileReader();
       reader.onload = (evt) => {
         tempAvatarUrl = evt.target.result;
-        avatarPreview.innerHTML = renderAvatarHtml(document.getElementById('edit-name-input').value || user.name, tempAvatarUrl, 'lg');
+        avatarPreview.innerHTML = renderAvatarHtml(nameInput.value || user.name, tempAvatarUrl, 'profile');
+        avatarHint.textContent = 'Foto de perfil seleccionada';
       };
       reader.readAsDataURL(file);
     };

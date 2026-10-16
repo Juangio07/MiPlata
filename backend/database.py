@@ -222,13 +222,13 @@ def seed_demo_user_data():
     # Fixed obligations
     cursor.execute("DELETE FROM fixed_obligations WHERE user_id = ?", (DEMO_USER_ID,))
     fixed_data = [
-        ('fix_1', DEMO_USER_ID, 'Arriendo Apartamento', 450000, 5, 'Otros', 'pending', None, 3, 0, 'Vence Día 5 del mes'),
-        ('fix_2', DEMO_USER_ID, 'Internet Fibra Claro', 130000, 8, 'Servicios', 'pending', None, 3, 0, 'Vence Día 8 del mes'),
-        ('fix_3', DEMO_USER_ID, 'Servicios Públicos EPM', 220000, 15, 'Servicios', 'paid', '12 Oct', 3, 0, 'Corte Día 15 • Pagado el 12'),
-        ('fix_4', DEMO_USER_ID, 'Crédito Bancolombia', 650000, 18, 'Otros', 'paid', '16 Oct', 3, 0, 'Corte Día 18 • Cuota 14/36'),
-        ('fix_5', DEMO_USER_ID, 'Netflix + Spotify', 75000, 20, 'Entretenimiento', 'paid', '20 Oct', 3, 1, 'Débito Día 20 • Automático'),
-        ('fix_6', DEMO_USER_ID, 'Plan Celular Tigo', 45000, 25, 'Servicios', 'paid', '23 Oct', 3, 0, 'Corte Día 25 • Ilimitado'),
-        ('fix_7', DEMO_USER_ID, 'Seguro & Asistencia Médica', 280000, 28, 'Salud', 'paid', '24 Oct', 3, 0, 'Corte Día 28 • Débito automático'),
+        ('fix_1', DEMO_USER_ID, 'Arriendo Apartamento', 450000, 5, 'Vivienda', 'pending', None, 3, 0, 'Vence Día 5 del mes'),
+        ('fix_2', DEMO_USER_ID, 'Internet Fibra Claro', 130000, 8, 'Internet y telefonía', 'pending', None, 3, 0, 'Vence Día 8 del mes'),
+        ('fix_3', DEMO_USER_ID, 'Servicios Públicos EPM', 220000, 15, 'Servicios públicos', 'paid', '12 Oct', 3, 0, 'Corte Día 15 • Pagado el 12'),
+        ('fix_4', DEMO_USER_ID, 'Crédito Bancolombia', 650000, 18, 'Deudas y créditos', 'paid', '16 Oct', 3, 0, 'Corte Día 18 • Cuota 14/36'),
+        ('fix_5', DEMO_USER_ID, 'Netflix + Spotify', 75000, 20, 'Suscripciones y membresías', 'paid', '20 Oct', 3, 1, 'Débito Día 20 • Automático'),
+        ('fix_6', DEMO_USER_ID, 'Plan Celular Tigo', 45000, 25, 'Internet y telefonía', 'paid', '23 Oct', 3, 0, 'Corte Día 25 • Ilimitado'),
+        ('fix_7', DEMO_USER_ID, 'Seguro & Asistencia Médica', 280000, 28, 'Salud y seguros', 'paid', '24 Oct', 3, 0, 'Corte Día 28 • Débito automático'),
     ]
     cursor.executemany("""
     INSERT INTO fixed_obligations (id, user_id, name, amount, due_day, category, status, paid_date, reminder_days_before, is_automatic, notes)
