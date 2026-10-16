@@ -35,7 +35,7 @@ import {
 // Global Application State
 const state = {
   currentUser: null,
-  activeTab: 'inicio', // 'inicio' | 'ingresos' | 'gastos' | 'obligaciones' | 'metas' | 'perfil'
+  activeTab: 'inicio', // 'inicio' | 'gastos' | 'obligaciones' | 'metas' | 'perfil'
   selectedMonth: getCurrentMonthKey(),
   hideBalance: false,
   transactions: [],
@@ -45,6 +45,7 @@ const state = {
   categoryBudgets: [],
 
   // View specific filters
+  filterRecordsType: 'all', // 'all' | 'gasto' | 'ingreso'
   filterExpensesCategory: 'Todos',
   filterIncomesCategory: 'Todos',
   filterObligationsStatus: 'all', // 'all' | 'pending' | 'paid'
@@ -58,7 +59,6 @@ const state = {
     rawValue: '0',
     category: 'Alimentación',
     description: '',
-    isRecurrent: false,
     date: getTodayISODate(),
   },
 
@@ -312,6 +312,8 @@ function computeMetrics() {
 
 // Navigation Handler
 function switchTab(tabId) {
+  // Incomes and expenses now live together in the Registros module.
+  if (tabId === 'ingresos') tabId = 'gastos';
   state.activeTab = tabId;
   const tabs = ['inicio', 'ingresos', 'gastos', 'obligaciones', 'metas', 'perfil'];
 
@@ -400,7 +402,7 @@ function renderBottomNav() {
   // through the dashboard quick action and the history/search flows.
   const navItems = [
     { id: 'inicio', label: 'Inicio', icon: 'home' },
-    { id: 'gastos', label: 'Gastos', icon: 'receiptText' },
+    { id: 'gastos', label: 'Registros', icon: 'receiptText' },
     { id: 'obligaciones', label: 'Fijos', icon: 'calendarCheck' },
     { id: 'metas', label: 'Metas', icon: 'flag' },
     { id: 'perfil', label: 'Perfil', icon: 'sliders' },
@@ -442,7 +444,7 @@ function renderActiveView() {
       renderDashboard();
       break;
     case 'ingresos':
-      renderIncomes();
+      renderExpenses();
       break;
     case 'gastos':
       renderExpenses();
@@ -557,7 +559,7 @@ function renderDashboardLegacy() {
             <span class="text-xs font-bold text-slate-300 uppercase">COP</span>
           </div>
 
-          <!-- 3 Sub-pills (Ingresos, Gastado, Fijos) -->
+          <!-- 3 Sub-pills (Ingresos, Egresos, Por Pagar) -->
           <div class="grid grid-cols-3 gap-2 pt-2 border-t border-white/10">
             <div id="dash-pill-ingresos" class="flex flex-col p-2 rounded-2xl bg-white/5 hover:bg-white/10 transition-colors cursor-pointer border border-white/5">
               <span class="text-[10px] text-slate-400 font-medium">Ingresos Mes</span>
@@ -567,7 +569,7 @@ function renderDashboardLegacy() {
             </div>
 
             <div id="dash-pill-gastado" class="flex flex-col p-2 rounded-2xl bg-white/5 hover:bg-white/10 transition-colors cursor-pointer border border-white/5">
-              <span class="text-[10px] text-slate-400 font-medium">Gastado Hoy</span>
+              <span class="text-[10px] text-rose-400 font-medium">Egresos Hoy</span>
               <span class="text-xs sm:text-sm font-bold text-white tabular-nums mt-0.5">
                 ${state.hideBalance ? '••••' : formatCOP(metrics.totalExpenses, true)}
               </span>
@@ -854,7 +856,7 @@ function renderDashboardLegacy() {
   const pillIngresos = document.getElementById('dash-pill-ingresos');
   const pillGastado = document.getElementById('dash-pill-gastado');
   const pillFijos = document.getElementById('dash-pill-fijos');
-  if (pillIngresos) pillIngresos.onclick = () => switchTab('ingresos');
+  if (pillIngresos) pillIngresos.onclick = () => switchTab('gastos');
   if (pillGastado) pillGastado.onclick = () => switchTab('gastos');
   if (pillFijos) pillFijos.onclick = () => switchTab('obligaciones');
 
@@ -970,8 +972,8 @@ function renderDashboard() {
           </div>
           <div class="grid grid-cols-3 gap-1.5">
             <div id="dash-pill-ingresos" class="rounded-2xl bg-white/10 px-2.5 py-2 cursor-pointer"><span class="block text-[10px] text-[#6cf8bb] font-semibold">• Ingresos</span><strong class="block text-sm text-white tabular-nums">${state.hideBalance ? '••••' : formatCOP(metrics.totalIncome, true)}</strong></div>
-            <div id="dash-pill-gastado" class="rounded-2xl bg-white/10 px-2.5 py-2 cursor-pointer"><span class="block text-[10px] text-rose-200 font-semibold">• Gastado</span><strong class="block text-sm text-white tabular-nums">${state.hideBalance ? '••••' : formatCOP(metrics.totalExpenses, true)}</strong></div>
-            <div id="dash-pill-fijos" class="rounded-2xl bg-white/10 px-2.5 py-2 cursor-pointer"><span class="block text-[10px] text-slate-300 font-semibold">• Compromet.</span><strong class="block text-sm text-white tabular-nums">${state.hideBalance ? '••••' : formatCOP(pendingAmount, true)}</strong></div>
+            <div id="dash-pill-gastado" class="rounded-2xl bg-white/10 px-2.5 py-2 cursor-pointer"><span class="block text-[10px] text-rose-400 font-semibold">• Egresos</span><strong class="block text-sm text-white tabular-nums">${state.hideBalance ? '••••' : formatCOP(metrics.totalExpenses, true)}</strong></div>
+            <div id="dash-pill-fijos" class="rounded-2xl bg-white/10 px-2.5 py-2 cursor-pointer"><span class="block text-[10px] text-slate-300 font-semibold">• Por Pagar</span><strong class="block text-sm text-white tabular-nums">${state.hideBalance ? '••••' : formatCOP(pendingAmount, true)}</strong></div>
           </div>
         </div>
       </div>
@@ -992,7 +994,7 @@ function renderDashboard() {
           <span class="rounded-full bg-[#c7f7e3] px-3 py-1 text-xs font-semibold text-[#006c49] whitespace-nowrap">${budgetPercent}% en regla</span>
         </div>
         <div class="mt-4 h-2.5 rounded-full bg-[#edf2f8] overflow-hidden"><div class="h-full rounded-full bg-[#0058bc] transition-all duration-500" style="width:${budgetPercent}%"></div></div>
-        <div class="flex items-center justify-between gap-3 mt-3 text-sm"><span class="text-slate-600">Gastado: <strong class="text-[#0b1c30]">${formatCOP(metrics.monthlyBudgetSpent)} COP</strong></span><span class="text-right text-[#006c49]">Restante: <strong>${formatCOP(metrics.monthlyBudgetRemaining)} COP</strong></span></div>
+        <div class="flex items-center justify-between gap-3 mt-3 text-sm"><span class="text-slate-600">Egresos: <strong class="text-[#0b1c30]">${formatCOP(metrics.monthlyBudgetSpent)} COP</strong></span><span class="text-right text-[#006c49]">Restante: <strong>${formatCOP(metrics.monthlyBudgetRemaining)} COP</strong></span></div>
       </div>
 
       ${pending.length ? `
@@ -1085,11 +1087,30 @@ function renderDashboard() {
   }
   const tipScroller = document.getElementById('financial-tips-scroll');
   if (tipScroller && tips.length) {
+    const tipCards = Array.from(tipScroller.querySelectorAll('.financial-tip-card'));
+    const syncTipHeight = (index = state.activeTipIndex) => {
+      const activeCard = tipCards[index] || tipCards[0];
+      if (!activeCard) return;
+      tipScroller.style.height = `${activeCard.offsetHeight}px`;
+    };
+
+    const syncTipFromScroll = () => {
+      const nextIndex = Math.max(0, Math.min(tips.length - 1, Math.round(tipScroller.scrollLeft / Math.max(tipScroller.clientWidth, 1))));
+      state.activeTipIndex = nextIndex;
+      syncTipHeight(nextIndex);
+    };
+
     const scrollToTip = (offset) => {
       const nextIndex = (state.activeTipIndex + offset + tips.length) % tips.length;
       state.activeTipIndex = nextIndex;
+      syncTipHeight(nextIndex);
       tipScroller.scrollTo({ left: nextIndex * tipScroller.clientWidth, behavior: 'smooth' });
     };
+
+    tipScroller.addEventListener('scroll', syncTipFromScroll, { passive: true });
+    syncTipHeight();
+    window.setTimeout(() => syncTipHeight(), 0);
+
     tipScroller.querySelectorAll('[data-tip-direction]').forEach((button) => {
       button.onclick = () => scrollToTip(Number(button.dataset.tipDirection) || 1);
     });
@@ -1109,7 +1130,7 @@ function renderDashboard() {
   }
   document.getElementById('btn-toggle-hide-balance')?.addEventListener('click', () => { state.hideBalance = !state.hideBalance; renderDashboard(); });
   document.getElementById('hero-cash-display')?.addEventListener('click', openCashDetailModal);
-  document.getElementById('dash-pill-ingresos')?.addEventListener('click', () => switchTab('ingresos'));
+  document.getElementById('dash-pill-ingresos')?.addEventListener('click', () => switchTab('gastos'));
   document.getElementById('dash-pill-gastado')?.addEventListener('click', () => switchTab('gastos'));
   document.getElementById('dash-pill-fijos')?.addEventListener('click', () => switchTab('obligaciones'));
   document.getElementById('btn-quick-gasto')?.addEventListener('click', () => openQuickAddModal('gasto'));
@@ -1239,7 +1260,7 @@ function renderPastMonthSummaryView(monthKey) {
           </div>
 
           <!-- 4 Core Financial Metrics -->
-          <div class="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+          <div class="grid grid-cols-2 md:grid-cols-4 gap-2.5">
             <div class="p-3 rounded-2xl bg-white/5 border border-white/10 flex flex-col justify-between">
               <div class="flex items-center justify-between text-slate-300">
                 <span class="text-[11px] font-medium">Ingresos Totales</span>
@@ -1718,14 +1739,16 @@ function renderIncomes() {
 }
 
 // -------------------------------------------------------------
-// VIEW 3: GASTOS
+// VIEW 3: REGISTROS
 // -------------------------------------------------------------
 function renderExpenses() {
-  // The expenses module is a monthly view in the reference design. Historical
-  // transactions are available through the month selector on Inicio/search,
-  // but must not inflate the current month's totals here.
-  const expenseTxs = state.transactions.filter((t) => t.type === 'gasto' && t.date?.startsWith(state.selectedMonth));
+  // Expenses and incomes share one monthly history. Fixed recurring expenses
+  // remain isolated in the Fijos module.
+  const monthlyTxs = state.transactions.filter((t) => t.date?.startsWith(state.selectedMonth));
+  const expenseTxs = monthlyTxs.filter((t) => t.type === 'gasto');
+  const incomeTxs = monthlyTxs.filter((t) => t.type === 'ingreso');
   const totalExpenses = expenseTxs.reduce((sum, t) => sum + t.amount, 0);
+  const totalIncome = incomeTxs.reduce((sum, t) => sum + t.amount, 0);
 
   // Compute category spent map
   const categorySpentMap = {};
@@ -1750,10 +1773,14 @@ function renderExpenses() {
   );
 
   // Filtered transactions
+  const typeFilteredTxs =
+    state.filterRecordsType === 'all'
+      ? monthlyTxs
+      : monthlyTxs.filter((t) => t.type === state.filterRecordsType);
   const filteredTxs =
     state.filterExpensesCategory === 'Todos'
-      ? expenseTxs
-      : expenseTxs.filter((t) => t.category === state.filterExpensesCategory);
+      ? typeFilteredTxs
+      : typeFilteredTxs.filter((t) => t.category === state.filterExpensesCategory);
 
   // Date grouping
   const today = getTodayISODate();
@@ -1768,7 +1795,16 @@ function renderExpenses() {
     groupedTxs[label].push(tx);
   });
 
-  const categoriesList = ['Todos', 'Alimentación', 'Transporte', 'Compras', 'Servicios', 'Salud', 'Entretenimiento', 'Educación', 'Otros'];
+  const expenseCategoriesList = ['Alimentación', 'Transporte', 'Compras', 'Servicios', 'Salud', 'Entretenimiento', 'Educación', 'Otros'];
+  const incomeCategoriesList = ['Nómina', 'Honorarios', 'Negocio', 'Inversión', 'Otros'];
+  const categoriesList = [
+    'Todos',
+    ...(state.filterRecordsType === 'gasto'
+      ? expenseCategoriesList
+      : state.filterRecordsType === 'ingreso'
+      ? incomeCategoriesList
+      : [...new Set([...expenseCategoriesList, ...incomeCategoriesList])]),
+  ];
 
   const metrics = computeMetrics();
 
@@ -1779,7 +1815,7 @@ function renderExpenses() {
         <div class="flex items-center justify-between">
           <div class="inline-flex items-center gap-1.5 bg-slate-100 px-3 py-1.5 rounded-full text-xs font-semibold text-slate-700">
             ${getIconSvg('calendar', 'w-3.5 h-3.5 text-[#0058bc]')}
-             <span>Gastos de ${formatMonthKeyToLabel(state.selectedMonth)}</span>
+             <span>Registros de ${formatMonthKeyToLabel(state.selectedMonth)}</span>
           </div>
           ${
             metrics.monthlyBudgetLimit > 0
@@ -1803,37 +1839,33 @@ function renderExpenses() {
           `
               : `
             <div class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-600 text-xs font-semibold">
-              <span>${expenseTxs.length} registros</span>
+              <span>${monthlyTxs.length} registros</span>
             </div>
           `
           }
         </div>
 
-        <div class="flex flex-col gap-0.5">
-          <span class="text-xs text-slate-500 font-medium">Total desembolsado en el mes</span>
-          <div class="flex items-baseline gap-1.5">
-            <span class="text-3xl sm:text-4xl font-bold tracking-tight text-[#0b1c30] tabular-nums">
-              ${formatCOP(totalExpenses)}
-            </span>
-            <span class="text-xs font-semibold text-slate-500">COP</span>
+        <div class="flex flex-col gap-2">
+          <span class="text-xs text-slate-500 font-medium">Resumen del mes</span>
+          <div class="grid grid-cols-2 gap-2">
+            <div class="rounded-2xl bg-rose-50 px-3 py-2.5">
+              <span class="block text-[11px] font-semibold text-rose-600">Gastos</span>
+              <span class="block text-lg font-bold text-[#0b1c30] tabular-nums">-${formatCOP(totalExpenses, true)}</span>
+            </div>
+            <div class="rounded-2xl bg-emerald-50 px-3 py-2.5">
+              <span class="block text-[11px] font-semibold text-[#006c49]">Ingresos</span>
+              <span class="block text-lg font-bold text-[#006c49] tabular-nums">+${formatCOP(totalIncome, true)}</span>
+            </div>
           </div>
           <div class="flex items-center gap-1 mt-1 text-slate-500 text-xs">
             ${
               topName
                 ? `<span>Mayor gasto: <strong class="font-semibold text-slate-800">${topName}</strong> (${formatCOP(topAmount, true)} • ${topPercent}%)</span>`
-                : '<span>Sin gastos registrados todavía</span>'
+                : '<span>Aún no hay gastos registrados</span>'
             }
           </div>
         </div>
 
-        <!-- Micro CTA Fast Register -->
-        <button
-          id="btn-expenses-hero-add"
-          class="w-full flex items-center justify-center gap-2 h-12 rounded-full bg-[#0058bc] text-white font-semibold text-xs sm:text-sm shadow-md shadow-[#0058bc]/25 active:scale-[0.98] transition-all cursor-pointer hover:bg-[#004bb0]"
-        >
-          ${getIconSvg('zap', 'w-4 h-4')}
-          <span>Registrar Gasto</span>
-        </button>
       </div>
 
       <!-- Exceeded Category Budgets Alert Box -->
@@ -1915,11 +1947,34 @@ function renderExpenses() {
         </div>
       </div>
 
-      <!-- Filter Horizontal Category Chips -->
-      <div class="flex flex-col w-full gap-1.5 pt-1">
+      <!-- Record filters -->
+      <div class="flex flex-col w-full gap-2 pt-1">
         <span class="text-[11px] font-semibold text-slate-500 uppercase tracking-wider px-1">
-          Filtrar por categoría
+          Filtrar registros
         </span>
+        <div class="flex overflow-x-auto no-scrollbar gap-1.5 py-1">
+          ${[
+            { key: 'all', label: 'Todos', count: monthlyTxs.length },
+            { key: 'gasto', label: 'Gastos', count: expenseTxs.length },
+            { key: 'ingreso', label: 'Ingresos', count: incomeTxs.length },
+          ]
+            .map(
+              (item) => `
+              <button
+                data-type="${item.key}"
+                class="record-type-chip shrink-0 px-3.5 py-1.5 rounded-full text-xs font-semibold whitespace-nowrap transition-all cursor-pointer ${
+                  state.filterRecordsType === item.key
+                    ? 'bg-[#0058bc] text-white shadow-sm'
+                    : 'bg-white text-slate-600 border border-slate-200/80 hover:bg-slate-50'
+                }"
+              >
+                ${item.label} (${item.count})
+              </button>
+            `
+            )
+            .join('')}
+        </div>
+        <span class="text-[11px] text-slate-500 px-1">Por categoría</span>
         <div class="flex overflow-x-auto no-scrollbar gap-1.5 py-1">
           ${categoriesList
             .map((cat) => {
@@ -1939,7 +1994,7 @@ function renderExpenses() {
         </div>
       </div>
 
-      <!-- Expenses Grouped List -->
+      <!-- Records Grouped List -->
       <div class="space-y-4">
         ${
           filteredTxs.length === 0
@@ -1949,31 +2004,35 @@ function renderExpenses() {
               ${getIconSvg('receiptText', 'w-6 h-6')}
             </div>
             <div>
-              <p class="font-bold text-sm text-[#0b1c30]">Sin gastos encontrados</p>
-              <p class="text-xs text-slate-500 mt-1 max-w-xs">No hay gastos para este filtro de categoría.</p>
+              <p class="font-bold text-sm text-[#0b1c30]">Sin registros encontrados</p>
+              <p class="text-xs text-slate-500 mt-1 max-w-xs">No hay movimientos para los filtros seleccionados.</p>
             </div>
-            <button id="btn-expenses-empty-add" class="px-4 py-2 bg-[#0058bc] text-white rounded-full text-xs font-semibold active:scale-95 transition-all cursor-pointer">
-              Registrar gasto
-            </button>
           </div>
         `
             : Object.entries(groupedTxs)
                 .map(([dateLabel, items]) => {
-                  const subtotal = items.reduce((sum, i) => sum + i.amount, 0);
+                  const dayExpenses = items.filter((item) => item.type === 'gasto').reduce((sum, item) => sum + item.amount, 0);
+                  const dayIncome = items.filter((item) => item.type === 'ingreso').reduce((sum, item) => sum + item.amount, 0);
+                  const daySummary = [
+                    dayExpenses > 0 ? `-${formatCOP(dayExpenses, true)}` : '',
+                    dayIncome > 0 ? `+${formatCOP(dayIncome, true)}` : '',
+                  ]
+                    .filter(Boolean)
+                    .join(' • ');
                   return `
                 <div class="flex flex-col gap-1.5">
                   <div class="flex items-center justify-between px-2 text-xs font-semibold text-slate-500">
                     <span>${dateLabel}</span>
-                    <span class="tabular-nums font-bold text-slate-700">-${formatCOP(subtotal)}</span>
+                    <span class="tabular-nums font-bold text-slate-700">${daySummary}</span>
                   </div>
 
                   <div class="bg-white rounded-3xl shadow-sm border border-slate-200/60 overflow-hidden divide-y divide-slate-100">
                     ${items
                       .map(
                         (tx) => `
-                      <div data-tx-id="${tx.id}" class="expense-row-item flex items-center justify-between p-3.5 hover:bg-slate-50 transition-colors cursor-pointer">
+                      <div data-tx-id="${tx.id}" class="record-row-item flex items-center justify-between p-3.5 hover:bg-slate-50 transition-colors cursor-pointer">
                         <div class="flex items-center gap-3 min-w-0">
-                          <div class="w-10 h-10 rounded-2xl bg-slate-100 flex items-center justify-center shrink-0">
+                          <div class="w-10 h-10 rounded-2xl ${tx.type === 'ingreso' ? 'bg-emerald-50 text-[#006c49]' : 'bg-slate-100 text-slate-600'} flex items-center justify-center shrink-0">
                             ${getCategoryIconSvg(tx.category)}
                           </div>
                           <div class="flex flex-col min-w-0">
@@ -1982,8 +2041,8 @@ function renderExpenses() {
                           </div>
                         </div>
                         <div class="flex items-center gap-2 shrink-0">
-                          <span class="text-xs sm:text-sm font-bold text-[#0b1c30] tabular-nums">
-                            -${formatCOP(tx.amount)}
+                          <span class="text-xs sm:text-sm font-bold ${tx.type === 'ingreso' ? 'text-[#006c49]' : 'text-[#0b1c30]'} tabular-nums">
+                            ${tx.type === 'ingreso' ? '+' : '-'}${formatCOP(tx.amount)}
                           </span>
                           ${getIconSvg('chevronRight', 'w-4 h-4 text-slate-300')}
                         </div>
@@ -2001,10 +2060,13 @@ function renderExpenses() {
     </div>
   `;
 
-  const btnHeroAdd = document.getElementById('btn-expenses-hero-add');
-  const btnEmptyAdd = document.getElementById('btn-expenses-empty-add');
-  if (btnHeroAdd) btnHeroAdd.onclick = () => openQuickAddModal('gasto');
-  if (btnEmptyAdd) btnEmptyAdd.onclick = () => openQuickAddModal('gasto');
+  DOM.tabGastos.querySelectorAll('.record-type-chip').forEach((btn) => {
+    btn.onclick = () => {
+      state.filterRecordsType = btn.dataset.type;
+      state.filterExpensesCategory = 'Todos';
+      renderExpenses();
+    };
+  });
 
   DOM.tabGastos.querySelectorAll('.expense-cat-chip').forEach((btn) => {
     btn.onclick = () => {
@@ -2013,7 +2075,7 @@ function renderExpenses() {
     };
   });
 
-  DOM.tabGastos.querySelectorAll('.expense-row-item').forEach((row) => {
+  DOM.tabGastos.querySelectorAll('.record-row-item').forEach((row) => {
     row.onclick = () => {
       const tx = state.transactions.find((t) => t.id === row.dataset.txId);
       if (tx) openEditTransactionModal(tx);
@@ -3169,11 +3231,12 @@ function formatQuickAddDateLabel(dateISO) {
 
 function openQuickAddModal(type = 'gasto') {
   state.quickAdd.isOpen = true;
+  document.documentElement.classList.add('quick-add-open');
+  document.body.classList.add('quick-add-open');
   state.quickAdd.type = type;
   state.quickAdd.rawValue = '0';
   state.quickAdd.category = type === 'ingreso' ? 'Nómina' : 'Alimentación';
   state.quickAdd.description = '';
-  state.quickAdd.isRecurrent = false;
   state.quickAdd.date = getTodayISODate();
 
   DOM.modalQuickAdd.classList.remove('hidden');
@@ -3181,7 +3244,7 @@ function openQuickAddModal(type = 'gasto') {
 }
 
 function renderQuickAddModalContent() {
-  const { type, rawValue, category, description, isRecurrent, date } = state.quickAdd;
+  const { type, rawValue, category, description, date } = state.quickAdd;
   const numVal = parseInt(rawValue, 10) || 0;
 
   const expenseCategories = [
@@ -3206,39 +3269,38 @@ function renderQuickAddModalContent() {
   const categories = type === 'ingreso' ? incomeCategories : expenseCategories;
 
   DOM.modalQuickAdd.innerHTML = `
-    <div class="quick-add-page w-full max-w-[460px] min-h-screen bg-[#f8f9ff] overflow-y-auto px-4 pt-5 pb-6">
-      <div class="flex items-center justify-between mb-5">
+    <div class="quick-add-page w-full max-w-[460px] h-[100dvh] min-h-0 bg-[#f8f9ff] overflow-y-auto no-scrollbar px-3 sm:px-4 pt-3 sm:pt-5 pb-6">
+      <div class="flex items-center justify-between mb-4 sm:mb-5">
         <button id="qa-close-btn" aria-label="Volver" class="w-9 h-9 flex items-center justify-center text-[#0058bc] cursor-pointer">${getIconSvg('arrowLeft', 'w-7 h-7')}</button>
         <div class="flex items-center gap-2"><img src="assets/Logo.png" alt="MiPlata" class="w-10 h-10 rounded-xl" /><h1 class="text-xl font-semibold">Nuevo Registro</h1></div>
         ${renderAvatarHtml(state.currentUser?.name, state.currentUser?.avatarUrl, 'sm')}
       </div>
-      <div class="h-1.5 w-16 rounded-full bg-[#dce8ff] mx-auto mb-4"></div>
+      <div class="h-1.5 w-12 rounded-full bg-[#dce8ff] mx-auto mb-3 sm:mb-4"></div>
 
-      <div class="flex items-center bg-[#dce8ff] p-1 rounded-full mb-6">
-        <button id="qa-type-gasto" class="flex-1 py-3 rounded-full text-base font-semibold transition-all cursor-pointer ${type === 'gasto' ? 'bg-white text-[#0b1c30] shadow-sm' : 'text-slate-600'}">Gasto</button>
-        <button id="qa-type-ingreso" class="flex-1 py-3 rounded-full text-base font-semibold transition-all cursor-pointer ${type === 'ingreso' ? 'bg-white text-[#0b1c30] shadow-sm' : 'text-slate-600'}">Ingreso</button>
+      <div class="flex items-center bg-[#dce8ff] p-1 rounded-full mb-4 sm:mb-6">
+        <button id="qa-type-gasto" class="flex-1 py-2.5 sm:py-3 rounded-full text-sm sm:text-base font-semibold transition-all cursor-pointer ${type === 'gasto' ? 'bg-white text-[#0b1c30] shadow-sm' : 'text-slate-600'}">Gasto</button>
+        <button id="qa-type-ingreso" class="flex-1 py-2.5 sm:py-3 rounded-full text-sm sm:text-base font-semibold transition-all cursor-pointer ${type === 'ingreso' ? 'bg-white text-[#0b1c30] shadow-sm' : 'text-slate-600'}">Ingreso</button>
       </div>
 
-      <div class="text-center mb-5"><div class="flex items-baseline justify-center gap-1"><span class="text-5xl font-extrabold text-[#0b1c30] tabular-nums"><span class="text-slate-300">$</span>${formatCOP(numVal).replace('$', '')}</span><span class="text-xl font-medium text-slate-500">COP</span></div><p class="mt-2 text-sm font-semibold text-[#0058bc]"><span class="inline-block w-3 h-3 rounded-full bg-[#006c49] mr-1"></span>${type === 'ingreso' ? 'Registrando ingreso inmediato' : 'Registrando egreso inmediato'}</p></div>
+      <div class="text-center mb-4 sm:mb-5"><div class="flex items-baseline justify-center gap-1"><span class="text-4xl sm:text-5xl font-extrabold text-[#0b1c30] tabular-nums"><span class="text-slate-300">$</span>${formatCOP(numVal).replace('$', '')}</span><span class="text-base sm:text-xl font-medium text-slate-500">COP</span></div><p class="mt-2 text-xs sm:text-sm font-semibold text-[#0058bc]"><span class="inline-block w-3 h-3 rounded-full bg-[#006c49] mr-1"></span>${type === 'ingreso' ? 'Registrando ingreso inmediato' : 'Registrando egreso inmediato'}</p></div>
 
-      <div class="flex items-center justify-between mb-3"><h2 class="text-lg font-semibold uppercase tracking-wide text-slate-600">Categoría</h2><span class="text-lg font-semibold text-[#0058bc]">${category}</span></div>
-      <div id="qa-categories-scroll" class="qa-categories-scroll flex gap-3 overflow-x-auto no-scrollbar pb-2 mb-5" role="listbox" aria-label="Categorías de ${type === 'ingreso' ? 'ingreso' : 'gasto'}">
-        ${categories.map((c) => `<button type="button" data-cat="${c.name}" role="option" aria-selected="${category === c.name}" class="qa-cat-btn shrink-0 w-[84px] flex flex-col items-center gap-2 cursor-pointer"><span class="w-[72px] h-[72px] rounded-3xl flex items-center justify-center ${category === c.name ? 'bg-[#0058bc] text-white shadow-md' : 'bg-[#dce8ff] text-slate-600'}">${getIconSvg(c.icon, 'w-8 h-8')}</span><span class="text-sm whitespace-nowrap ${category === c.name ? 'text-[#0058bc] font-semibold' : 'text-slate-700'}">${c.label}</span></button>`).join('')}
+      <div class="flex items-center justify-between mb-2.5 sm:mb-3"><h2 class="text-base sm:text-lg font-semibold uppercase tracking-wide text-slate-600">Categoría</h2><span class="text-base sm:text-lg font-semibold text-[#0058bc]">${category}</span></div>
+      <div id="qa-categories-scroll" class="qa-categories-scroll flex gap-2.5 sm:gap-3 overflow-x-auto no-scrollbar pb-1.5 sm:pb-2 mb-4 sm:mb-5" role="listbox" aria-label="Categorías de ${type === 'ingreso' ? 'ingreso' : 'gasto'}">
+        ${categories.map((c) => `<button type="button" data-cat="${c.name}" role="option" aria-selected="${category === c.name}" class="qa-cat-btn shrink-0 w-[68px] sm:w-[76px] flex flex-col items-center gap-1.5 sm:gap-2 cursor-pointer"><span class="w-[60px] h-[60px] sm:w-[68px] sm:h-[68px] rounded-3xl flex items-center justify-center ${category === c.name ? 'bg-[#0058bc] text-white shadow-md' : 'bg-[#dce8ff] text-slate-600'}">${getIconSvg(c.icon, 'w-6 h-6 sm:w-7 sm:h-7')}</span><span class="text-[11px] sm:text-sm whitespace-nowrap ${category === c.name ? 'text-[#0058bc] font-semibold' : 'text-slate-700'}">${c.label}</span></button>`).join('')}
       </div>
 
-      <div class="rounded-3xl bg-white p-4 shadow-sm border border-slate-100 mb-6">
+      <div class="rounded-3xl bg-white p-3.5 sm:p-4 shadow-sm border border-slate-100 mb-4 sm:mb-6">
         <div class="flex items-center gap-3"><span class="w-10 h-10 rounded-full bg-[#dce8ff] text-slate-600 flex items-center justify-center">${getIconSvg('fileText', 'w-5 h-5')}</span><input id="qa-description-input" type="text" placeholder="${type === 'ingreso' ? 'Concepto del ingreso' : 'Café y empanada Juan Valdez'}" value="${description}" class="flex-1 text-lg bg-transparent focus:outline-none" /></div>
         <div class="flex items-center justify-between mt-5 pt-4 border-t border-slate-100"><div class="flex items-center gap-3"><span class="w-10 h-10 rounded-full bg-[#dce8ff] text-slate-600 flex items-center justify-center">${getIconSvg('calendar', 'w-5 h-5')}</span><div><p class="text-sm font-semibold text-slate-500">Fecha</p><p class="text-base font-semibold">${formatQuickAddDateLabel(date)}</p></div></div><div class="relative"><button id="qa-change-date-btn" type="button" class="rounded-full bg-[#dce8ff] px-3 py-2 text-sm font-semibold text-[#0058bc] cursor-pointer">Cambiar</button><input id="qa-date-input" type="date" value="${date}" aria-label="Cambiar fecha del registro" class="absolute inset-0 h-full w-full opacity-0 pointer-events-none" /></div></div>
-        ${type === 'gasto' ? `<div class="flex items-center justify-between mt-4 pt-4 border-t border-slate-100"><span class="flex items-center gap-3"><span class="w-10 h-10 rounded-full bg-[#dce8ff] text-slate-600 flex items-center justify-center">${getIconSvg('repeat', 'w-5 h-5')}</span><span><span class="block text-sm font-semibold text-slate-500">Gasto recurrente</span><span class="block text-base">Fijo cada mes</span></span></span><button id="qa-recurrent-toggle" type="button" role="switch" aria-checked="${isRecurrent}" aria-label="Gasto recurrente" class="w-12 h-7 rounded-full p-1 transition-colors cursor-pointer ${isRecurrent ? 'bg-[#0058bc]' : 'bg-[#dce8ff]'}"><span class="block w-5 h-5 rounded-full bg-white shadow-sm transition-transform ${isRecurrent ? 'translate-x-5' : 'translate-x-0'}"></span></button></div>` : ''}
       </div>
 
-      <div class="keypad-grid gap-3 mb-6">
-        <button data-key="1" class="keypad-btn bg-white border-0 shadow-sm h-[72px] rounded-full">1</button><button data-key="2" class="keypad-btn bg-white border-0 shadow-sm h-[72px] rounded-full">2</button><button data-key="3" class="keypad-btn bg-white border-0 shadow-sm h-[72px] rounded-full">3</button>
-        <button data-key="4" class="keypad-btn bg-white border-0 shadow-sm h-[72px] rounded-full">4</button><button data-key="5" class="keypad-btn bg-white border-0 shadow-sm h-[72px] rounded-full">5</button><button data-key="6" class="keypad-btn bg-white border-0 shadow-sm h-[72px] rounded-full">6</button>
-        <button data-key="7" class="keypad-btn bg-white border-0 shadow-sm h-[72px] rounded-full">7</button><button data-key="8" class="keypad-btn bg-white border-0 shadow-sm h-[72px] rounded-full">8</button><button data-key="9" class="keypad-btn bg-white border-0 shadow-sm h-[72px] rounded-full">9</button>
-        <button data-key="000" class="keypad-btn bg-[#eef3ff] border-0 text-[#0058bc] h-[72px] rounded-full">+000</button><button data-key="0" class="keypad-btn bg-white border-0 shadow-sm h-[72px] rounded-full">0</button><button data-key="backspace" class="keypad-btn bg-[#eef3ff] border-0 h-[72px] rounded-full">${getIconSvg('deleteKey', 'w-7 h-7')}</button>
+      <div class="keypad-grid gap-2.5 sm:gap-3 mb-5 sm:mb-6">
+        <button data-key="1" class="keypad-btn bg-white border-0 shadow-sm h-16 sm:h-[72px] rounded-full">1</button><button data-key="2" class="keypad-btn bg-white border-0 shadow-sm h-16 sm:h-[72px] rounded-full">2</button><button data-key="3" class="keypad-btn bg-white border-0 shadow-sm h-16 sm:h-[72px] rounded-full">3</button>
+        <button data-key="4" class="keypad-btn bg-white border-0 shadow-sm h-16 sm:h-[72px] rounded-full">4</button><button data-key="5" class="keypad-btn bg-white border-0 shadow-sm h-16 sm:h-[72px] rounded-full">5</button><button data-key="6" class="keypad-btn bg-white border-0 shadow-sm h-16 sm:h-[72px] rounded-full">6</button>
+        <button data-key="7" class="keypad-btn bg-white border-0 shadow-sm h-16 sm:h-[72px] rounded-full">7</button><button data-key="8" class="keypad-btn bg-white border-0 shadow-sm h-16 sm:h-[72px] rounded-full">8</button><button data-key="9" class="keypad-btn bg-white border-0 shadow-sm h-16 sm:h-[72px] rounded-full">9</button>
+        <button data-key="000" class="keypad-btn bg-[#eef3ff] border-0 text-[#0058bc] h-16 sm:h-[72px] rounded-full">+000</button><button data-key="0" class="keypad-btn bg-white border-0 shadow-sm h-16 sm:h-[72px] rounded-full">0</button><button data-key="backspace" class="keypad-btn bg-[#eef3ff] border-0 h-16 sm:h-[72px] rounded-full">${getIconSvg('deleteKey', 'w-7 h-7')}</button>
       </div>
-      <button id="qa-submit-btn" class="w-full h-16 rounded-full ${numVal > 0 ? (type === 'ingreso' ? 'bg-[#006c49]' : 'bg-[#0058bc]') : 'bg-slate-300 pointer-events-none'} text-white font-bold text-xl shadow-md cursor-pointer flex items-center justify-center gap-2">${getIconSvg('checkCircle2', 'w-7 h-7')}<span>Guardar ${type === 'ingreso' ? 'Ingreso' : 'Gasto'}</span></button>
+      <button id="qa-submit-btn" class="w-full h-14 sm:h-16 rounded-full ${numVal > 0 ? (type === 'ingreso' ? 'bg-[#006c49]' : 'bg-[#0058bc]') : 'bg-slate-300 pointer-events-none'} text-white font-bold text-lg sm:text-xl shadow-md cursor-pointer flex items-center justify-center gap-2">${getIconSvg('checkCircle2', 'w-6 h-6 sm:w-7 sm:h-7')}<span>Guardar ${type === 'ingreso' ? 'Ingreso' : 'Gasto'}</span></button>
     </div>
   `;
 
@@ -3256,6 +3318,8 @@ function renderQuickAddModalContent() {
   document.getElementById('qa-close-btn').onclick = () => {
     DOM.modalQuickAdd.classList.add('hidden');
     state.quickAdd.isOpen = false;
+    document.documentElement.classList.remove('quick-add-open');
+    document.body.classList.remove('quick-add-open');
   };
 
   DOM.modalQuickAdd.querySelectorAll('.qa-cat-btn').forEach((btn) => {
@@ -3287,14 +3351,6 @@ function renderQuickAddModalContent() {
         state.quickAdd.date = e.target.value;
         renderQuickAddModalContent();
       }
-    };
-  }
-
-  const recurrentToggle = document.getElementById('qa-recurrent-toggle');
-  if (recurrentToggle) {
-    recurrentToggle.onclick = () => {
-      state.quickAdd.isRecurrent = !state.quickAdd.isRecurrent;
-      renderQuickAddModalContent();
     };
   }
 
@@ -3340,27 +3396,16 @@ function renderQuickAddModalContent() {
         date: state.quickAdd.date,
         time: getCurrentTimeString(),
         accountMethod: state.quickAdd.type === 'ingreso' ? 'Bancolombia' : 'Bancolombia Débito',
-        isRecurring: state.quickAdd.isRecurrent,
+        isRecurring: false,
       };
 
       await api.addTransaction(tx);
 
-      // If recurrent was checked, also register fixed obligation
-      if (state.quickAdd.isRecurrent && state.quickAdd.type === 'gasto') {
-        const todayDay = new Date().getDate();
-        await api.addFixedObligation({
-          name: desc,
-          amount,
-          dueDay: todayDay,
-          category: normalizeFixedObligationCategory(state.quickAdd.category),
-          status: 'pending',
-          notes: `Vence Día ${todayDay} del mes`,
-        });
-      }
-
       await refreshAllData();
       DOM.modalQuickAdd.classList.add('hidden');
       state.quickAdd.isOpen = false;
+      document.documentElement.classList.remove('quick-add-open');
+      document.body.classList.remove('quick-add-open');
       renderActiveView();
       showToast(`${state.quickAdd.type === 'ingreso' ? 'Ingreso' : 'Gasto'} de ${formatCOP(amount)} guardado`);
     };
@@ -4205,6 +4250,8 @@ function setupKeyboardListeners() {
       if (e.key === 'Escape') {
         DOM.modalQuickAdd.classList.add('hidden');
         state.quickAdd.isOpen = false;
+        document.documentElement.classList.remove('quick-add-open');
+        document.body.classList.remove('quick-add-open');
       }
       return;
     }
@@ -4228,6 +4275,8 @@ function setupKeyboardListeners() {
     } else if (e.key === 'Escape') {
       DOM.modalQuickAdd.classList.add('hidden');
       state.quickAdd.isOpen = false;
+      document.documentElement.classList.remove('quick-add-open');
+      document.body.classList.remove('quick-add-open');
     } else if (e.key === 'Enter') {
       e.preventDefault();
       const submitBtn = document.getElementById('qa-submit-btn');
