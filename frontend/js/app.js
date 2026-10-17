@@ -2994,10 +2994,9 @@ function renderAuth() {
     <div class="max-w-md w-full flex flex-col gap-5 animate-in fade-in duration-300">
       <!-- Brand Header with Official Logo & Imagotipo -->
       <div class="flex flex-col items-center text-center gap-2">
-        <div class="p-2 rounded-3xl bg-white shadow-sm border border-slate-100">
-          ${getLogoIcon('w-16 h-16 sm:w-20 sm:h-20 object-contain drop-shadow-sm')}
+        <div class="px-5 py-2.5 rounded-3xl bg-white border border-[#dce8ff] shadow-[0_8px_24px_rgba(0,88,188,0.12)]">
+          ${getImagotipoHorizontal('h-11 sm:h-12 w-auto object-contain drop-shadow-sm')}
         </div>
-        ${getImagotipoHorizontal('h-9 sm:h-10 w-auto object-contain')}
         <p class="text-sm font-semibold text-[#0058bc] tracking-wide mt-1">
           Tu dinero claro, tus metas cerca.
         </p>
@@ -3100,7 +3099,7 @@ function renderAuth() {
             class="w-full py-2.5 px-4 rounded-2xl bg-[#eff4ff] hover:bg-blue-100 text-[#0058bc] text-xs font-bold flex items-center justify-center gap-2 transition-all active:scale-95 cursor-pointer"
           >
             ${getIconSvg('sparkles', 'w-4 h-4 text-[#0058bc]')}
-            <span>Entrar con cuenta de demostración (Camila Restrepo)</span>
+            <span>Entrar con cuenta de demostración</span>
           </button>
         </div>
       </div>
