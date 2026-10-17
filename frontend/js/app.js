@@ -2534,7 +2534,7 @@ function renderGoalsLegacy() {
                     <p class="text-xs text-slate-500 mt-0.5 tabular-nums">
                       ${formatCOP(goal.currentAmount)} / ${formatCOP(goal.targetAmount)}
                     </p>
-                    ${goal.deadline ? `<p class="text-[11px] text-slate-400 mt-0.5">Fecha: ${goal.deadline}</p>` : ''}
+                    ${goal.deadline ? `<p class="text-[11px] text-slate-400 mt-0.5">Fecha: ${formatGoalDeadline(goal.deadline)}</p>` : ''}
                   </div>
 
                   <div class="w-full bg-slate-100 rounded-full h-2 overflow-hidden">
@@ -2662,7 +2662,7 @@ function renderGoals() {
                 <div class="flex items-start justify-between gap-3">
                 <div class="flex items-center gap-3 min-w-0">
                   <div class="${goal.imageUrl ? 'w-16 h-16 flex items-center justify-center shrink-0 overflow-hidden' : 'w-16 h-16 rounded-2xl flex items-center justify-center shrink-0'}" style="${goal.imageUrl ? '' : `background:${goal.color}20;color:${goal.color}`}" >${renderGoalMedia(goal, 'w-full h-full object-contain', 'w-7 h-7')}</div>
-                  <div class="min-w-0"><h3 class="font-semibold text-base truncate">${goal.name}</h3><p class="text-xs text-slate-500 mt-0.5">${goal.deadline ? `Límite: ${goal.deadline}` : 'Sin fecha límite'}</p></div>
+                  <div class="min-w-0"><h3 class="font-semibold text-base truncate">${goal.name}</h3><p class="text-xs text-slate-500 mt-0.5">${goal.deadline ? `Límite: ${formatGoalDeadline(goal.deadline)}` : 'Sin fecha límite'}</p></div>
                 </div>
                 <span class="shrink-0 rounded-full bg-[#eef3ff] px-3 py-1 text-xs font-bold text-[#0058bc]">${percent}%</span>
               </div>
@@ -3770,6 +3770,7 @@ function normalizeGoalDeadline(value) {
   const raw = String(value || '').trim();
   if (!raw) return null;
   if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+  if (/^\d{4}-\d{2}$/.test(raw)) return `${raw}-01`;
 
   const normalized = raw.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
   const monthYear = normalized.match(/^([a-z]+)\s+(\d{4})$/);
@@ -3791,12 +3792,20 @@ function normalizeGoalDeadline(value) {
   return null;
 }
 
+function formatGoalDeadline(value) {
+  const normalized = normalizeGoalDeadline(value);
+  if (!normalized) return String(value || '');
+  const [, year, month] = normalized.match(/^(\d{4})-(\d{2})-/) || [];
+  return year && month ? `${SPANISH_MONTHS[Number(month) - 1] || month} ${year}` : String(value || '');
+}
+
 function openAddOrEditGoalModal(goal = null) {
   DOM.modalSavingsGoal.classList.remove('hidden');
 
   const isEdit = Boolean(goal);
   let customGoalImage = isEdit ? goal.imageUrl || '' : '';
   let selectedIcon = isEdit ? goal.icon || 'security' : 'security';
+  const currentDeadlineMonth = isEdit ? (normalizeGoalDeadline(goal.deadline) || '').slice(0, 7) : '';
   const goalIconOptions = [
     { value: 'security', icon: 'shield' },
     { value: 'laptop', icon: 'laptop' },
@@ -3833,7 +3842,8 @@ function openAddOrEditGoalModal(goal = null) {
 
         <div>
           <label class="block text-[15px] font-medium text-[#6b7d98]">Fecha límite opcional</label>
-          <input id="goal-input-deadline" type="text" placeholder="ej. Diciembre 2026" value="${isEdit ? goal.deadline || '' : ''}" class="w-full h-12 mt-1.5 px-4 rounded-2xl border border-[#dbe3ed] bg-[#f7f9fc] text-[15px] font-medium text-[#25364d] focus:outline-none focus:ring-2 focus:ring-[#0058bc]/30" />
+          <input id="goal-input-deadline" type="month" value="${currentDeadlineMonth}" aria-label="Selecciona el mes y año límite" class="w-full h-12 mt-1.5 px-4 rounded-2xl border border-[#dbe3ed] bg-[#f7f9fc] text-[15px] font-medium text-[#25364d] focus:outline-none focus:ring-2 focus:ring-[#0058bc]/30" />
+          <p class="text-xs text-slate-400 mt-1">Selecciona el mes y el año en que quieres cumplirla.</p>
         </div>
 
         <div>
