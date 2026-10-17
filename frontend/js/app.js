@@ -400,8 +400,8 @@ export function renderApp() {
 function renderHeader() {
   DOM.headerBrand.innerHTML = getImagotipoHorizontal('h-7 w-auto object-contain select-none');
 
-  DOM.headerSearchBtn.innerHTML = getIconSvg(state.activeTab === 'perfil' ? 'settings' : 'search', 'w-5 h-5 text-slate-600');
-  DOM.headerSearchBtn.setAttribute('aria-label', state.activeTab === 'perfil' ? 'Configuración' : 'Buscar movimientos');
+  DOM.headerSearchBtn.innerHTML = getIconSvg('search', 'w-5 h-5 text-slate-600');
+  DOM.headerSearchBtn.setAttribute('aria-label', 'Buscar movimientos');
 
   const isProfileActive = state.activeTab === 'perfil';
   DOM.headerProfileBtn.className = `flex items-center justify-center rounded-full transition-all group p-0.5 cursor-pointer ${
