@@ -3805,7 +3805,12 @@ function openAddOrEditGoalModal(goal = null) {
   const isEdit = Boolean(goal);
   let customGoalImage = isEdit ? goal.imageUrl || '' : '';
   let selectedIcon = isEdit ? goal.icon || 'security' : 'security';
-  const currentDeadlineMonth = isEdit ? (normalizeGoalDeadline(goal.deadline) || '').slice(0, 7) : '';
+  const normalizedCurrentDeadline = isEdit ? normalizeGoalDeadline(goal.deadline) || '' : '';
+  const currentDeadlineMonth = normalizedCurrentDeadline.slice(5, 7);
+  const currentDeadlineYear = normalizedCurrentDeadline.slice(0, 4);
+  const currentYear = new Date().getFullYear();
+  const firstDeadlineYear = Math.min(currentYear - 1, Number(currentDeadlineYear) || currentYear);
+  const lastDeadlineYear = Math.max(currentYear + 10, Number(currentDeadlineYear) || currentYear);
   const goalIconOptions = [
     { value: 'security', icon: 'shield' },
     { value: 'laptop', icon: 'laptop' },
@@ -3819,6 +3824,12 @@ function openAddOrEditGoalModal(goal = null) {
       ${getIconSvg(icon, 'w-5 h-5')}
     </button>
   `).join('');
+  const goalDeadlineMonthOptions = SPANISH_MONTHS.map((month, index) => `
+    <option value="${String(index + 1).padStart(2, '0')}" ${currentDeadlineMonth === String(index + 1).padStart(2, '0') ? 'selected' : ''}>${month}</option>
+  `).join('');
+  const goalDeadlineYearOptions = Array.from({ length: lastDeadlineYear - firstDeadlineYear + 1 }, (_, index) => firstDeadlineYear + index)
+    .map((year) => `<option value="${year}" ${currentDeadlineYear === String(year) ? 'selected' : ''}>${year}</option>`)
+    .join('');
 
   DOM.modalSavingsGoal.innerHTML = `
     <div class="bg-white rounded-[26px] p-6 max-w-md w-full min-w-0 max-h-[calc(100vh-24px)] overflow-y-auto overflow-x-hidden no-scrollbar shadow-2xl border border-slate-100">
@@ -3842,7 +3853,17 @@ function openAddOrEditGoalModal(goal = null) {
 
         <div>
           <label class="block text-[15px] font-medium text-[#6b7d98]">Fecha límite opcional</label>
-          <input id="goal-input-deadline" type="month" value="${currentDeadlineMonth}" aria-label="Selecciona el mes y año límite" class="w-full h-12 mt-1.5 px-4 rounded-2xl border border-[#dbe3ed] bg-[#f7f9fc] text-[15px] font-medium text-[#25364d] focus:outline-none focus:ring-2 focus:ring-[#0058bc]/30" />
+          <div class="grid grid-cols-2 gap-2 mt-1.5">
+            <select id="goal-input-deadline-month" aria-label="Mes de la fecha límite" class="w-full h-12 px-3 rounded-2xl border border-[#dbe3ed] bg-[#f7f9fc] text-[15px] font-medium text-[#25364d] focus:outline-none focus:ring-2 focus:ring-[#0058bc]/30">
+              <option value="">Mes</option>
+              ${goalDeadlineMonthOptions}
+            </select>
+            <select id="goal-input-deadline-year" aria-label="Año de la fecha límite" class="w-full h-12 px-3 rounded-2xl border border-[#dbe3ed] bg-[#f7f9fc] text-[15px] font-medium text-[#25364d] focus:outline-none focus:ring-2 focus:ring-[#0058bc]/30">
+              <option value="">Año</option>
+              ${goalDeadlineYearOptions}
+            </select>
+          </div>
+          <button type="button" id="goal-clear-deadline" class="text-xs text-[#0058bc] font-semibold mt-1.5 cursor-pointer">Quitar fecha límite</button>
           <p class="text-xs text-slate-400 mt-1">Selecciona el mes y el año en que quieres cumplirla.</p>
         </div>
 
@@ -3920,6 +3941,13 @@ function openAddOrEditGoalModal(goal = null) {
     targetInput.value = numericValue ? numericValue.toLocaleString('es-CO') : '';
   };
 
+  const deadlineMonthInput = document.getElementById('goal-input-deadline-month');
+  const deadlineYearInput = document.getElementById('goal-input-deadline-year');
+  document.getElementById('goal-clear-deadline').onclick = () => {
+    deadlineMonthInput.value = '';
+    deadlineYearInput.value = '';
+  };
+
   DOM.modalSavingsGoal.querySelectorAll('.goal-icon-choice').forEach((button) => {
     button.onclick = () => {
       selectedIcon = button.dataset.goalIcon;
@@ -3934,7 +3962,11 @@ function openAddOrEditGoalModal(goal = null) {
     e.preventDefault();
     const name = document.getElementById('goal-input-name').value.trim();
     const targetAmount = parseRawNumber(targetInput.value);
-    const deadlineText = document.getElementById('goal-input-deadline').value.trim();
+    const selectedDeadlineMonth = deadlineMonthInput.value;
+    const selectedDeadlineYear = deadlineYearInput.value;
+    const hasDeadlineMonth = Boolean(selectedDeadlineMonth);
+    const hasDeadlineYear = Boolean(selectedDeadlineYear);
+    const deadlineText = hasDeadlineMonth && hasDeadlineYear ? `${selectedDeadlineYear}-${selectedDeadlineMonth}` : '';
     const deadline = normalizeGoalDeadline(deadlineText);
     const icon = selectedIcon;
 
@@ -3942,8 +3974,12 @@ function openAddOrEditGoalModal(goal = null) {
       showToast('Escribe un nombre y un valor objetivo mayor que $0', 'error');
       return;
     }
+    if (hasDeadlineMonth !== hasDeadlineYear) {
+      showToast('Selecciona el mes y el año de la fecha límite', 'error');
+      return;
+    }
     if (deadlineText && !deadline) {
-      showToast('Usa una fecha como “Diciembre 2026” o “31/12/2026”', 'error');
+      showToast('La fecha límite seleccionada no es válida', 'error');
       return;
     }
 
