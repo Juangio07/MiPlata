@@ -3821,7 +3821,7 @@ function openAddOrEditGoalModal(goal = null) {
   `).join('');
 
   DOM.modalSavingsGoal.innerHTML = `
-    <div class="bg-white rounded-[26px] p-6 max-w-md w-full max-h-[calc(100vh-24px)] overflow-y-auto shadow-2xl border border-slate-100">
+    <div class="bg-white rounded-[26px] p-6 max-w-md w-full min-w-0 max-h-[calc(100vh-24px)] overflow-y-auto overflow-x-hidden no-scrollbar shadow-2xl border border-slate-100">
       <div class="flex items-center justify-between mb-4">
         <h3 class="font-bold text-[18px] text-[#0b1c30]">${isEdit ? 'Editar Meta de Ahorro' : 'Nueva Meta de Ahorro'}</h3>
         <button id="goal-modal-close" class="w-9 h-9 rounded-full bg-[#f0f4f9] flex items-center justify-center text-[#6b7d98] cursor-pointer">
@@ -3865,7 +3865,7 @@ function openAddOrEditGoalModal(goal = null) {
 
         <div>
           <label class="block text-[15px] font-medium text-[#6b7d98]">O elige un icono</label>
-          <div class="flex items-center gap-2 mt-2">${goalIconButtons}</div>
+          <div class="flex flex-wrap items-center gap-2 mt-2 max-w-full overflow-x-hidden">${goalIconButtons}</div>
         </div>
 
         <button type="submit" class="w-full h-11 mt-2 rounded-full bg-[#0058bc] text-white font-bold text-sm shadow-md hover:bg-[#004a9f] active:scale-95 transition-all cursor-pointer">
