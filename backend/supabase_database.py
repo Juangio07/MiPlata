@@ -250,12 +250,11 @@ def initialize_registered_user(user_id, name, email, monthly_salary=0, avatar_ur
 
 
 def ensure_demo_data(user_id):
-    """Seed a small, realistic dataset once for the demo account."""
-    existing_transactions = sb.rest_request("transactions", params={"user_id": f"eq.{user_id}", "limit": 1}) or []
+    """Seed a small, realistic dataset for the demo account without duplicates."""
+    existing_transactions = sb.rest_request("transactions", params={"user_id": f"eq.{user_id}"}) or []
     existing_fixed = sb.rest_request("fixed_obligations", params={"user_id": f"eq.{user_id}", "limit": 1}) or []
     existing_goals = sb.rest_request("savings_goals", params={"user_id": f"eq.{user_id}", "limit": 1}) or []
-    if existing_transactions and existing_fixed and existing_goals:
-        return
+    existing_transaction_ids = {row.get("id") for row in existing_transactions}
 
     now = datetime.now()
     month = now.strftime("%Y-%m")
@@ -314,6 +313,185 @@ def ensure_demo_data(user_id):
     ]
     if not existing_transactions:
         sb.rest_request("transactions", method="POST", body=transactions, returning=True)
+
+    previous_month_1 = get_relative_month_key(1)
+    previous_month_2 = get_relative_month_key(2)
+    historical_transactions = [
+        {
+            "id": "demo_tx_previous_1_income_salary",
+            "user_id": user_id,
+            "type": "ingreso",
+            "amount": 2900000,
+            "category": "Nómina",
+            "description": "Nómina primera quincena",
+            "date": f"{previous_month_1}-15",
+            "time": "08:30:00",
+            "account_method": "Bancolombia",
+            "is_recurring": False,
+        },
+        {
+            "id": "demo_tx_previous_1_income_extra",
+            "user_id": user_id,
+            "type": "ingreso",
+            "amount": 650000,
+            "category": "Honorarios",
+            "description": "Proyecto freelance",
+            "date": f"{previous_month_1}-26",
+            "time": "16:00:00",
+            "account_method": "Nequi",
+            "is_recurring": False,
+        },
+        {
+            "id": "demo_tx_previous_1_rent",
+            "user_id": user_id,
+            "type": "gasto",
+            "amount": 1200000,
+            "category": "Vivienda",
+            "description": "Arriendo del apartamento",
+            "date": f"{previous_month_1}-05",
+            "time": "10:00:00",
+            "account_method": "Transferencia Bancaria",
+            "is_recurring": False,
+        },
+        {
+            "id": "demo_tx_previous_1_food",
+            "user_id": user_id,
+            "type": "gasto",
+            "amount": 460000,
+            "category": "Alimentación",
+            "description": "Mercado mensual",
+            "date": f"{previous_month_1}-08",
+            "time": "17:30:00",
+            "account_method": "Tarjeta Débito",
+            "is_recurring": False,
+        },
+        {
+            "id": "demo_tx_previous_1_services",
+            "user_id": user_id,
+            "type": "gasto",
+            "amount": 263000,
+            "category": "Servicios",
+            "description": "Energía, acueducto e internet",
+            "date": f"{previous_month_1}-12",
+            "time": "14:15:00",
+            "account_method": "PSE Bancolombia",
+            "is_recurring": False,
+        },
+        {
+            "id": "demo_tx_previous_1_transport",
+            "user_id": user_id,
+            "type": "gasto",
+            "amount": 215000,
+            "category": "Transporte",
+            "description": "Gasolina y estacionamiento",
+            "date": f"{previous_month_1}-18",
+            "time": "18:30:00",
+            "account_method": "Bancolombia Débito",
+            "is_recurring": False,
+        },
+        {
+            "id": "demo_tx_previous_1_leisure",
+            "user_id": user_id,
+            "type": "gasto",
+            "amount": 180000,
+            "category": "Entretenimiento",
+            "description": "Cine y salida de fin de semana",
+            "date": f"{previous_month_1}-22",
+            "time": "20:45:00",
+            "account_method": "Tarjeta Crédito",
+            "is_recurring": False,
+        },
+        {
+            "id": "demo_tx_previous_2_income_salary",
+            "user_id": user_id,
+            "type": "ingreso",
+            "amount": 2900000,
+            "category": "Nómina",
+            "description": "Nómina mensual",
+            "date": f"{previous_month_2}-15",
+            "time": "08:30:00",
+            "account_method": "Bancolombia",
+            "is_recurring": False,
+        },
+        {
+            "id": "demo_tx_previous_2_income_extra",
+            "user_id": user_id,
+            "type": "ingreso",
+            "amount": 750000,
+            "category": "Honorarios",
+            "description": "Asesoría independiente",
+            "date": f"{previous_month_2}-26",
+            "time": "16:00:00",
+            "account_method": "Nequi",
+            "is_recurring": False,
+        },
+        {
+            "id": "demo_tx_previous_2_rent",
+            "user_id": user_id,
+            "type": "gasto",
+            "amount": 1200000,
+            "category": "Vivienda",
+            "description": "Arriendo del apartamento",
+            "date": f"{previous_month_2}-05",
+            "time": "10:00:00",
+            "account_method": "Transferencia Bancaria",
+            "is_recurring": False,
+        },
+        {
+            "id": "demo_tx_previous_2_food",
+            "user_id": user_id,
+            "type": "gasto",
+            "amount": 680000,
+            "category": "Alimentación",
+            "description": "Mercado y alimentos del hogar",
+            "date": f"{previous_month_2}-10",
+            "time": "18:00:00",
+            "account_method": "Tarjeta Débito",
+            "is_recurring": False,
+        },
+        {
+            "id": "demo_tx_previous_2_services",
+            "user_id": user_id,
+            "type": "gasto",
+            "amount": 285000,
+            "category": "Servicios",
+            "description": "Servicios públicos e internet",
+            "date": f"{previous_month_2}-14",
+            "time": "14:30:00",
+            "account_method": "PSE",
+            "is_recurring": False,
+        },
+        {
+            "id": "demo_tx_previous_2_transport",
+            "user_id": user_id,
+            "type": "gasto",
+            "amount": 245000,
+            "category": "Transporte",
+            "description": "Gasolina y mantenimiento",
+            "date": f"{previous_month_2}-19",
+            "time": "17:15:00",
+            "account_method": "Nequi",
+            "is_recurring": False,
+        },
+        {
+            "id": "demo_tx_previous_2_shopping",
+            "user_id": user_id,
+            "type": "gasto",
+            "amount": 290000,
+            "category": "Compras",
+            "description": "Ropa y artículos para el hogar",
+            "date": f"{previous_month_2}-22",
+            "time": "16:30:00",
+            "account_method": "Tarjeta Crédito",
+            "is_recurring": False,
+        },
+    ]
+    missing_historical = [
+        transaction for transaction in historical_transactions
+        if transaction["id"] not in existing_transaction_ids
+    ]
+    if missing_historical:
+        sb.rest_request("transactions", method="POST", body=missing_historical, returning=True)
 
     fixed = [
         {

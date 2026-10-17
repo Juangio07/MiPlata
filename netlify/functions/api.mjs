@@ -275,10 +275,22 @@ function demoDate(offset) {
   return date.toISOString().slice(0, 10);
 }
 
+function demoMonthKey(offset = 0) {
+  const date = new Date();
+  date.setDate(1);
+  date.setMonth(date.getMonth() - offset);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function demoMonthDate(offset, day) {
+  return `${demoMonthKey(offset)}-${String(day).padStart(2, '0')}`;
+}
+
 async function ensureDemoData(userId) {
-  const transactions = await restRequest('transactions', { params: { user_id: `eq.${userId}`, limit: '1' } });
+  const transactions = await restRequest('transactions', { params: { user_id: `eq.${userId}` } });
   const fixed = await restRequest('fixed_obligations', { params: { user_id: `eq.${userId}`, limit: '1' } });
   const goals = await restRequest('savings_goals', { params: { user_id: `eq.${userId}`, limit: '1' } });
+  const existingTransactionIds = new Set((transactions || []).map((row) => row.id));
 
   if (!transactions?.length) {
     await restRequest('transactions', {
@@ -289,6 +301,27 @@ async function ensureDemoData(userId) {
         { id: 'demo_tx_entertainment', user_id: userId, type: 'gasto', amount: 52000, category: 'Entretenimiento', description: 'Cine y salida', date: demoDate(4), time: '20:10:00', account_method: 'Tarjeta Crédito', is_recurring: false, fixed_obligation_id: null },
       ],
     });
+  }
+
+  const historicalTransactions = [
+    { id: 'demo_tx_previous_1_income_salary', user_id: userId, type: 'ingreso', amount: 2900000, category: 'Nómina', description: 'Nómina primera quincena', date: demoMonthDate(1, 15), time: '08:30:00', account_method: 'Bancolombia', is_recurring: false, fixed_obligation_id: null },
+    { id: 'demo_tx_previous_1_income_extra', user_id: userId, type: 'ingreso', amount: 650000, category: 'Honorarios', description: 'Proyecto freelance', date: demoMonthDate(1, 26), time: '16:00:00', account_method: 'Nequi', is_recurring: false, fixed_obligation_id: null },
+    { id: 'demo_tx_previous_1_rent', user_id: userId, type: 'gasto', amount: 1200000, category: 'Vivienda', description: 'Arriendo del apartamento', date: demoMonthDate(1, 5), time: '10:00:00', account_method: 'Transferencia Bancaria', is_recurring: false, fixed_obligation_id: null },
+    { id: 'demo_tx_previous_1_food', user_id: userId, type: 'gasto', amount: 460000, category: 'Alimentación', description: 'Mercado mensual', date: demoMonthDate(1, 8), time: '17:30:00', account_method: 'Tarjeta Débito', is_recurring: false, fixed_obligation_id: null },
+    { id: 'demo_tx_previous_1_services', user_id: userId, type: 'gasto', amount: 263000, category: 'Servicios', description: 'Energía, acueducto e internet', date: demoMonthDate(1, 12), time: '14:15:00', account_method: 'PSE Bancolombia', is_recurring: false, fixed_obligation_id: null },
+    { id: 'demo_tx_previous_1_transport', user_id: userId, type: 'gasto', amount: 215000, category: 'Transporte', description: 'Gasolina y estacionamiento', date: demoMonthDate(1, 18), time: '18:30:00', account_method: 'Bancolombia Débito', is_recurring: false, fixed_obligation_id: null },
+    { id: 'demo_tx_previous_1_leisure', user_id: userId, type: 'gasto', amount: 180000, category: 'Entretenimiento', description: 'Cine y salida de fin de semana', date: demoMonthDate(1, 22), time: '20:45:00', account_method: 'Tarjeta Crédito', is_recurring: false, fixed_obligation_id: null },
+    { id: 'demo_tx_previous_2_income_salary', user_id: userId, type: 'ingreso', amount: 2900000, category: 'Nómina', description: 'Nómina mensual', date: demoMonthDate(2, 15), time: '08:30:00', account_method: 'Bancolombia', is_recurring: false, fixed_obligation_id: null },
+    { id: 'demo_tx_previous_2_income_extra', user_id: userId, type: 'ingreso', amount: 750000, category: 'Honorarios', description: 'Asesoría independiente', date: demoMonthDate(2, 26), time: '16:00:00', account_method: 'Nequi', is_recurring: false, fixed_obligation_id: null },
+    { id: 'demo_tx_previous_2_rent', user_id: userId, type: 'gasto', amount: 1200000, category: 'Vivienda', description: 'Arriendo del apartamento', date: demoMonthDate(2, 5), time: '10:00:00', account_method: 'Transferencia Bancaria', is_recurring: false, fixed_obligation_id: null },
+    { id: 'demo_tx_previous_2_food', user_id: userId, type: 'gasto', amount: 680000, category: 'Alimentación', description: 'Mercado y alimentos del hogar', date: demoMonthDate(2, 10), time: '18:00:00', account_method: 'Tarjeta Débito', is_recurring: false, fixed_obligation_id: null },
+    { id: 'demo_tx_previous_2_services', user_id: userId, type: 'gasto', amount: 285000, category: 'Servicios', description: 'Servicios públicos e internet', date: demoMonthDate(2, 14), time: '14:30:00', account_method: 'PSE', is_recurring: false, fixed_obligation_id: null },
+    { id: 'demo_tx_previous_2_transport', user_id: userId, type: 'gasto', amount: 245000, category: 'Transporte', description: 'Gasolina y mantenimiento', date: demoMonthDate(2, 19), time: '17:15:00', account_method: 'Nequi', is_recurring: false, fixed_obligation_id: null },
+    { id: 'demo_tx_previous_2_shopping', user_id: userId, type: 'gasto', amount: 290000, category: 'Compras', description: 'Ropa y artículos para el hogar', date: demoMonthDate(2, 22), time: '16:30:00', account_method: 'Tarjeta Crédito', is_recurring: false, fixed_obligation_id: null },
+  ];
+  const missingHistorical = historicalTransactions.filter((transaction) => !existingTransactionIds.has(transaction.id));
+  if (missingHistorical.length) {
+    await restRequest('transactions', { method: 'POST', returning: true, body: missingHistorical });
   }
 
   if (!fixed?.length) {
