@@ -422,9 +422,7 @@ function renderBottomNav() {
   DOM.navItemsContainer.innerHTML = navItems
     .map((item) => {
       const isActive = state.activeTab === item.id || (item.id === 'obligaciones' && state.activeTab === 'fijos');
-      const iconWrapperClass = item.id === 'metas'
-        ? `w-9 h-9 rounded-full flex items-center justify-center transition-all ${isActive ? 'bg-[#dce8ff] text-[#0058bc]' : 'bg-slate-100 text-slate-500'}`
-        : `p-1 rounded-xl transition-all ${isActive ? 'bg-[#0058bc]/10 text-[#0058bc] scale-105' : ''}`;
+      const iconWrapperClass = `p-1 rounded-xl transition-all ${isActive ? 'bg-[#0058bc]/10 text-[#0058bc] scale-105' : ''}`;
       return `
         <button
           id="nav-tab-${item.id}"
