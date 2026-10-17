@@ -2,10 +2,37 @@ import os
 import io
 import csv
 from flask import Flask, request, jsonify, send_from_directory, send_file, make_response
-import database as db
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FRONTEND_DIR = os.path.join(BASE_DIR, "frontend")
+
+
+def _load_local_env():
+    env_path = os.path.join(BASE_DIR, ".env")
+    if not os.path.exists(env_path):
+        return
+    try:
+        with open(env_path, "r", encoding="utf-8") as env_file:
+            for raw_line in env_file:
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                value = value.strip().strip('"').strip("'")
+                if key and key not in os.environ:
+                    os.environ[key] = value
+    except OSError:
+        return
+
+
+_load_local_env()
+SUPABASE_ENABLED = bool(os.environ.get("SUPABASE_URL") and os.environ.get("SUPABASE_SECRET_KEY"))
+if SUPABASE_ENABLED:
+    import supabase_client as sb
+    import supabase_database as db
+else:
+    import database as db
 
 app = Flask(__name__, static_folder=FRONTEND_DIR)
 
@@ -16,14 +43,46 @@ db.init_db()
 def add_cors_headers(response):
     response.headers["Access-Control-Allow-Origin"] = "*"
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-User-Id"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
     return response
 
+
+def get_auth_user_from_req():
+    if not SUPABASE_ENABLED:
+        return None
+    cached = getattr(request, "_miplata_auth_user", None)
+    if cached is not None:
+        return cached
+    authorization = request.headers.get("Authorization", "")
+    if not authorization.startswith("Bearer "):
+        return None
+    token = authorization[7:].strip()
+    if not token:
+        return None
+    try:
+        user = sb.auth_get_user(token)
+    except sb.SupabaseError:
+        user = None
+    request._miplata_auth_user = user
+    return user
+
+
 def get_current_user_id_from_req():
-    user_id = request.headers.get("X-User-Id")
-    if not user_id:
-        user_id = db.get_current_user_id()
-    return user_id
+    if SUPABASE_ENABLED:
+        user = get_auth_user_from_req()
+        return user.get("id") if user else None
+    return db.get_current_user_id()
+
+
+def _session_response(auth_data, profile, message):
+    # Keep the session under one predictable key while also retaining the
+    # top-level fields used by simple clients and older cached builds.
+    session = {
+        key: auth_data.get(key)
+        for key in ("access_token", "refresh_token", "expires_in", "expires_at", "token_type")
+        if auth_data.get(key) is not None
+    }
+    return {"user": profile, "session": session, **session, "message": message}
 
 # --- Static Frontend Serving ---
 @app.route("/")
@@ -41,10 +100,41 @@ def static_files(path):
 # --- Auth & User Endpoints ---
 @app.route("/api/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "app": "MiPlata Python Backend", "version": "1.0.0"})
+    return jsonify({"status": "ok", "app": "MiPlata Python Backend", "version": "1.0.0", "supabase": SUPABASE_ENABLED})
+
+
+@app.route("/api/config", methods=["GET"])
+def public_config():
+    if not SUPABASE_ENABLED:
+        return jsonify({"supabase": False})
+    return jsonify({"supabase": True, **sb.public_config()})
 
 @app.route("/api/auth/demo", methods=["POST"])
 def auth_demo():
+    if SUPABASE_ENABLED:
+        demo_email = "demo@miplata.app"
+        demo_password = "MiPlataDemo2026!"
+        try:
+            try:
+                sb.auth_admin_create_user(demo_email, demo_password, "Cuenta de demostración")
+            except sb.SupabaseError as error:
+                # A second click should reuse the same demo account.
+                if error.status not in (400, 409, 422):
+                    raise
+            auth_data = sb.auth_sign_in(demo_email, demo_password)
+            auth_user = auth_data.get("user") or {}
+            profile = db.initialize_registered_user(
+                auth_user.get("id"),
+                "Cuenta de demostración",
+                demo_email,
+                0,
+                "",
+            )
+            db.ensure_demo_data(auth_user.get("id"))
+            return jsonify(_session_response(auth_data, profile, "Sesión de demostración iniciada"))
+        except sb.SupabaseError as error:
+            return jsonify({"error": str(error)}), 502
+
     db.ensure_demo_user()
     db.set_current_user_id(db.DEMO_USER_ID)
     user = db.get_user_by_id(db.DEMO_USER_ID)
@@ -55,6 +145,25 @@ def auth_login():
     data = request.get_json() or {}
     email = data.get("email", "")
     password = data.get("password")
+
+    if SUPABASE_ENABLED:
+        if not email or not password:
+            return jsonify({"error": "Correo y contraseña son requeridos"}), 400
+        try:
+            auth_data = sb.auth_sign_in(email.strip().lower(), password)
+            auth_user = auth_data.get("user") or {}
+            metadata = auth_user.get("user_metadata") or {}
+            profile = db.ensure_user_defaults(
+                auth_user.get("id"),
+                metadata.get("name") or "MiPlata",
+                auth_user.get("email") or email.strip().lower(),
+                None,
+                metadata.get("avatar_url") or "",
+            )
+            return jsonify(_session_response(auth_data, profile, f"¡Bienvenido de nuevo, {profile['name'].split()[0]}!"))
+        except sb.SupabaseError as error:
+            return jsonify({"error": "Correo o contraseña incorrectos"}), 401 if error.status in (400, 401) else 502
+
     user = db.get_user_by_email(email)
     if user and (not password or user.get("password") == password):
         db.set_current_user_id(user["id"])
@@ -73,6 +182,24 @@ def auth_register():
     if not name:
         return jsonify({"error": "El nombre es requerido"}), 400
 
+    if SUPABASE_ENABLED:
+        try:
+            sb.auth_admin_create_user(email, password, name, avatar_url)
+            auth_data = sb.auth_sign_in(email, password)
+            auth_user = auth_data.get("user") or {}
+            profile = db.initialize_registered_user(
+                auth_user.get("id"), name, email, float(monthly_salary or 0), avatar_url
+            )
+            return jsonify(_session_response(
+                auth_data,
+                profile,
+                f"¡Bienvenido a MiPlata, {name.split()[0]}! Todo listo y limpio en 0 para comenzar.",
+            ))
+        except sb.SupabaseError as error:
+            if error.status in (400, 409, 422):
+                return jsonify({"error": "Ya existe una cuenta con este correo"}), 409
+            return jsonify({"error": str(error)}), 502
+
     existing = db.get_user_by_email(email)
     if existing:
         return jsonify({"error": "Ya existe una cuenta con este correo"}), 409
@@ -82,8 +209,33 @@ def auth_register():
 
 @app.route("/api/auth/logout", methods=["POST"])
 def auth_logout():
-    db.set_current_user_id(None)
+    if not SUPABASE_ENABLED:
+        db.set_current_user_id(None)
     return jsonify({"message": "Sesión cerrada correctamente"})
+
+
+@app.route("/api/auth/refresh", methods=["POST"])
+def auth_refresh():
+    if not SUPABASE_ENABLED:
+        return jsonify({"error": "La renovación de sesión requiere Supabase"}), 400
+    data = request.get_json() or {}
+    refresh_token = data.get("refreshToken")
+    if not refresh_token:
+        return jsonify({"error": "Sesión expirada"}), 401
+    try:
+        auth_data = sb.auth_refresh(refresh_token)
+        auth_user = auth_data.get("user") or {}
+        metadata = auth_user.get("user_metadata") or {}
+        profile = db.ensure_user_defaults(
+            auth_user.get("id"),
+            metadata.get("name") or "MiPlata",
+            auth_user.get("email") or "",
+            None,
+            metadata.get("avatar_url") or "",
+        )
+        return jsonify(_session_response(auth_data, profile, "Sesión renovada"))
+    except sb.SupabaseError:
+        return jsonify({"error": "Sesión expirada"}), 401
 
 @app.route("/api/user", methods=["GET"])
 def get_user():
@@ -126,6 +278,13 @@ def delete_account():
     if not user_id:
         return jsonify({"error": "No autorizado"}), 401
     db.delete_user(user_id)
+    if SUPABASE_ENABLED:
+        try:
+            sb.auth_admin_delete_user(user_id)
+        except sb.SupabaseError:
+            # The application data is already deleted.  The auth account can
+            # be removed manually if the provider is temporarily unavailable.
+            return jsonify({"error": "Datos eliminados, pero no se pudo cerrar la cuenta de acceso"}), 502
     return jsonify({"message": "Tu cuenta y datos han sido eliminados"})
 
 # --- Transactions Endpoints ---

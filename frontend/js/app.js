@@ -1914,11 +1914,22 @@ function renderExpenses() {
                     </div>
                   </div>
 
-                  <span class="text-[11px] font-semibold px-2 py-0.5 rounded-full ${
-                    isExceeded ? 'bg-rose-100 text-rose-700' : isWarning ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-[#006c49]'
-                  }">
-                    ${percent}%
-                  </span>
+                  <div class="flex items-center gap-1.5">
+                    <span class="text-[11px] font-semibold px-2 py-0.5 rounded-full ${
+                      isExceeded ? 'bg-rose-100 text-rose-700' : isWarning ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-[#006c49]'
+                    }">
+                      ${percent}%
+                    </span>
+                    <button
+                      type="button"
+                      data-edit-category-budget="${catBudget.category}"
+                      class="category-budget-edit-btn w-7 h-7 rounded-full bg-slate-100 text-slate-500 hover:bg-[#dce8ff] hover:text-[#0058bc] flex items-center justify-center transition-colors cursor-pointer"
+                      aria-label="Modificar límite de ${catBudget.category}"
+                      title="Modificar límite"
+                    >
+                      ${getIconSvg('sliders', 'w-3.5 h-3.5')}
+                    </button>
+                  </div>
                 </div>
 
                 <div class="w-full h-2 rounded-full bg-slate-100 overflow-hidden">
@@ -2061,6 +2072,14 @@ function renderExpenses() {
     btn.onclick = () => {
       state.filterExpensesCategory = btn.dataset.cat;
       renderExpenses();
+    };
+  });
+
+  DOM.tabGastos.querySelectorAll('.category-budget-edit-btn').forEach((btn) => {
+    btn.onclick = () => {
+      const category = btn.dataset.editCategoryBudget;
+      const budget = state.categoryBudgets.find((item) => item.category === category);
+      if (budget) openCategoryBudgetModal(budget);
     };
   });
 
@@ -4100,6 +4119,58 @@ function openEditProfileModal() {
     showToast('Perfil actualizado');
   };
 }
+
+// Edit a category budget directly from the Records view
+function openCategoryBudgetModal(categoryBudget) {
+  const currentLimit = Number(categoryBudget.limit) || 0;
+  DOM.modalEditBudget.classList.remove('hidden');
+  DOM.modalEditBudget.innerHTML = `
+    <div class="bg-white rounded-3xl p-5 sm:p-6 max-w-sm w-full shadow-2xl flex flex-col gap-3.5 border border-slate-100">
+      <div class="flex items-center justify-between pb-1 border-b border-slate-100">
+        <div>
+          <h3 class="font-bold text-sm text-[#0b1c30]">Límite de ${categoryBudget.category}</h3>
+          <p class="text-[11px] text-slate-500 mt-0.5">Presupuesto mensual de la categoría</p>
+        </div>
+        <button id="edit-category-budget-close" type="button" class="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 cursor-pointer">
+          ${getIconSvg('x', 'w-4 h-4')}
+        </button>
+      </div>
+
+      <div class="flex flex-col gap-1">
+        <label for="edit-category-budget-input" class="text-xs font-bold text-[#0b1c30]">Límite mensual (COP)</label>
+        <input id="edit-category-budget-input" type="text" inputmode="numeric" value="${currentLimit ? currentLimit.toLocaleString('es-CO') : ''}" placeholder="ej. 700.000" class="w-full px-3 py-2.5 rounded-xl border border-slate-200 bg-slate-50 text-sm font-bold text-slate-800 tabular-nums focus:outline-none focus:ring-2 focus:ring-[#0058bc]" />
+      </div>
+
+      <div class="flex gap-2 pt-1">
+        <button id="edit-category-budget-cancel" type="button" class="flex-1 py-2.5 rounded-xl bg-slate-100 text-slate-600 font-semibold text-xs cursor-pointer">Cancelar</button>
+        <button id="edit-category-budget-save" type="button" class="flex-1 py-2.5 rounded-xl bg-[#0058bc] text-white font-bold text-xs shadow-md shadow-[#0058bc]/20 cursor-pointer">Guardar límite</button>
+      </div>
+    </div>
+  `;
+
+  const closeModal = () => DOM.modalEditBudget.classList.add('hidden');
+  document.getElementById('edit-category-budget-close').onclick = closeModal;
+  document.getElementById('edit-category-budget-cancel').onclick = closeModal;
+
+  const limitInput = document.getElementById('edit-category-budget-input');
+  limitInput.oninput = () => {
+    const numericValue = parseInt(limitInput.value.replace(/\D/g, ''), 10);
+    limitInput.value = Number.isNaN(numericValue) ? '' : numericValue.toLocaleString('es-CO');
+  };
+
+  document.getElementById('edit-category-budget-save').onclick = async () => {
+    const limit = parseInt(limitInput.value.replace(/\D/g, ''), 10) || 0;
+    try {
+      await api.updateCategoryBudget(categoryBudget.category, limit);
+      categoryBudget.limit = limit;
+      closeModal();
+      renderExpenses();
+      showToast(`Límite de ${categoryBudget.category} actualizado`);
+    } catch (error) {
+      showToast(error.message || 'No se pudo actualizar el límite', 'error');
+    }
+  };
+};
 
 // Edit Budget / Salary Modal
 function openEditBudgetModal() {
