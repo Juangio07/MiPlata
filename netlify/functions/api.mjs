@@ -104,7 +104,22 @@ function number(value) {
 }
 
 function dateOnly(value, fallbackToday = false) {
-  if (value) return String(value).slice(0, 10);
+  const raw = String(value || '').trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+  const normalized = raw.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  const monthYear = normalized.match(/^([a-z]+)\s+(\d{4})$/);
+  if (monthYear) {
+    const monthIndex = MONTHS.findIndex((month) => month.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase() === monthYear[1]);
+    if (monthIndex >= 0) return `${monthYear[2]}-${String(monthIndex + 1).padStart(2, '0')}-01`;
+  }
+  const dayMonthYear = raw.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/);
+  if (dayMonthYear) {
+    const day = Number(dayMonthYear[1]);
+    const month = Number(dayMonthYear[2]);
+    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+      return `${dayMonthYear[3]}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    }
+  }
   return fallbackToday ? new Date().toISOString().slice(0, 10) : null;
 }
 

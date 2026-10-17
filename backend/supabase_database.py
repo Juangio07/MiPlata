@@ -87,8 +87,26 @@ def _bool(value):
 
 
 def _iso_date(value, fallback_today=False):
-    if value:
-        return str(value)[:10]
+    raw = str(value or "").strip()
+    if len(raw) == 10 and raw[4] == "-" and raw[7] == "-":
+        return raw
+    normalized = raw.casefold()
+    month_year = normalized.split()
+    if len(month_year) == 2 and month_year[1].isdigit() and len(month_year[1]) == 4:
+        try:
+            month_index = next(
+                index for index, month in enumerate(SPANISH_MONTHS)
+                if month.casefold() == month_year[0]
+            )
+            return f"{month_year[1]}-{month_index + 1:02d}-01"
+        except StopIteration:
+            pass
+    for separator in ("/", "-"):
+        parts = raw.split(separator)
+        if len(parts) == 3 and all(part.isdigit() for part in parts):
+            day, month, year = parts
+            if len(year) == 4 and 1 <= int(month) <= 12 and 1 <= int(day) <= 31:
+                return f"{year}-{int(month):02d}-{int(day):02d}"
     return datetime.now().strftime("%Y-%m-%d") if fallback_today else None
 
 

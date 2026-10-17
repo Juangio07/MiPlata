@@ -11,6 +11,8 @@ import {
   getCurrentTimeString, 
   getTodayISODate, 
   getInitials, 
+  parseRawNumber,
+  SPANISH_MONTHS,
   getCurrentMonthKey, 
   formatMonthKeyToLabel
 } from './formatters.js';
@@ -3764,6 +3766,31 @@ function openAddOrEditObligationModal(obligation = null) {
 }
 
 // Add or Edit Savings Goal Modal
+function normalizeGoalDeadline(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+
+  const normalized = raw.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  const monthYear = normalized.match(/^([a-z]+)\s+(\d{4})$/);
+  if (monthYear) {
+    const monthIndex = SPANISH_MONTHS.findIndex((month) => month.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase() === monthYear[1]);
+    if (monthIndex >= 0) return `${monthYear[2]}-${String(monthIndex + 1).padStart(2, '0')}-01`;
+  }
+
+  const dayMonthYear = raw.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/);
+  if (dayMonthYear) {
+    const day = Number(dayMonthYear[1]);
+    const month = Number(dayMonthYear[2]);
+    const year = Number(dayMonthYear[3]);
+    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+      return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    }
+  }
+
+  return null;
+}
+
 function openAddOrEditGoalModal(goal = null) {
   DOM.modalSavingsGoal.classList.remove('hidden');
 
@@ -3801,12 +3828,12 @@ function openAddOrEditGoalModal(goal = null) {
 
         <div>
           <label class="block text-[15px] font-medium text-[#6b7d98]">Valor objetivo en COP</label>
-          <input id="goal-input-target" type="text" inputmode="numeric" placeholder="30000000" value="${isEdit ? goal.targetAmount : ''}" required class="w-full h-12 mt-1.5 px-4 rounded-2xl border border-[#dbe3ed] bg-[#f7f9fc] text-[15px] font-bold text-[#25364d] focus:outline-none focus:ring-2 focus:ring-[#0058bc]/30 tabular-nums" />
+          <input id="goal-input-target" type="text" inputmode="numeric" placeholder="30.000.000" value="${isEdit ? Number(goal.targetAmount || 0).toLocaleString('es-CO') : ''}" required class="w-full h-12 mt-1.5 px-4 rounded-2xl border border-[#dbe3ed] bg-[#f7f9fc] text-[15px] font-bold text-[#25364d] focus:outline-none focus:ring-2 focus:ring-[#0058bc]/30 tabular-nums" />
         </div>
 
         <div>
           <label class="block text-[15px] font-medium text-[#6b7d98]">Fecha límite opcional</label>
-          <input id="goal-input-deadline" type="text" placeholder="ej. Diciembre 2026" value="${isEdit ? goal.deadline || '' : 'Diciembre 2026'}" class="w-full h-12 mt-1.5 px-4 rounded-2xl border border-[#dbe3ed] bg-[#f7f9fc] text-[15px] font-medium text-[#25364d] focus:outline-none focus:ring-2 focus:ring-[#0058bc]/30" />
+          <input id="goal-input-deadline" type="text" placeholder="ej. Diciembre 2026" value="${isEdit ? goal.deadline || '' : ''}" class="w-full h-12 mt-1.5 px-4 rounded-2xl border border-[#dbe3ed] bg-[#f7f9fc] text-[15px] font-medium text-[#25364d] focus:outline-none focus:ring-2 focus:ring-[#0058bc]/30" />
         </div>
 
         <div>
@@ -3879,7 +3906,8 @@ function openAddOrEditGoalModal(goal = null) {
 
   const targetInput = document.getElementById('goal-input-target');
   targetInput.oninput = () => {
-    targetInput.value = targetInput.value.replace(/\D/g, '');
+    const numericValue = parseRawNumber(targetInput.value);
+    targetInput.value = numericValue ? numericValue.toLocaleString('es-CO') : '';
   };
 
   DOM.modalSavingsGoal.querySelectorAll('.goal-icon-choice').forEach((button) => {
@@ -3895,11 +3923,19 @@ function openAddOrEditGoalModal(goal = null) {
   document.getElementById('form-goal').onsubmit = async (e) => {
     e.preventDefault();
     const name = document.getElementById('goal-input-name').value.trim();
-    const targetAmount = parseInt(targetInput.value.replace(/\D/g, ''), 10) || 0;
-    const deadline = document.getElementById('goal-input-deadline').value.trim() || 'Diciembre 2026';
+    const targetAmount = parseRawNumber(targetInput.value);
+    const deadlineText = document.getElementById('goal-input-deadline').value.trim();
+    const deadline = normalizeGoalDeadline(deadlineText);
     const icon = selectedIcon;
 
-    if (!name || targetAmount <= 0) return;
+    if (!name || targetAmount <= 0) {
+      showToast('Escribe un nombre y un valor objetivo mayor que $0', 'error');
+      return;
+    }
+    if (deadlineText && !deadline) {
+      showToast('Usa una fecha como “Diciembre 2026” o “31/12/2026”', 'error');
+      return;
+    }
 
     const colors = {
       security: '#006c49',
@@ -3910,32 +3946,36 @@ function openAddOrEditGoalModal(goal = null) {
       star: '#d97706',
     };
 
-    if (isEdit) {
-      await api.updateSavingsGoal(goal.id, {
-        name,
-        targetAmount,
-        deadline,
-        icon,
-        color: colors[icon] || '#006c49',
-        imageUrl: customGoalImage,
-      });
-      showToast(`Meta "${name}" actualizada`);
-    } else {
-      await api.addSavingsGoal({
-        name,
-        targetAmount,
-        currentAmount: 0,
-        deadline,
-        icon,
-        color: colors[icon] || '#006c49',
-        imageUrl: customGoalImage,
-      });
-      showToast(`Meta "${name}" creada`);
-    }
+    try {
+      if (isEdit) {
+        await api.updateSavingsGoal(goal.id, {
+          name,
+          targetAmount,
+          deadline,
+          icon,
+          color: colors[icon] || '#006c49',
+          imageUrl: customGoalImage,
+        });
+        showToast(`Meta "${name}" actualizada`);
+      } else {
+        await api.addSavingsGoal({
+          name,
+          targetAmount,
+          currentAmount: 0,
+          deadline,
+          icon,
+          color: colors[icon] || '#006c49',
+          imageUrl: customGoalImage,
+        });
+        showToast(`Meta "${name}" creada`);
+      }
 
-    await refreshAllData();
-    DOM.modalSavingsGoal.classList.add('hidden');
-    renderActiveView();
+      await refreshAllData();
+      DOM.modalSavingsGoal.classList.add('hidden');
+      renderActiveView();
+    } catch (error) {
+      showToast(error.message || 'No se pudo guardar la meta', 'error');
+    }
   };
 
   const deleteBtn = document.getElementById('goal-delete-btn');
@@ -3976,7 +4016,7 @@ function openAporteModal(goalId) {
         <label class="block text-sm font-semibold tracking-wide text-[#6b7d98]">MONTO A RESERVAR</label>
         <div class="flex items-baseline justify-center gap-3 mt-2 text-[#0058bc]">
           <span class="text-[34px] font-bold leading-none">$</span>
-          <input id="aporte-input" type="text" inputmode="numeric" value="100000" placeholder="100000" class="w-44 bg-transparent text-center text-[38px] font-extrabold leading-none tabular-nums focus:outline-none" />
+          <input id="aporte-input" type="text" inputmode="numeric" value="100.000" placeholder="100.000" class="w-44 bg-transparent text-center text-[38px] font-extrabold leading-none tabular-nums focus:outline-none" />
           <span class="text-sm font-semibold text-[#6b7d98]">COP</span>
         </div>
       </div>
@@ -4002,16 +4042,17 @@ function openAporteModal(goalId) {
   DOM.modalAporteGoal.querySelectorAll('.aporte-quick-btn').forEach((btn) => {
     btn.onclick = () => {
       const amt = parseInt(btn.dataset.quick, 10);
-      aporteInput.value = String(amt);
+      aporteInput.value = amt.toLocaleString('es-CO');
     };
   });
 
   aporteInput.oninput = () => {
-    aporteInput.value = aporteInput.value.replace(/\D/g, '');
+    const numericValue = parseRawNumber(aporteInput.value);
+    aporteInput.value = numericValue ? numericValue.toLocaleString('es-CO') : '';
   };
 
   document.getElementById('aporte-submit-btn').onclick = async () => {
-    const amt = parseInt(aporteInput.value.replace(/\D/g, ''), 10) || 0;
+    const amt = parseRawNumber(aporteInput.value);
     if (amt <= 0) return;
 
     await api.contributeToGoal(goalId, amt, 'Manual');
