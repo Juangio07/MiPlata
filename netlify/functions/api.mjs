@@ -498,7 +498,10 @@ async function handleProtected(route, request, user) {
   const userId = user.id;
   const body = await readBody(request);
 
-  if (route === 'user' && request.method === 'GET') return json({ user: await getProfile(userId) });
+  if (route === 'user' && request.method === 'GET') {
+    if ((user.email || '').trim().toLowerCase() === 'demo@miplata.app') await ensureDemoData(userId);
+    return json({ user: await getProfile(userId) });
+  }
 
   if (route === 'user/profile' && request.method === 'PUT') {
     const fieldMap = { name: 'name', email: 'email', avatarUrl: 'avatar_url', monthlySalary: 'monthly_salary', initialBalance: 'initial_balance', monthlyBudgetLimit: 'monthly_budget_limit', alert80Percent: 'alert_80_percent', autoAdjustVariable: 'auto_adjust_variable', smartCategorization: 'smart_categorization' };

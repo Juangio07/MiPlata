@@ -242,6 +242,9 @@ def get_user():
     user_id = get_current_user_id_from_req()
     if not user_id:
         return jsonify({"user": None}), 200
+    auth_user = get_auth_user_from_req() if SUPABASE_ENABLED else None
+    if auth_user and (auth_user.get("email") or "").strip().lower() == "demo@miplata.app":
+        db.ensure_demo_data(user_id)
     user = db.get_user_by_id(user_id)
     return jsonify({"user": user})
 
