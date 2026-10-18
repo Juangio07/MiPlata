@@ -399,8 +399,8 @@ async function ensureDemoData(userId) {
     { id: 'demo_fixed_services', user_id: userId, name: 'Servicios públicos', amount: 120000, due_day: 15, category: 'Servicios', status: 'paid', paid_date: dateFromToday(6), reminder_days_before: 3, is_automatic: false, notes: 'Luz, agua y gas' },
   ];
   const goals = [
-    { id: 'demo_goal_emergency', user_id: userId, name: 'Fondo de Emergencia', target_amount: 3000000, current_amount: 850000, deadline: `${now.getFullYear() + 1}-06-30`, icon: 'shield', color: '#0058bc', category: 'Seguridad', image_url: '' },
-    { id: 'demo_goal_trip', user_id: userId, name: 'Viaje familiar', target_amount: 1800000, current_amount: 530000, deadline: `${now.getFullYear() + 1}-12-15`, icon: 'flight', color: '#00838f', category: 'Viajes', image_url: '' },
+    { id: 'demo_goal_emergency', user_id: userId, name: 'Fondo de Emergencia', target_amount: 3000000, current_amount: 120000, deadline: `${now.getFullYear() + 1}-06-30`, icon: 'shield', color: '#0058bc', category: 'Seguridad', image_url: '' },
+    { id: 'demo_goal_trip', user_id: userId, name: 'Viaje familiar', target_amount: 1800000, current_amount: 80000, deadline: `${now.getFullYear() + 1}-12-15`, icon: 'flight', color: '#00838f', category: 'Viajes', image_url: '' },
   ];
   const contributions = [
     { id: 'demo_contribution_1', user_id: userId, goal_id: 'demo_goal_emergency', goal_name: 'Fondo de Emergencia', amount: 120000, date: dateFromToday(1), type: 'Automático', timestamp: Date.now() - 3600000 },
@@ -483,9 +483,15 @@ async function userGoals(userId) {
     params: { user_id: `eq.${userId}`, order: 'created_at.asc' },
     select: 'id,user_id,name,target_amount,current_amount,deadline,icon,color,category,image_url',
   }) || [];
+  const contributions = await userContributions(userId);
+  const totals = contributions.reduce((result, contribution) => {
+    const goalId = String(contribution.goalId || '');
+    if (goalId) result[goalId] = (result[goalId] || 0) + number(contribution.amount);
+    return result;
+  }, {});
   return rows.map((row) => ({
     id: row.id, userId: row.user_id, name: row.name, targetAmount: number(row.target_amount),
-    currentAmount: number(row.current_amount), deadline: row.deadline || '', icon: row.icon, color: row.color,
+    currentAmount: totals[String(row.id)] || 0, deadline: row.deadline || '', icon: row.icon, color: row.color,
     category: row.category || '', imageUrl: row.image_url || '',
   }));
 }
@@ -518,7 +524,16 @@ async function userBootstrap(userId) {
     userContributions(userId),
     userBudgets(userId),
   ]);
-  return { user: profile, transactions, fixedObligations, savingsGoals, goalContributions, categoryBudgets };
+  const contributionTotals = goalContributions.reduce((result, contribution) => {
+    const goalId = String(contribution.goalId || '');
+    if (goalId) result[goalId] = (result[goalId] || 0) + number(contribution.amount);
+    return result;
+  }, {});
+  const synchronizedGoals = savingsGoals.map((goal) => ({
+    ...goal,
+    currentAmount: contributionTotals[String(goal.id)] || 0,
+  }));
+  return { user: profile, transactions, fixedObligations, savingsGoals: synchronizedGoals, goalContributions, categoryBudgets };
 }
 
 async function deleteUserData(userId) {
@@ -703,7 +718,7 @@ async function handleProtected(route, request, user) {
     if (body.deadline && !deadline) return json({ error: 'La fecha límite no es válida' }, 400);
     if (deadline && isPastGoalMonth(deadline)) return json({ error: 'La fecha límite debe ser el mes actual o un mes futuro' }, 400);
     const id = body.id || `goal_${Date.now()}`;
-    await restRequest('savings_goals', { method: 'POST', returning: true, body: { id, user_id: userId, name: body.name, target_amount: body.targetAmount, current_amount: body.currentAmount || 0, deadline, icon: body.icon || 'laptop', color: body.color || '#0058bc', category: body.category || '', image_url: body.imageUrl || '' } });
+    await restRequest('savings_goals', { method: 'POST', returning: true, body: { id, user_id: userId, name: body.name, target_amount: body.targetAmount, current_amount: 0, deadline, icon: body.icon || 'laptop', color: body.color || '#0058bc', category: body.category || '', image_url: body.imageUrl || '' } });
     return json({ id, message: `Meta "${body.name}" creada con éxito` });
   }
 
@@ -719,7 +734,9 @@ async function handleProtected(route, request, user) {
       }
       const rows = await restRequest('savings_goals', { params: { id: `eq.${id}`, user_id: `eq.${userId}`, limit: '1' } });
       if (!rows?.length) return json({ error: 'Meta no encontrada' }, 404);
-      const newAmount = number(rows[0].current_amount) + amount;
+      const contributionRows = await restRequest('goal_contributions', { params: { goal_id: `eq.${id}`, user_id: `eq.${userId}`, select: 'amount' } }) || [];
+      const contributedAmount = contributionRows.reduce((sum, row) => sum + number(row.amount), 0);
+      const newAmount = contributedAmount + amount;
       await restRequest('savings_goals', { method: 'PATCH', params: { id: `eq.${id}`, user_id: `eq.${userId}` }, body: { current_amount: newAmount } });
       const contributionId = `contrib_${Date.now()}`;
       await restRequest('goal_contributions', { method: 'POST', returning: true, body: { id: contributionId, user_id: userId, goal_id: id, goal_name: rows[0].name, amount, date: dateOnly(null, true), type: body.type || 'Manual', timestamp: Date.now() } });
@@ -730,7 +747,7 @@ async function handleProtected(route, request, user) {
       return json({ message: 'Meta de ahorro eliminada' });
     }
     if (request.method === 'PUT') {
-      const fieldMap = { name: 'name', targetAmount: 'target_amount', currentAmount: 'current_amount', deadline: 'deadline', icon: 'icon', color: 'color', category: 'category', imageUrl: 'image_url' };
+      const fieldMap = { name: 'name', targetAmount: 'target_amount', deadline: 'deadline', icon: 'icon', color: 'color', category: 'category', imageUrl: 'image_url' };
       const patch = {};
       Object.entries(body).forEach(([key, value]) => { if (fieldMap[key]) patch[fieldMap[key]] = value; });
       if (Object.prototype.hasOwnProperty.call(body, 'deadline')) {

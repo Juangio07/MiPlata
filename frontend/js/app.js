@@ -547,8 +547,8 @@ function restoreCachedState() {
     state.currentUser = cachedUser;
     state.transactions = cached.transactions || [];
     state.fixedObligations = cached.fixedObligations || [];
-    state.savingsGoals = cached.savingsGoals || [];
     state.goalContributions = cached.goalContributions || [];
+    state.savingsGoals = syncGoalAmountsWithContributions(cached.savingsGoals || [], state.goalContributions);
     state.categoryBudgets = cached.categoryBudgets || [];
     return true;
   } catch (_error) {
@@ -563,10 +563,24 @@ function applyBootstrapData(data) {
   state.currentUser = data.user;
   state.transactions = data.transactions || [];
   state.fixedObligations = data.fixedObligations || [];
-  state.savingsGoals = data.savingsGoals || [];
   state.goalContributions = data.goalContributions || [];
+  state.savingsGoals = syncGoalAmountsWithContributions(data.savingsGoals || [], state.goalContributions);
   state.categoryBudgets = data.categoryBudgets || [];
   return true;
+}
+
+function syncGoalAmountsWithContributions(goals, contributions) {
+  const totals = new Map();
+  contributions.forEach((contribution) => {
+    const goalId = String(contribution?.goalId || '');
+    if (!goalId) return;
+    totals.set(goalId, (totals.get(goalId) || 0) + (Number(contribution.amount) || 0));
+  });
+
+  return goals.map((goal) => ({
+    ...goal,
+    currentAmount: totals.get(String(goal.id)) || 0,
+  }));
 }
 
 async function refreshAllData() {
@@ -3702,7 +3716,7 @@ function renderQuickAddModalContent() {
       <p id="qa-smart-category-hint" aria-live="polite" class="text-[11px] text-[#0058bc] font-medium text-center -mt-3 mb-3 ${smartSuggestion ? '' : 'invisible'}">${smartSuggestion ? `Sugerencia automática: ${smartSuggestion}` : 'Sugerencia automática'}</p>
 
       <div class="rounded-3xl bg-white p-3.5 sm:p-4 shadow-sm border border-slate-100 mb-4 sm:mb-6">
-        <div class="flex items-center gap-3"><span class="w-10 h-10 rounded-full bg-[#dce8ff] text-slate-600 flex items-center justify-center">${getIconSvg('fileText', 'w-5 h-5')}</span><input id="qa-description-input" type="text" placeholder="${type === 'ingreso' ? 'Concepto del ingreso' : 'Café y empanada Juan Valdez'}" value="${description}" class="flex-1 text-lg bg-transparent focus:outline-none" /></div>
+        <div class="flex items-center gap-3"><span class="w-10 h-10 rounded-full bg-[#dce8ff] text-slate-600 flex items-center justify-center">${getIconSvg('fileText', 'w-5 h-5')}</span><input id="qa-description-input" type="text" placeholder="${type === 'ingreso' ? 'Concepto del ingreso' : 'Café y empanada Juan Valdez'}" value="${description}" class="qa-description-input flex-1 min-w-0 text-lg bg-transparent focus:outline-none focus:ring-0" /></div>
         <div class="flex items-center justify-between mt-5 pt-4 border-t border-slate-100"><div class="flex items-center gap-3"><span class="w-10 h-10 rounded-full bg-[#dce8ff] text-slate-600 flex items-center justify-center">${getIconSvg('calendar', 'w-5 h-5')}</span><div><p class="text-sm font-semibold text-slate-500">Fecha</p><p class="text-base font-semibold">${formatQuickAddDateLabel(date)}</p></div></div><div class="relative"><button id="qa-change-date-btn" type="button" class="rounded-full bg-[#dce8ff] px-3 py-2 text-sm font-semibold text-[#0058bc] cursor-pointer">Cambiar</button><input id="qa-date-input" type="date" value="${date}" aria-label="Cambiar fecha del registro" class="absolute inset-0 h-full w-full opacity-0 pointer-events-none" /></div></div>
       </div>
 

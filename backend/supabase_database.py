@@ -296,8 +296,8 @@ def ensure_demo_data(user_id):
         {"id": "demo_fixed_services", "user_id": user_id, "name": "Servicios públicos", "amount": 120000, "due_day": 15, "category": "Servicios", "status": "paid", "paid_date": date_from_today(6), "reminder_days_before": 3, "is_automatic": False, "notes": "Luz, agua y gas"},
     ]
     goals = [
-        {"id": "demo_goal_emergency", "user_id": user_id, "name": "Fondo de Emergencia", "target_amount": 3000000, "current_amount": 850000, "deadline": f"{now.year + 1}-06-30", "icon": "shield", "color": "#0058bc", "category": "Seguridad", "image_url": ""},
-        {"id": "demo_goal_trip", "user_id": user_id, "name": "Viaje familiar", "target_amount": 1800000, "current_amount": 530000, "deadline": f"{now.year + 1}-12-15", "icon": "flight", "color": "#00838f", "category": "Viajes", "image_url": ""},
+        {"id": "demo_goal_emergency", "user_id": user_id, "name": "Fondo de Emergencia", "target_amount": 3000000, "current_amount": 120000, "deadline": f"{now.year + 1}-06-30", "icon": "shield", "color": "#0058bc", "category": "Seguridad", "image_url": ""},
+        {"id": "demo_goal_trip", "user_id": user_id, "name": "Viaje familiar", "target_amount": 1800000, "current_amount": 80000, "deadline": f"{now.year + 1}-12-15", "icon": "flight", "color": "#00838f", "category": "Viajes", "image_url": ""},
     ]
     contributions = [
         {"id": "demo_contribution_1", "user_id": user_id, "goal_id": "demo_goal_emergency", "goal_name": "Fondo de Emergencia", "amount": 120000, "date": date_from_today(1), "type": "Automático", "timestamp": timestamp_now - 3600000},
@@ -503,22 +503,38 @@ def get_savings_goals(user_id):
         params={"user_id": f"eq.{user_id}", "order": "created_at.asc"},
         select="id,user_id,name,target_amount,current_amount,deadline,icon,color,category,image_url",
     ) or []
-    return [
-        {
+    contributions = get_goal_contributions(user_id)
+    totals = {}
+    for contribution in contributions:
+        goal_id = str(contribution.get("goalId") or "")
+        if goal_id:
+            totals[goal_id] = totals.get(goal_id, 0) + _num(contribution.get("amount"))
+
+    result = []
+    for row in rows:
+        goal_id = str(row.get("id") or "")
+        contributed_amount = totals.get(goal_id, 0)
+        if _num(row.get("current_amount")) != contributed_amount:
+            sb.rest_request(
+                "savings_goals",
+                method="PATCH",
+                params={"id": f"eq.{goal_id}", "user_id": f"eq.{user_id}"},
+                body={"current_amount": contributed_amount},
+            )
+        result.append({
             "id": row.get("id"), "userId": row.get("user_id"), "name": row.get("name"),
-            "targetAmount": _num(row.get("target_amount")), "currentAmount": _num(row.get("current_amount")),
+            "targetAmount": _num(row.get("target_amount")), "currentAmount": contributed_amount,
             "deadline": row.get("deadline") or "", "icon": row.get("icon"), "color": row.get("color"),
             "category": row.get("category") or "", "imageUrl": row.get("image_url") or "",
-        }
-        for row in rows
-    ]
+        })
+    return result
 
 
 def add_savings_goal(user_id, goal):
     goal_id = goal.get("id") or f"goal_{int(time.time() * 1000)}"
     row = {
         "id": goal_id, "user_id": user_id, "name": goal["name"], "target_amount": goal["targetAmount"],
-        "current_amount": goal.get("currentAmount", 0), "deadline": _iso_date(goal.get("deadline")),
+        "current_amount": 0, "deadline": _iso_date(goal.get("deadline")),
         "icon": goal.get("icon", "laptop"), "color": goal.get("color", "#0058bc"),
         "category": goal.get("category", ""), "image_url": goal.get("imageUrl", ""),
     }
@@ -528,7 +544,7 @@ def add_savings_goal(user_id, goal):
 
 def update_savings_goal(user_id, goal_id, updates):
     field_map = {
-        "name": "name", "targetAmount": "target_amount", "currentAmount": "current_amount",
+        "name": "name", "targetAmount": "target_amount",
         "deadline": "deadline", "icon": "icon", "color": "color", "category": "category", "imageUrl": "image_url",
     }
     patch = {field_map[key]: value for key, value in updates.items() if key in field_map}
@@ -547,7 +563,12 @@ def contribute_to_goal(user_id, goal_id, amount, contribution_type="Manual"):
     if not rows:
         return None
     goal = rows[0]
-    new_amount = _num(goal.get("current_amount")) + amount
+    contribution_rows = sb.rest_request(
+        "goal_contributions",
+        params={"goal_id": f"eq.{goal_id}", "user_id": f"eq.{user_id}", "select": "amount"},
+    ) or []
+    contributed_amount = sum(_num(row.get("amount")) for row in contribution_rows)
+    new_amount = contributed_amount + amount
     sb.rest_request("savings_goals", method="PATCH", params={"id": f"eq.{goal_id}", "user_id": f"eq.{user_id}"}, body={"current_amount": new_amount})
     contribution_id = f"contrib_{int(time.time() * 1000)}"
     sb.rest_request(

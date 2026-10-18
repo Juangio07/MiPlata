@@ -24,6 +24,19 @@ function clone(value) {
   return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 }
 
+function syncDemoGoalAmounts(goals, contributions) {
+  const totals = new Map();
+  (contributions || []).forEach((contribution) => {
+    const goalId = String(contribution?.goalId || '');
+    if (!goalId) return;
+    totals.set(goalId, (totals.get(goalId) || 0) + (Number(contribution.amount) || 0));
+  });
+  return (goals || []).map((goal) => ({
+    ...goal,
+    currentAmount: totals.get(String(goal.id)) || 0,
+  }));
+}
+
 function createDemoId(prefix) {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -38,13 +51,14 @@ function activateDemoRuntime(data) {
     return null;
   }
 
+  const goalContributions = clone(data.goalContributions || []);
   demoRuntime = {
     isDemo: true,
     user: clone(data.user),
     transactions: clone(data.transactions || []),
     fixedObligations: clone(data.fixedObligations || []),
-    savingsGoals: clone(data.savingsGoals || []),
-    goalContributions: clone(data.goalContributions || []),
+    savingsGoals: syncDemoGoalAmounts(clone(data.savingsGoals || []), goalContributions),
+    goalContributions,
     categoryBudgets: clone(data.categoryBudgets || []),
   };
   return demoRuntime;
@@ -430,7 +444,7 @@ export const api = {
         ...clone(goal),
         id,
         userId: demoRuntime.user.id,
-        currentAmount: Number(goal.currentAmount) || 0,
+        currentAmount: 0,
         imageUrl: goal.imageUrl || '',
       });
       return { id, message: `Meta "${goal.name}" creada con éxito` };
@@ -443,7 +457,11 @@ export const api = {
   async updateSavingsGoal(id, updates) {
     if (isDemoRuntimeActive()) {
       const goal = demoRuntime.savingsGoals.find((item) => item.id === id);
-      if (goal) Object.assign(goal, clone(updates));
+      if (goal) {
+        const safeUpdates = { ...clone(updates) };
+        delete safeUpdates.currentAmount;
+        Object.assign(goal, safeUpdates);
+      }
       return { message: 'Meta actualizada' };
     }
     const res = await request(`/api/savings-goals/${id}`, { method: 'PUT', body: JSON.stringify(updates) });
@@ -465,7 +483,10 @@ export const api = {
     if (isDemoRuntimeActive()) {
       const goal = demoRuntime.savingsGoals.find((item) => item.id === goalId);
       if (!goal) throw new Error('Meta no encontrada');
-      const newAmount = (Number(goal.currentAmount) || 0) + (Number(amount) || 0);
+      const contributedAmount = demoRuntime.goalContributions
+        .filter((contribution) => contribution.goalId === goalId)
+        .reduce((total, contribution) => total + (Number(contribution.amount) || 0), 0);
+      const newAmount = contributedAmount + (Number(amount) || 0);
       goal.currentAmount = newAmount;
       const contributionId = createDemoId('contrib_demo');
       demoRuntime.goalContributions.unshift({

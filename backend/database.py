@@ -236,8 +236,8 @@ def seed_demo_user_data():
     # Savings goals
     cursor.execute("DELETE FROM savings_goals WHERE user_id = ?", (DEMO_USER_ID,))
     goals_data = [
-        ('goal_1', DEMO_USER_ID, 'Fondo de Emergencia', 3000000, 850000, f'Enero {datetime.now().year + 1}', 'security', '#0058bc', 'Seguridad', ''),
-        ('goal_2', DEMO_USER_ID, 'Viaje familiar', 1800000, 530000, f'Diciembre {datetime.now().year + 1}', 'flight', '#00838f', 'Viajes', ''),
+        ('goal_1', DEMO_USER_ID, 'Fondo de Emergencia', 3000000, 120000, f'Enero {datetime.now().year + 1}', 'security', '#0058bc', 'Seguridad', ''),
+        ('goal_2', DEMO_USER_ID, 'Viaje familiar', 1800000, 80000, f'Diciembre {datetime.now().year + 1}', 'flight', '#00838f', 'Viajes', ''),
     ]
     cursor.executemany("""
     INSERT INTO savings_goals (id, user_id, name, target_amount, current_amount, deadline, icon, color, category, image_url)
@@ -365,8 +365,8 @@ def seed_demo_user_data_2000000():
     INSERT INTO savings_goals (id, user_id, name, target_amount, current_amount, deadline, icon, color, category, image_url)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, [
-        ('goal_1', DEMO_USER_ID, 'Fondo de Emergencia', 3000000, 850000, f'Enero {now.year + 1}', 'security', '#0058bc', 'Seguridad', ''),
-        ('goal_2', DEMO_USER_ID, 'Viaje familiar', 1800000, 530000, f'Diciembre {now.year + 1}', 'flight', '#00838f', 'Viajes', ''),
+        ('goal_1', DEMO_USER_ID, 'Fondo de Emergencia', 3000000, 120000, f'Enero {now.year + 1}', 'security', '#0058bc', 'Seguridad', ''),
+        ('goal_2', DEMO_USER_ID, 'Viaje familiar', 1800000, 80000, f'Diciembre {now.year + 1}', 'flight', '#00838f', 'Viajes', ''),
     ])
 
     cursor.execute("DELETE FROM goal_contributions WHERE user_id = ?", (DEMO_USER_ID,))
@@ -826,24 +826,39 @@ def toggle_pay_fixed_obligation(user_id, item_id):
 def get_savings_goals(user_id):
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM savings_goals WHERE user_id = ?", (user_id,))
+    cursor.execute("""
+    SELECT sg.*, COALESCE(SUM(gc.amount), 0) AS contributed_amount
+    FROM savings_goals sg
+    LEFT JOIN goal_contributions gc
+      ON gc.goal_id = sg.id AND gc.user_id = sg.user_id
+    WHERE sg.user_id = ?
+    GROUP BY sg.id
+    ORDER BY sg.rowid ASC
+    """, (user_id,))
     rows = cursor.fetchall()
-    conn.close()
 
     result = []
     for r in rows:
+        contributed_amount = r["contributed_amount"] or 0
+        if (r["current_amount"] or 0) != contributed_amount:
+            cursor.execute(
+                "UPDATE savings_goals SET current_amount = ? WHERE id = ? AND user_id = ?",
+                (contributed_amount, r["id"], user_id),
+            )
         result.append({
             "id": r["id"],
             "userId": r["user_id"],
             "name": r["name"],
             "targetAmount": r["target_amount"],
-            "currentAmount": r["current_amount"],
+            "currentAmount": contributed_amount,
             "deadline": r["deadline"],
             "icon": r["icon"],
             "color": r["color"],
             "category": r["category"],
             "imageUrl": r["image_url"]
         })
+    conn.commit()
+    conn.close()
     return result
 
 def add_savings_goal(user_id, goal):
@@ -859,7 +874,7 @@ def add_savings_goal(user_id, goal):
         user_id,
         goal["name"],
         goal["targetAmount"],
-        goal.get("currentAmount", 0),
+        0,
         goal.get("deadline", ""),
         goal.get("icon", "laptop"),
         goal.get("color", "#0058bc"),
@@ -877,7 +892,6 @@ def update_savings_goal(user_id, goal_id, updates):
     field_map = {
         "name": "name",
         "targetAmount": "target_amount",
-        "currentAmount": "current_amount",
         "deadline": "deadline",
         "icon": "icon",
         "color": "color",
@@ -915,7 +929,12 @@ def contribute_to_goal(user_id, goal_id, amount, contribution_type="Manual"):
         conn.close()
         return None
 
-    new_amount = goal["current_amount"] + amount
+    cursor.execute(
+        "SELECT COALESCE(SUM(amount), 0) AS contributed_amount FROM goal_contributions WHERE goal_id = ? AND user_id = ?",
+        (goal_id, user_id),
+    )
+    contributed_amount = cursor.fetchone()["contributed_amount"] or 0
+    new_amount = contributed_amount + amount
     cursor.execute("UPDATE savings_goals SET current_amount = ? WHERE id = ? AND user_id = ?", (new_amount, goal_id, user_id))
 
     contrib_id = f"contrib_{int(time.time() * 1000)}"
