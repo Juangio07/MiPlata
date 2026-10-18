@@ -119,6 +119,11 @@ body.quick-add-open {
   overflow: hidden !important;
 }
 
+html.search-open,
+body.search-open {
+  overflow: hidden !important;
+}
+
 .qa-categories-scroll {
   overscroll-behavior-x: contain;
   scroll-behavior: smooth;
@@ -494,6 +499,9 @@ body.quick-add-open {
 
 .w-full { width: 100%; }
 .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Keep hidden modal and view layers hidden even when a component class sets display. */
+.hidden { display: none !important; }
 
 /* Keep the normal mobile layout unchanged while making the historical report
    clean and complete when the browser saves it as a PDF. */

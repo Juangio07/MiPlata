@@ -59,6 +59,8 @@ const state = {
     type: 'gasto', // 'gasto' | 'ingreso'
     rawValue: '0',
     category: 'Alimentación',
+    categoryManuallySelected: false,
+    smartSuggestion: '',
     description: '',
     date: getTodayISODate(),
   },
@@ -265,11 +267,160 @@ function getObligationContextIcon(name, category = '') {
 }
 
 // Computed Financial Metrics
+function normalizeRecordTimestamp(value) {
+  if (value === null || value === undefined || value === '') return 0;
+  const numeric = Number(value);
+  if (Number.isFinite(numeric) && numeric > 0) {
+    return numeric < 100000000000 ? numeric * 1000 : numeric;
+  }
+  const parsed = Date.parse(String(value));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function getRecordSortParts(record) {
+  const date = String(record.date || '').slice(0, 10);
+  const time = String(record.time || '').slice(0, 8);
+  const dayTimestamp = /^\d{4}-\d{2}-\d{2}$/.test(date)
+    ? Date.parse(`${date}T00:00:00`)
+    : 0;
+  const hasTime = /^\d{2}:\d{2}/.test(time);
+  const explicitTimestamp = hasTime && dayTimestamp
+    ? Date.parse(`${date}T${time}`)
+    : 0;
+  const createdAt = normalizeRecordTimestamp(record.createdAt);
+  const createdAtDate = createdAt ? new Date(createdAt).toISOString().slice(0, 10) : '';
+  const executionTimestamp = explicitTimestamp || (createdAt && createdAtDate === date ? createdAt : dayTimestamp) || createdAt;
+
+  return {
+    dayTimestamp: dayTimestamp || executionTimestamp,
+    executionTimestamp,
+    createdAt,
+  };
+}
+
+function getRecordIcon(tx, className = 'w-5 h-5') {
+  if (tx.isGoalContribution) {
+    return `<span class="text-[#0058bc]">${getIconSvg('flag', className)}</span>`;
+  }
+  if (tx.fixedObligationId) {
+    return `<span class="text-[#0058bc]">${getIconSvg('calendarCheck', className)}</span>`;
+  }
+  if (tx.type === 'ingreso') {
+    return `<span class="text-[#006c49]">${getIconSvg('arrowUpRight', className)}</span>`;
+  }
+  return getCategoryIconSvg(tx.category, className);
+}
+
+function getGoalContributionRecords(monthKey = null) {
+  return state.goalContributions
+    .filter((contribution) => !monthKey || String(contribution.date || '').startsWith(monthKey))
+    .map((contribution) => {
+      const createdAt = normalizeRecordTimestamp(contribution.timestamp);
+      const timestampDate = createdAt ? new Date(createdAt) : null;
+      const fallbackDate = timestampDate ? timestampDate.toISOString().slice(0, 10) : '';
+      const fallbackTime = timestampDate
+        ? timestampDate.toTimeString().slice(0, 8)
+        : '';
+
+      return {
+        id: `goal-contribution-${contribution.id}`,
+        type: 'gasto',
+        amount: Number(contribution.amount) || 0,
+        category: 'Ahorro / Metas',
+        description: `Aporte a meta: ${contribution.goalName || 'Meta de ahorro'}`,
+        date: contribution.date || fallbackDate,
+        time: contribution.time || fallbackTime,
+        createdAt,
+        accountMethod: 'Meta de ahorro',
+        isRecurring: false,
+        fixedObligationId: null,
+        isGoalContribution: true,
+        goalId: contribution.goalId || null,
+      };
+    });
+}
+
+function getMonthlyRecords(monthKey) {
+  return [
+    ...state.transactions.filter((transaction) => transaction.date && transaction.date.startsWith(monthKey)),
+    ...getGoalContributionRecords(monthKey),
+  ].sort((a, b) => {
+    const left = getRecordSortParts(a);
+    const right = getRecordSortParts(b);
+    return right.dayTimestamp - left.dayTimestamp
+      || right.executionTimestamp - left.executionTimestamp
+      || right.createdAt - left.createdAt;
+  });
+}
+
+function getConfiguredMonthlyIncome(user = state.currentUser) {
+  return Number(user?.monthlySalary) || Number(user?.monthlyBudgetLimit) || 0;
+}
+
+function getConfiguredMonthlyBudget(user = state.currentUser) {
+  return Number(user?.monthlyBudgetLimit) || Number(user?.monthlySalary) || 0;
+}
+
+function getMonthlyIncomeTotal(monthKey) {
+  return getMonthlyRecords(monthKey)
+    .filter((transaction) => transaction.type === 'ingreso')
+    .reduce((sum, transaction) => sum + (Number(transaction.amount) || 0), 0);
+}
+
+function getBudgetAdjustment(monthKey = state.selectedMonth, user = state.currentUser) {
+  const configuredIncome = getConfiguredMonthlyIncome(user);
+  const configuredBudget = getConfiguredMonthlyBudget(user);
+  const recordedIncome = getMonthlyIncomeTotal(monthKey);
+
+  if (!user?.autoAdjustVariable || recordedIncome <= 0) {
+    return {
+      configuredIncome,
+      recordedIncome,
+      effectiveIncome: configuredIncome,
+      monthlyBudgetLimit: configuredBudget,
+      categoryScale: 1,
+      isAdjusted: false,
+    };
+  }
+
+  // Keep the user's chosen budget share. For example, a $4M budget on a
+  // $5M configured income becomes $4.8M when the month receives $6M.
+  if (configuredIncome <= 0) {
+    return {
+      configuredIncome,
+      recordedIncome,
+      effectiveIncome: recordedIncome,
+      monthlyBudgetLimit: recordedIncome,
+      categoryScale: 1,
+      isAdjusted: true,
+    };
+  }
+
+  const categoryScale = recordedIncome / configuredIncome;
+  return {
+    configuredIncome,
+    recordedIncome,
+    effectiveIncome: recordedIncome,
+    monthlyBudgetLimit: Math.max(0, Math.round(configuredBudget * categoryScale)),
+    categoryScale,
+    isAdjusted: Math.round(recordedIncome) !== Math.round(configuredIncome),
+  };
+}
+
+function getEffectiveCategoryBudgets(monthKey = state.selectedMonth) {
+  const adjustment = getBudgetAdjustment(monthKey);
+  return state.categoryBudgets.map((budget) => ({
+    ...budget,
+    limit: Math.max(0, Math.round((Number(budget.limit) || 0) * adjustment.categoryScale)),
+  }));
+}
+
 function computeMetrics() {
   const { transactions, fixedObligations, savingsGoals, currentUser, selectedMonth } = state;
 
-  // Filter transactions for the selected month
-  const monthTransactions = transactions.filter((t) => t.date && t.date.startsWith(selectedMonth));
+  // Contributions are virtual expense records: they appear in egresos and
+  // history, but remain separate from transactions to avoid duplicate data.
+  const monthTransactions = getMonthlyRecords(selectedMonth);
 
   const totalIncome = monthTransactions
     .filter((t) => t.type === 'ingreso')
@@ -292,16 +443,20 @@ function computeMetrics() {
 
   const totalSavings = savingsGoals.reduce((sum, g) => sum + g.currentAmount, 0);
   const totalSavingsTarget = savingsGoals.reduce((sum, g) => sum + g.targetAmount, 0);
+  const totalGoalContributions = monthTransactions
+    .filter((transaction) => transaction.isGoalContribution)
+    .reduce((sum, transaction) => sum + transaction.amount, 0);
 
   const baseBalance = currentUser?.initialBalance || 0;
-  // Available cash reflects money actually received minus registered expenses.
+  // The current month's contribution is already inside totalExpenses. The
+  // remaining goal balance represents reservations made in other months.
+  const savingsReservedInOtherMonths = Math.max(0, totalSavings - totalGoalContributions);
   // Pending fixed obligations remain visible as "Por Pagar" and do not reduce
   // this balance until they are actually paid and recorded as an expense.
-  const availableCash = Math.max(0, baseBalance + totalIncome - totalExpenses);
+  const availableCash = Math.max(0, baseBalance + totalIncome - totalExpenses - savingsReservedInOtherMonths);
 
-  // The budget limit is an explicit planning value. It must not silently fall
-  // back to the salary when the user has configured a different limit.
-  const monthlyBudgetLimit = currentUser ? (currentUser.monthlyBudgetLimit || currentUser.monthlySalary || 0) : 0;
+  const budgetAdjustment = getBudgetAdjustment(selectedMonth, currentUser);
+  const monthlyBudgetLimit = budgetAdjustment.monthlyBudgetLimit;
   const monthlyBudgetSpent = totalExpenses;
   const monthlyBudgetRemaining = Math.max(0, monthlyBudgetLimit - monthlyBudgetSpent);
   const monthlyBudgetPercent = monthlyBudgetLimit > 0 ? Math.min(100, Math.round((monthlyBudgetSpent / monthlyBudgetLimit) * 100)) : 0;
@@ -316,21 +471,23 @@ function computeMetrics() {
     fixedPendingCount,
     totalSavings,
     totalSavingsTarget,
+    totalGoalContributions,
     availableCash,
     monthlyBudgetLimit,
     monthlyBudgetSpent,
     monthlyBudgetRemaining,
     monthlyBudgetPercent,
+    effectiveMonthlyIncome: budgetAdjustment.effectiveIncome,
+    budgetAdjustment,
     monthTransactions,
   };
 }
 
 function getRecordMonthsList() {
-  const monthKeys = new Set(
-    state.transactions
-      .map((transaction) => String(transaction.date || '').slice(0, 7))
-      .filter((monthKey) => /^\d{4}-\d{2}$/.test(monthKey))
-  );
+  const monthKeys = new Set([
+    ...state.transactions.map((transaction) => String(transaction.date || '').slice(0, 7)),
+    ...state.goalContributions.map((contribution) => String(contribution.date || '').slice(0, 7)),
+  ].filter((monthKey) => /^\d{4}-\d{2}$/.test(monthKey)));
 
   return [...monthKeys]
     .sort((a, b) => b.localeCompare(a))
@@ -358,7 +515,7 @@ function switchTab(tabId) {
   renderHeader();
   renderBottomNav();
   renderActiveView();
-  window.scrollTo({ top: 0, behavior: 'smooth' });
+  window.scrollTo({ top: 0, behavior: 'auto' });
 }
 
 function restoreCachedState() {
@@ -831,10 +988,10 @@ function renderDashboardLegacy() {
               .slice(0, 5)
               .map(
                 (tx) => `
-              <div data-tx-id="${tx.id}" class="dash-tx-row flex items-center justify-between p-3.5 hover:bg-slate-50 transition-colors cursor-pointer">
+              <div data-tx-id="${tx.isGoalContribution ? '' : tx.id}" data-goal-contribution="${tx.isGoalContribution ? 'true' : 'false'}" class="dash-tx-row flex items-center justify-between p-3.5 hover:bg-slate-50 transition-colors ${tx.isGoalContribution ? 'cursor-default' : 'cursor-pointer'}">
                 <div class="flex items-center gap-3 min-w-0">
                   <div class="w-10 h-10 rounded-2xl bg-slate-100 flex items-center justify-center shrink-0">
-                    ${tx.type === 'ingreso' ? `<span class="text-[#006c49]">${getIconSvg('arrowUpRight', 'w-5 h-5')}</span>` : getCategoryIconSvg(tx.category)}
+                    ${getRecordIcon(tx, 'w-5 h-5')}
                   </div>
                   <div class="flex flex-col min-w-0">
                     <p class="text-xs font-semibold text-[#0b1c30] truncate">${tx.description}</p>
@@ -963,6 +1120,7 @@ function renderDashboard() {
   const budgetPercent = budgetLimit > 0 ? Math.min(100, Math.round((metrics.monthlyBudgetSpent / budgetLimit) * 100)) : 0;
   const goals = state.savingsGoals.slice(0, 2);
   const recent = metrics.monthTransactions.slice(0, 5);
+  const financialAlerts = getFinancialAlerts({ ...state, ...metrics, alert80Percent: user.alert80Percent !== false });
   const tips = getFinancialTips({ ...state, ...metrics });
   const tipIndex = tips.length ? state.activeTipIndex % tips.length : 0;
   const activeTip = tips[tipIndex] || null;
@@ -1029,6 +1187,48 @@ function renderDashboard() {
         <div class="flex items-center justify-between gap-3 mt-3 text-sm"><span class="text-slate-600">Egresos: <strong class="text-[#0b1c30]">${formatCOP(metrics.monthlyBudgetSpent)} COP</strong></span><span class="text-right text-[#006c49]">Restante: <strong>${formatCOP(metrics.monthlyBudgetRemaining)} COP</strong></span></div>
       </div>
 
+      ${financialAlerts.length ? `
+        <div class="flex flex-col gap-2">
+          ${financialAlerts.map((alert) => {
+            const isBudgetAlert = alert.id === 'alert_budget_80' || alert.id === 'alert_budget_exceeded';
+            const alertIcon = alert.icon || (isBudgetAlert ? 'pieChart' : alert.type === 'danger' ? 'alertTriangle' : alert.type === 'warning' ? 'alertCircle' : 'info');
+            const alertTone = alert.type === 'danger'
+              ? 'bg-rose-50 border-rose-200 text-rose-900'
+              : alert.type === 'warning'
+              ? 'bg-amber-50 border-amber-200 text-amber-950'
+              : 'bg-emerald-50 border-emerald-200 text-emerald-950';
+            if (isBudgetAlert) return `
+              <div class="mockup-card rounded-[28px] bg-[#eef4ff] p-4 shadow-sm border border-[#dce8ff] flex items-center justify-between gap-3">
+                <div class="flex items-center gap-3 min-w-0">
+                  <div class="w-12 h-12 rounded-full ${alert.type === 'danger' ? 'bg-[#ffe1e7] text-[#f3194d]' : 'bg-[#dce8ff] text-[#0058bc]'} flex items-center justify-center shrink-0">${getIconSvg(alertIcon, 'w-5 h-5')}</div>
+                  <div class="min-w-0">
+                    <p class="text-sm font-semibold text-[#0b1c30]">${alert.title}</p>
+                    <p class="text-[11px] text-slate-600">${alert.description}</p>
+                  </div>
+                </div>
+                <button data-tab="${alert.actionTab || 'gastos'}" class="insight-alert-action rounded-full bg-white px-4 py-2 text-sm font-semibold text-[#0058bc] border border-slate-200 shadow-sm cursor-pointer hover:bg-[#eef3ff] whitespace-nowrap">
+                  ${alert.actionLabel || 'Ver'}
+                </button>
+              </div>
+            `;
+            return `
+              <div class="rounded-2xl p-3 border flex items-center justify-between gap-3 ${alertTone}">
+                <div class="flex items-center gap-2.5 min-w-0">
+                  <div class="shrink-0">${getIconSvg(alertIcon, 'w-4 h-4')}</div>
+                  <div class="flex flex-col min-w-0">
+                    <span class="text-xs font-bold">${alert.title}</span>
+                    <span class="text-[11px] opacity-80">${alert.description}</span>
+                  </div>
+                </div>
+                <button data-tab="${alert.actionTab || 'gastos'}" class="insight-alert-action shrink-0 px-2.5 py-1 rounded-full bg-white text-xs font-semibold shadow-sm hover:opacity-90 active:scale-95 transition-all cursor-pointer">
+                  ${alert.actionLabel || 'Ver'}
+                </button>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      ` : ''}
+
       ${pending.length ? `
         <div class="mockup-card rounded-[28px] bg-[#eef4ff] p-4 shadow-sm border border-[#dce8ff] flex items-center justify-between gap-3">
           <div class="flex items-center gap-3 min-w-0">
@@ -1053,7 +1253,7 @@ function renderDashboard() {
       <div>
         <div class="flex items-center justify-between mb-2"><h2 class="text-lg font-bold">Metas Activas <span class="ml-1 rounded-full bg-[#dce8ff] px-2 py-0.5 text-xs">${state.savingsGoals.length}</span></h2><button id="dash-ver-metas-btn" class="text-xs font-semibold text-[#0058bc] cursor-pointer">Explorar ${getIconSvg('chevronRight', 'w-3 h-3 inline')}</button></div>
         <div class="grid grid-cols-2 gap-2.5">
-          ${goals.map((goal) => { const percent = goal.targetAmount > 0 ? Math.min(100, Math.round((goal.currentAmount / goal.targetAmount) * 100)) : 0; return `<div data-goal="${goal.id}" class="dash-goal-card rounded-3xl bg-white p-3.5 shadow-sm border border-slate-100 cursor-pointer"><div class="flex items-center justify-between"><div class="w-9 h-9 rounded-full flex items-center justify-center" style="background-color:${goal.color}25;color:${goal.color}">${getIconSvg(goal.icon === 'laptop' ? 'laptop' : goal.icon === 'plane' ? 'plane' : 'shield', 'w-4 h-4')}</div><span class="text-xs font-bold" style="color:${goal.color}">${percent}%</span></div><p class="mt-2 text-xs font-semibold truncate">${goal.name}</p><p class="text-[11px] text-slate-600 tabular-nums">${formatCompactCOP(goal.currentAmount)} / ${formatCompactCOP(goal.targetAmount)}</p><div class="mt-2 h-1.5 bg-slate-100 rounded-full overflow-hidden"><div class="h-full rounded-full" style="width:${percent}%;background:${goal.color}"></div></div></div>`; }).join('')}
+          ${goals.map((goal) => { const percent = goal.targetAmount > 0 ? Math.min(100, Math.round((goal.currentAmount / goal.targetAmount) * 100)) : 0; const mediaClass = goal.imageUrl ? 'w-9 h-9 flex items-center justify-center overflow-hidden' : 'w-9 h-9 rounded-full flex items-center justify-center'; return `<div data-goal="${goal.id}" class="dash-goal-card rounded-3xl bg-white p-3.5 shadow-sm border border-slate-100 cursor-pointer"><div class="flex items-center justify-between"><div class="${mediaClass}" style="${goal.imageUrl ? '' : `background-color:${goal.color}25;color:${goal.color}`}" >${renderGoalMedia(goal, 'w-full h-full object-contain', 'w-4 h-4')}</div><span class="text-xs font-bold" style="color:${goal.color}">${percent}%</span></div><p class="mt-2 text-xs font-semibold truncate">${goal.name}</p><p class="text-[11px] text-slate-600 tabular-nums">${formatCompactCOP(goal.currentAmount)} / ${formatCompactCOP(goal.targetAmount)}</p><div class="mt-2 h-1.5 bg-slate-100 rounded-full overflow-hidden"><div class="h-full rounded-full" style="width:${percent}%;background:${goal.color}"></div></div></div>`; }).join('')}
         </div>
       </div>
 
@@ -1105,7 +1305,7 @@ function renderDashboard() {
       <div>
         <div class="flex items-center justify-between mb-2"><h2 class="text-lg font-bold">Movimientos Recientes</h2><button id="dash-ver-historial-btn" class="text-xs font-semibold text-[#0058bc] cursor-pointer">Ver historial</button></div>
         <div class="rounded-3xl bg-white px-4 shadow-sm border border-slate-100 divide-y divide-slate-100 overflow-hidden">
-      ${recent.map((tx) => `<div data-tx-id="${tx.id}" class="dash-tx-row flex items-center justify-between py-3 cursor-pointer"><div class="flex items-center gap-3 min-w-0"><div class="w-10 h-10 rounded-full bg-[#dce8ff] flex items-center justify-center shrink-0">${tx.type === 'ingreso' ? getIconSvg('trendingUp', 'w-4 h-4 text-[#006c49]') : getCategoryIconSvg(tx.category, 'w-4 h-4')}</div><div class="min-w-0"><p class="text-xs font-semibold truncate">${tx.description}</p><p class="text-[11px] text-slate-500 truncate">${tx.date} • ${tx.category}</p></div></div><div class="text-right shrink-0"><strong class="text-sm tabular-nums ${tx.type === 'ingreso' ? 'text-[#006c49]' : 'text-[#0b1c30]'}">${tx.type === 'ingreso' ? '+' : '-'}${formatCOP(tx.amount)}</strong><span class="block text-[10px] ${tx.type === 'ingreso' ? 'text-[#006c49]' : 'text-slate-500'}">${tx.type === 'ingreso' ? 'Ingreso' : 'Egreso'}</span></div></div>`).join('')}
+      ${recent.map((tx) => `<div data-tx-id="${tx.isGoalContribution ? '' : tx.id}" data-goal-contribution="${tx.isGoalContribution ? 'true' : 'false'}" class="dash-tx-row flex items-center justify-between py-3 ${tx.isGoalContribution ? 'cursor-default' : 'cursor-pointer'}"><div class="flex items-center gap-3 min-w-0"><div class="w-10 h-10 rounded-full bg-[#dce8ff] flex items-center justify-center shrink-0">${getRecordIcon(tx, 'w-4 h-4')}</div><div class="min-w-0"><p class="text-xs font-semibold truncate">${tx.description}</p><p class="text-[11px] text-slate-500 truncate">${tx.date} • ${tx.category}</p></div></div><div class="text-right shrink-0"><strong class="text-sm tabular-nums ${tx.type === 'ingreso' ? 'text-[#006c49]' : 'text-[#0b1c30]'}">${tx.type === 'ingreso' ? '+' : '-'}${formatCOP(tx.amount)}</strong><span class="block text-[10px] ${tx.type === 'ingreso' ? 'text-[#006c49]' : 'text-slate-500'}">${tx.type === 'ingreso' ? 'Ingreso' : 'Egreso'}</span></div></div>`).join('')}
         </div>
       </div>
     </div>
@@ -1152,10 +1352,6 @@ function renderDashboard() {
     tipScroller.querySelectorAll('[data-tip-action]').forEach((button) => {
       button.onclick = () => switchTab(button.dataset.tipTab || 'inicio');
     });
-    tipScroller.addEventListener('scroll', () => {
-      const width = Math.max(1, tipScroller.clientWidth);
-      state.activeTipIndex = Math.max(0, Math.min(tips.length - 1, Math.round(tipScroller.scrollLeft / width)));
-    }, { passive: true });
     requestAnimationFrame(() => {
       tipScroller.scrollLeft = tipIndex * tipScroller.clientWidth;
     });
@@ -1171,8 +1367,11 @@ function renderDashboard() {
   document.getElementById('dash-ver-fijos-btn')?.addEventListener('click', () => switchTab('obligaciones'));
   document.getElementById('dash-ver-metas-btn')?.addEventListener('click', () => switchTab('metas'));
   document.getElementById('dash-ver-historial-btn')?.addEventListener('click', () => switchTab('gastos'));
+  document.querySelectorAll('.insight-alert-action').forEach((button) => {
+    button.onclick = () => switchTab(button.dataset.tab || 'gastos');
+  });
   DOM.tabInicio.querySelectorAll('.dash-goal-card').forEach((card) => { card.onclick = () => switchTab('metas'); });
-  DOM.tabInicio.querySelectorAll('.dash-tx-row').forEach((row) => { row.onclick = () => { const tx = state.transactions.find((item) => item.id === row.dataset.txId); if (tx) openEditTransactionModal(tx); }; });
+  DOM.tabInicio.querySelectorAll('.dash-tx-row').forEach((row) => { row.onclick = () => { if (row.dataset.goalContribution === 'true') return; const tx = state.transactions.find((item) => item.id === row.dataset.txId); if (tx) openEditTransactionModal(tx); }; });
 }
 
 // -------------------------------------------------------------
@@ -1200,7 +1399,7 @@ function renderPastMonthSummaryView(monthKey) {
   const monthLabel = formatMonthKeyToLabel(monthKey);
   const currentMonthLabel = formatMonthKeyToLabel(getCurrentMonthKey());
 
-  const monthTransactions = state.transactions.filter((t) => t.date && t.date.startsWith(monthKey));
+  const monthTransactions = getMonthlyRecords(monthKey);
 
   const totalIncome = monthTransactions
     .filter((t) => t.type === 'ingreso')
@@ -1213,9 +1412,10 @@ function renderPastMonthSummaryView(monthKey) {
   const netSavings = totalIncome - totalExpenses;
   const savingsRate = totalIncome > 0 ? (netSavings / totalIncome) * 100 : 0;
 
-  const monthlySalary = state.currentUser?.monthlySalary || state.currentUser?.monthlyBudgetLimit || totalIncome || 0;
-  const budgetConsumedPercent = monthlySalary > 0
-    ? Math.min(100, Math.round((totalExpenses / monthlySalary) * 100))
+  const budgetAdjustment = getBudgetAdjustment(monthKey);
+  const monthlyBudgetLimit = budgetAdjustment.monthlyBudgetLimit || totalIncome || 0;
+  const budgetConsumedPercent = monthlyBudgetLimit > 0
+    ? Math.min(100, Math.round((totalExpenses / monthlyBudgetLimit) * 100))
     : 0;
 
   // Category breakdown for expenses
@@ -1327,7 +1527,7 @@ function renderPastMonthSummaryView(monthKey) {
 
             <div class="p-3 rounded-2xl bg-white/5 border border-white/10 flex flex-col justify-between">
               <div class="flex items-center justify-between text-slate-300">
-                <span class="text-[11px] font-medium">Gastos Totales</span>
+                <span class="text-[11px] font-medium">Egresos Totales</span>
                 <span class="text-rose-400">${getIconSvg('trendingDown', 'w-3.5 h-3.5')}</span>
               </div>
               <div class="mt-2">
@@ -1510,7 +1710,7 @@ function renderPastMonthSummaryView(monthKey) {
                 <div data-tx-id="${escapeReportHtml(tx.id)}" class="py-2.5 flex items-center justify-between text-xs hover:bg-slate-50 transition-colors cursor-pointer rounded-xl px-2">
                   <div class="flex items-center gap-2.5 min-w-0">
                     <div class="w-8 h-8 rounded-xl bg-slate-100 flex items-center justify-center shrink-0">
-                      ${tx.type === 'ingreso' ? `<span class="text-[#006c49]">${getIconSvg('arrowUpRight', 'w-4 h-4')}</span>` : getCategoryIconSvg(tx.category, 'w-4 h-4')}
+                      ${getRecordIcon(tx, 'w-4 h-4')}
                     </div>
                     <div class="flex flex-col min-w-0">
                       <span class="font-semibold text-slate-800 truncate">${escapeReportHtml(tx.description || 'Sin descripción')}</span>
@@ -1784,11 +1984,13 @@ function renderIncomes() {
 function renderExpenses() {
   // Expenses and incomes share one monthly history. Fixed recurring expenses
   // remain isolated in the Fijos module.
-  const monthlyTxs = state.transactions.filter((t) => t.date?.startsWith(state.selectedMonth));
+  const monthlyTxs = getMonthlyRecords(state.selectedMonth);
   const expenseTxs = monthlyTxs.filter((t) => t.type === 'gasto');
   const incomeTxs = monthlyTxs.filter((t) => t.type === 'ingreso');
   const totalExpenses = expenseTxs.reduce((sum, t) => sum + t.amount, 0);
   const totalIncome = incomeTxs.reduce((sum, t) => sum + t.amount, 0);
+  const metrics = computeMetrics();
+  const effectiveCategoryBudgets = getEffectiveCategoryBudgets(state.selectedMonth);
 
   // Compute category spent map
   const categorySpentMap = {};
@@ -1808,7 +2010,7 @@ function renderExpenses() {
   const topPercent = totalExpenses > 0 ? Math.round((topAmount / totalExpenses) * 100) : 0;
 
   // Categories exceeding limit
-  const exceededCategories = state.categoryBudgets.filter(
+  const exceededCategories = effectiveCategoryBudgets.filter(
     (b) => b.limit > 0 && (categorySpentMap[b.category] || 0) > b.limit
   );
 
@@ -1835,7 +2037,7 @@ function renderExpenses() {
     groupedTxs[label].push(tx);
   });
 
-  const expenseCategoriesList = ['Alimentación', 'Transporte', 'Compras', 'Servicios', 'Salud', 'Entretenimiento', 'Educación', 'Otros'];
+  const expenseCategoriesList = ['Alimentación', 'Transporte', 'Compras', 'Servicios', 'Salud', 'Entretenimiento', 'Educación', 'Ahorro / Metas', 'Otros'];
   const incomeCategoriesList = ['Nómina', 'Honorarios', 'Negocio', 'Inversión', 'Otros'];
   const categoriesList = [
     'Todos',
@@ -1845,8 +2047,6 @@ function renderExpenses() {
       ? incomeCategoriesList
       : [...new Set([...expenseCategoriesList, ...incomeCategoriesList])]),
   ];
-
-  const metrics = computeMetrics();
 
   DOM.tabGastos.innerHTML = `
     <div class="flex flex-col w-full px-4 pt-2 pb-24 max-w-xl mx-auto gap-4 animate-in fade-in duration-200">
@@ -1889,7 +2089,7 @@ function renderExpenses() {
           <span class="text-xs text-slate-500 font-medium">Resumen del mes</span>
           <div class="grid grid-cols-2 gap-2">
             <div class="rounded-2xl bg-rose-50 px-3 py-2.5">
-              <span class="block text-[11px] font-semibold text-rose-600">Gastos</span>
+              <span class="block text-[11px] font-semibold text-rose-600">Egresos</span>
               <span class="block text-lg font-bold text-[#0b1c30] tabular-nums">-${formatCOP(totalExpenses, true)}</span>
             </div>
             <div class="rounded-2xl bg-emerald-50 px-3 py-2.5">
@@ -1934,12 +2134,12 @@ function renderExpenses() {
         <div class="flex items-center justify-between px-1">
           <div>
             <h2 class="font-semibold text-sm text-[#0b1c30]">Presupuestos por Categoría</h2>
-            <p class="text-[11px] text-slate-500">Límites activos en seguimiento</p>
+             <p class="text-[11px] text-slate-500">${metrics.budgetAdjustment.isAdjusted ? 'Límites ajustados al ingreso del mes' : 'Límites activos en seguimiento'}</p>
           </div>
         </div>
 
         <div class="grid grid-cols-1 gap-2">
-          ${state.categoryBudgets
+          ${effectiveCategoryBudgets
             .slice(0, 4)
             .map((catBudget) => {
               const spent = categorySpentMap[catBudget.category] || 0;
@@ -2081,10 +2281,10 @@ function renderExpenses() {
                     ${items
                       .map(
                         (tx) => `
-                      <div data-tx-id="${tx.id}" class="record-row-item flex items-center justify-between p-3.5 hover:bg-slate-50 transition-colors cursor-pointer">
+                          <div data-tx-id="${tx.isGoalContribution ? '' : tx.id}" data-goal-contribution="${tx.isGoalContribution ? 'true' : 'false'}" class="record-row-item flex items-center justify-between p-3.5 hover:bg-slate-50 transition-colors ${tx.isGoalContribution ? 'cursor-default' : 'cursor-pointer'}">
                         <div class="flex items-center gap-3 min-w-0">
                           <div class="w-10 h-10 rounded-2xl ${tx.type === 'ingreso' ? 'bg-emerald-50 text-[#006c49]' : 'bg-slate-100 text-slate-600'} flex items-center justify-center shrink-0">
-                            ${getCategoryIconSvg(tx.category)}
+                            ${getRecordIcon(tx, 'w-5 h-5')}
                           </div>
                           <div class="flex flex-col min-w-0">
                             <p class="text-xs font-semibold text-[#0b1c30] truncate">${tx.description}</p>
@@ -2095,7 +2295,7 @@ function renderExpenses() {
                           <span class="text-xs sm:text-sm font-bold ${tx.type === 'ingreso' ? 'text-[#006c49]' : 'text-[#0b1c30]'} tabular-nums">
                             ${tx.type === 'ingreso' ? '+' : '-'}${formatCOP(tx.amount)}
                           </span>
-                          ${getIconSvg('chevronRight', 'w-4 h-4 text-slate-300')}
+                          ${tx.isGoalContribution ? '' : getIconSvg('chevronRight', 'w-4 h-4 text-slate-300')}
                         </div>
                       </div>
                     `
@@ -2136,6 +2336,7 @@ function renderExpenses() {
 
   DOM.tabGastos.querySelectorAll('.record-row-item').forEach((row) => {
     row.onclick = () => {
+      if (row.dataset.goalContribution === 'true') return;
       const tx = state.transactions.find((t) => t.id === row.dataset.txId);
       if (tx) openEditTransactionModal(tx);
     };
@@ -2151,7 +2352,7 @@ function renderObligations() {
   const urgent = sorted.length > 0 ? sorted[0] : null;
 
   const percentSettled = metrics.fixedTotal > 0 ? Math.round((metrics.fixedPaid / metrics.fixedTotal) * 100) : 0;
-  const baseIncome = metrics.totalIncome > 0 ? metrics.totalIncome : metrics.monthlyBudgetLimit;
+  const baseIncome = metrics.effectiveMonthlyIncome || metrics.monthlyBudgetLimit || metrics.totalIncome;
   const fixedRatio = baseIncome > 0 ? Math.round((metrics.fixedTotal / baseIncome) * 100) : 0;
 
   const filteredObligations = state.fixedObligations.filter((o) => {
@@ -2450,7 +2651,7 @@ function renderGoalsLegacy() {
       };
     }
     const remaining = activeIncompleteGoal.targetAmount - activeIncompleteGoal.currentAmount;
-    const salary = state.currentUser?.monthlySalary || state.currentUser?.monthlyBudgetLimit || metrics.totalIncome || 0;
+    const salary = metrics.effectiveMonthlyIncome || state.currentUser?.monthlySalary || state.currentUser?.monthlyBudgetLimit || metrics.totalIncome || 0;
     const savingsRulePercent = (state.currentUser?.budgetRule?.savings || 20) / 100;
     const realisticMonthlySavings = salary > 0 ? Math.round(salary * savingsRulePercent) : Math.max(50000, Math.round(metrics.availableCash * 0.2));
     const realisticQuincenalCap = Math.max(50000, Math.round(realisticMonthlySavings / 2 / 10000) * 10000);
@@ -2735,7 +2936,8 @@ function renderProfile() {
   const user = state.currentUser;
   if (!user) return;
 
-  const salary = user.monthlyBudgetLimit || user.monthlySalary || 5800000;
+  const budgetAdjustment = getBudgetAdjustment(getCurrentMonthKey(), user);
+  const salary = budgetAdjustment.monthlyBudgetLimit || user.monthlyBudgetLimit || user.monthlySalary || 5800000;
   const needs = Math.round(salary * ((user.budgetRule?.needs || 50) / 100));
   const wants = Math.round(salary * ((user.budgetRule?.wants || 30) / 100));
   const savings = Math.round(salary * ((user.budgetRule?.savings || 20) / 100));
@@ -2812,7 +3014,7 @@ function renderProfile() {
               <span class="text-xs font-bold text-slate-500">COP</span>
             </div>
             <p class="text-[11px] text-slate-600 mt-0.5">
-               Distribuido bajo la regla inteligente MiPlata 50/30/20:
+               ${budgetAdjustment.isAdjusted ? `Ajustado al ingreso registrado de ${formatCOP(budgetAdjustment.effectiveIncome)} bajo la regla 50/30/20:` : 'Distribuido bajo la regla inteligente MiPlata 50/30/20:'}
             </p>
           </div>
 
@@ -3381,6 +3583,50 @@ function renderAuth() {
 // -------------------------------------------------------------
 
 // Quick Add Transaction Modal (<10s Keypad)
+const SMART_CATEGORY_RULES = {
+  gasto: [
+    { category: 'Alimentación', keywords: ['almuerzo', 'desayuno', 'cena', 'comida', 'restaurante', 'supermercado', 'mercado', 'carulla', 'exito', 'd1', 'fruta', 'pan', 'cafe', 'empanada', 'domicilio', 'rappi', 'comida rapida'] },
+    { category: 'Transporte', keywords: ['uber', 'taxi', 'bus', 'transmilenio', 'metro', 'gasolina', 'combustible', 'parqueadero', 'peaje', 'soat', 'pasaje', 'moto', 'bicicleta'] },
+    { category: 'Compras', keywords: ['compra', 'ropa', 'zapatos', 'electronica', 'amazon', 'mercado libre', 'falabella', 'regalo', 'hogar'] },
+    { category: 'Servicios', keywords: ['arriendo', 'alquiler', 'luz', 'agua', 'energia', 'gas', 'internet', 'telefono', 'celular', 'factura', 'servicio'] },
+    { category: 'Salud', keywords: ['salud', 'medico', 'medicina', 'medicamento', 'medicamentos', 'farmacia', 'drogueria', 'consulta', 'hospital', 'laboratorio', 'examen', 'urgencias', 'odontologo', 'dentista', 'terapia', 'psicologo', 'vitamina', 'vitaminas', 'eps', 'seguro'] },
+    { category: 'Entretenimiento', keywords: ['cine', 'concierto', 'netflix', 'spotify', 'juego', 'videojuego', 'gimnasio', 'bar', 'fiesta', 'ocio'] },
+    { category: 'Educación', keywords: ['colegio', 'universidad', 'curso', 'clase', 'libro', 'matricula', 'educacion', 'papeleria'] },
+  ],
+  ingreso: [
+    { category: 'Nómina', keywords: ['salario', 'sueldo', 'nomina', 'nomina', 'quincena', 'pago laboral', 'empresa'] },
+    { category: 'Honorarios', keywords: ['honorario', 'freelance', 'consultoria', 'asesoria', 'servicio profesional', 'cliente'] },
+    { category: 'Negocio', keywords: ['venta', 'negocio', 'cliente', 'pedido', 'emprendimiento', 'producto'] },
+    { category: 'Inversión', keywords: ['inversion', 'dividendos', 'intereses', 'rendimiento', 'interes', 'fondo'] },
+  ],
+};
+
+function normalizeSmartCategoryText(value) {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+}
+
+function suggestCategoryFromDescription(type, description) {
+  if (!state.currentUser?.smartCategorization) return '';
+  const text = normalizeSmartCategoryText(description);
+  if (text.length < 3) return '';
+
+  const rules = SMART_CATEGORY_RULES[type] || [];
+  let bestMatch = { category: '', score: 0 };
+  rules.forEach((rule) => {
+    const score = rule.keywords.reduce((total, keyword) => {
+      const normalizedKeyword = normalizeSmartCategoryText(keyword);
+      return total + (text.includes(normalizedKeyword) ? normalizedKeyword.length : 0);
+    }, 0);
+    if (score > bestMatch.score) bestMatch = { category: rule.category, score };
+  });
+
+  return bestMatch.category;
+}
+
 function formatQuickAddDateLabel(dateISO) {
   const selectedDate = dateISO || getTodayISODate();
   const [, month, day] = selectedDate.split('-').map(Number);
@@ -3398,6 +3644,8 @@ function openQuickAddModal(type = 'gasto') {
   state.quickAdd.type = type;
   state.quickAdd.rawValue = '0';
   state.quickAdd.category = type === 'ingreso' ? 'Nómina' : 'Alimentación';
+  state.quickAdd.categoryManuallySelected = false;
+  state.quickAdd.smartSuggestion = '';
   state.quickAdd.description = '';
   state.quickAdd.date = getTodayISODate();
 
@@ -3406,7 +3654,7 @@ function openQuickAddModal(type = 'gasto') {
 }
 
 function renderQuickAddModalContent() {
-  const { type, rawValue, category, description, date } = state.quickAdd;
+  const { type, rawValue, category, description, date, smartSuggestion } = state.quickAdd;
   const numVal = parseInt(rawValue, 10) || 0;
 
   const expenseCategories = [
@@ -3446,10 +3694,11 @@ function renderQuickAddModalContent() {
 
       <div class="text-center mb-4 sm:mb-5"><div class="flex items-baseline justify-center gap-1"><span class="text-4xl sm:text-5xl font-extrabold text-[#0b1c30] tabular-nums"><span class="text-slate-300">$</span>${formatCOP(numVal).replace('$', '')}</span><span class="text-base sm:text-xl font-medium text-slate-500">COP</span></div><p class="mt-2 text-xs sm:text-sm font-semibold text-[#0058bc]"><span class="inline-block w-3 h-3 rounded-full bg-[#006c49] mr-1"></span>${type === 'ingreso' ? 'Registrando ingreso inmediato' : 'Registrando egreso inmediato'}</p></div>
 
-      <div class="flex items-center justify-between mb-2.5 sm:mb-3"><h2 class="text-base sm:text-lg font-semibold uppercase tracking-wide text-slate-600">Categoría</h2><span class="text-base sm:text-lg font-semibold text-[#0058bc]">${category}</span></div>
+      <div class="flex items-center justify-between mb-2.5 sm:mb-3"><h2 class="text-base sm:text-lg font-semibold uppercase tracking-wide text-slate-600">Categoría</h2><span id="qa-selected-category" class="text-base sm:text-lg font-semibold text-[#0058bc]">${category}</span></div>
       <div id="qa-categories-scroll" class="qa-categories-scroll flex gap-2.5 sm:gap-3 overflow-x-auto no-scrollbar pb-1.5 sm:pb-2 mb-4 sm:mb-5" role="listbox" aria-label="Categorías de ${type === 'ingreso' ? 'ingreso' : 'gasto'}">
         ${categories.map((c) => `<button type="button" data-cat="${c.name}" role="option" aria-selected="${category === c.name}" class="qa-cat-btn shrink-0 w-[68px] sm:w-[76px] flex flex-col items-center gap-1.5 sm:gap-2 cursor-pointer"><span class="w-[60px] h-[60px] sm:w-[68px] sm:h-[68px] rounded-3xl flex items-center justify-center ${category === c.name ? 'bg-[#0058bc] text-white shadow-md' : 'bg-[#dce8ff] text-slate-600'}">${getIconSvg(c.icon, 'w-6 h-6 sm:w-7 sm:h-7')}</span><span class="text-[11px] sm:text-sm whitespace-nowrap ${category === c.name ? 'text-[#0058bc] font-semibold' : 'text-slate-700'}">${c.label}</span></button>`).join('')}
       </div>
+      <p id="qa-smart-category-hint" aria-live="polite" class="text-[11px] text-[#0058bc] font-medium text-center -mt-3 mb-3 ${smartSuggestion ? '' : 'invisible'}">${smartSuggestion ? `Sugerencia automática: ${smartSuggestion}` : 'Sugerencia automática'}</p>
 
       <div class="rounded-3xl bg-white p-3.5 sm:p-4 shadow-sm border border-slate-100 mb-4 sm:mb-6">
         <div class="flex items-center gap-3"><span class="w-10 h-10 rounded-full bg-[#dce8ff] text-slate-600 flex items-center justify-center">${getIconSvg('fileText', 'w-5 h-5')}</span><input id="qa-description-input" type="text" placeholder="${type === 'ingreso' ? 'Concepto del ingreso' : 'Café y empanada Juan Valdez'}" value="${description}" class="flex-1 text-lg bg-transparent focus:outline-none" /></div>
@@ -3462,7 +3711,7 @@ function renderQuickAddModalContent() {
         <button data-key="7" class="keypad-btn bg-white border-0 shadow-sm h-16 sm:h-[72px] rounded-full">7</button><button data-key="8" class="keypad-btn bg-white border-0 shadow-sm h-16 sm:h-[72px] rounded-full">8</button><button data-key="9" class="keypad-btn bg-white border-0 shadow-sm h-16 sm:h-[72px] rounded-full">9</button>
         <button data-key="000" class="keypad-btn bg-[#eef3ff] border-0 text-[#0058bc] h-16 sm:h-[72px] rounded-full">+000</button><button data-key="0" class="keypad-btn bg-white border-0 shadow-sm h-16 sm:h-[72px] rounded-full">0</button><button data-key="backspace" class="keypad-btn bg-[#eef3ff] border-0 h-16 sm:h-[72px] rounded-full">${getIconSvg('deleteKey', 'w-7 h-7')}</button>
       </div>
-      <button id="qa-submit-btn" class="w-full h-14 sm:h-16 rounded-full ${numVal > 0 ? (type === 'ingreso' ? 'bg-[#006c49]' : 'bg-[#0058bc]') : 'bg-slate-300 pointer-events-none'} text-white font-bold text-lg sm:text-xl shadow-md cursor-pointer flex items-center justify-center gap-2">${getIconSvg('checkCircle2', 'w-6 h-6 sm:w-7 sm:h-7')}<span>Guardar ${type === 'ingreso' ? 'Ingreso' : 'Gasto'}</span></button>
+      <button id="qa-submit-btn" class="w-full h-14 sm:h-16 rounded-full ${numVal > 0 ? 'bg-[#0058bc]' : 'bg-slate-300 pointer-events-none'} text-white font-bold text-lg sm:text-xl shadow-md cursor-pointer flex items-center justify-center gap-2">${getIconSvg('checkCircle2', 'w-6 h-6 sm:w-7 sm:h-7')}<span>Guardar ${type === 'ingreso' ? 'Ingreso' : 'Gasto'}</span></button>
     </div>
   `;
 
@@ -3470,11 +3719,15 @@ function renderQuickAddModalContent() {
   document.getElementById('qa-type-gasto').onclick = () => {
     state.quickAdd.type = 'gasto';
     state.quickAdd.category = 'Alimentación';
+    state.quickAdd.categoryManuallySelected = false;
+    state.quickAdd.smartSuggestion = '';
     renderQuickAddModalContent();
   };
   document.getElementById('qa-type-ingreso').onclick = () => {
     state.quickAdd.type = 'ingreso';
     state.quickAdd.category = 'Nómina';
+    state.quickAdd.categoryManuallySelected = false;
+    state.quickAdd.smartSuggestion = '';
     renderQuickAddModalContent();
   };
   document.getElementById('qa-close-btn').onclick = () => {
@@ -3487,14 +3740,40 @@ function renderQuickAddModalContent() {
   DOM.modalQuickAdd.querySelectorAll('.qa-cat-btn').forEach((btn) => {
     btn.onclick = () => {
       state.quickAdd.category = btn.dataset.cat;
+      state.quickAdd.categoryManuallySelected = true;
+      state.quickAdd.smartSuggestion = '';
       renderQuickAddModalContent();
     };
   });
+
+  const refreshCategorySelection = (selectedCategory) => {
+    state.quickAdd.category = selectedCategory;
+    const selectedLabel = document.getElementById('qa-selected-category');
+    if (selectedLabel) selectedLabel.textContent = selectedCategory;
+    DOM.modalQuickAdd.querySelectorAll('.qa-cat-btn').forEach((button) => {
+      const isSelected = button.dataset.cat === selectedCategory;
+      button.setAttribute('aria-selected', String(isSelected));
+      const icon = button.querySelector('span:first-child');
+      const label = button.querySelector('span:last-child');
+      if (icon) icon.className = `w-[60px] h-[60px] sm:w-[68px] sm:h-[68px] rounded-3xl flex items-center justify-center ${isSelected ? 'bg-[#0058bc] text-white shadow-md' : 'bg-[#dce8ff] text-slate-600'}`;
+      if (label) label.className = `text-[11px] sm:text-sm whitespace-nowrap ${isSelected ? 'text-[#0058bc] font-semibold' : 'text-slate-700'}`;
+    });
+  };
 
   const descInput = document.getElementById('qa-description-input');
   if (descInput) {
     descInput.oninput = (e) => {
       state.quickAdd.description = e.target.value;
+      if (!state.quickAdd.categoryManuallySelected) {
+        const suggestedCategory = suggestCategoryFromDescription(state.quickAdd.type, state.quickAdd.description);
+        state.quickAdd.smartSuggestion = suggestedCategory;
+        if (suggestedCategory) refreshCategorySelection(suggestedCategory);
+        const suggestionHint = document.getElementById('qa-smart-category-hint');
+        if (suggestionHint) {
+          suggestionHint.textContent = suggestedCategory ? `Sugerencia automática: ${suggestedCategory}` : 'Sugerencia automática';
+          suggestionHint.classList.toggle('invisible', !suggestedCategory);
+        }
+      }
     };
   }
 
@@ -3849,6 +4128,11 @@ function formatGoalDeadline(value) {
   return year && month ? `${SPANISH_MONTHS[Number(month) - 1] || month} ${year}` : String(value || '');
 }
 
+function isGoalDeadlineBeforeCurrentMonth(year, month) {
+  const selectedMonthKey = `${Number(year)}-${String(Number(month)).padStart(2, '0')}`;
+  return selectedMonthKey < getCurrentMonthKey();
+}
+
 function openAddOrEditGoalModal(goal = null) {
   DOM.modalSavingsGoal.classList.remove('hidden');
 
@@ -3859,7 +4143,7 @@ function openAddOrEditGoalModal(goal = null) {
   const currentDeadlineMonth = normalizedCurrentDeadline.slice(5, 7);
   const currentDeadlineYear = normalizedCurrentDeadline.slice(0, 4);
   const currentYear = new Date().getFullYear();
-  const firstDeadlineYear = Math.min(currentYear - 1, Number(currentDeadlineYear) || currentYear);
+  const firstDeadlineYear = Math.min(currentYear, Number(currentDeadlineYear) || currentYear);
   const lastDeadlineYear = Math.max(currentYear + 10, Number(currentDeadlineYear) || currentYear);
   const goalIconOptions = [
     { value: 'security', icon: 'shield' },
@@ -3878,7 +4162,12 @@ function openAddOrEditGoalModal(goal = null) {
     <option value="${String(index + 1).padStart(2, '0')}" ${currentDeadlineMonth === String(index + 1).padStart(2, '0') ? 'selected' : ''}>${month}</option>
   `).join('');
   const goalDeadlineYearOptions = Array.from({ length: lastDeadlineYear - firstDeadlineYear + 1 }, (_, index) => firstDeadlineYear + index)
-    .map((year) => `<option value="${year}" ${currentDeadlineYear === String(year) ? 'selected' : ''}>${year}</option>`)
+    .map((year) => {
+      const isExpiredYear = year < currentYear;
+      const isCurrentDeadlineYear = currentDeadlineYear === String(year);
+      const label = isExpiredYear && isCurrentDeadlineYear ? `${year} (fecha anterior)` : year;
+      return `<option value="${year}" ${isCurrentDeadlineYear ? 'selected' : ''} ${isExpiredYear ? 'disabled' : ''}>${label}</option>`;
+    })
     .join('');
 
   DOM.modalSavingsGoal.innerHTML = `
@@ -3914,7 +4203,7 @@ function openAddOrEditGoalModal(goal = null) {
             </select>
           </div>
           <button type="button" id="goal-clear-deadline" class="text-xs text-[#0058bc] font-semibold mt-1.5 cursor-pointer">Quitar fecha límite</button>
-          <p class="text-xs text-slate-400 mt-1">Selecciona el mes y el año en que quieres cumplirla.</p>
+          <p class="text-xs text-slate-400 mt-1">Solo puedes elegir el mes actual o una fecha futura.</p>
         </div>
 
         <div>
@@ -3993,9 +4282,21 @@ function openAddOrEditGoalModal(goal = null) {
 
   const deadlineMonthInput = document.getElementById('goal-input-deadline-month');
   const deadlineYearInput = document.getElementById('goal-input-deadline-year');
+  const syncGoalDeadlineMonthOptions = () => {
+    const selectedYear = Number(deadlineYearInput.value) || currentYear;
+    Array.from(deadlineMonthInput.options).forEach((option) => {
+      if (!option.value) return;
+      const isPast = isGoalDeadlineBeforeCurrentMonth(selectedYear, option.value);
+      option.disabled = isPast;
+      if (isPast && option.selected) deadlineMonthInput.value = '';
+    });
+  };
+  deadlineYearInput.onchange = syncGoalDeadlineMonthOptions;
+  syncGoalDeadlineMonthOptions();
   document.getElementById('goal-clear-deadline').onclick = () => {
     deadlineMonthInput.value = '';
     deadlineYearInput.value = '';
+    syncGoalDeadlineMonthOptions();
   };
 
   DOM.modalSavingsGoal.querySelectorAll('.goal-icon-choice').forEach((button) => {
@@ -4030,6 +4331,10 @@ function openAddOrEditGoalModal(goal = null) {
     }
     if (deadlineText && !deadline) {
       showToast('La fecha límite seleccionada no es válida', 'error');
+      return;
+    }
+    if (deadline && isGoalDeadlineBeforeCurrentMonth(selectedDeadlineYear, selectedDeadlineMonth)) {
+      showToast('La fecha límite debe ser el mes actual o un mes futuro', 'error');
       return;
     }
 
@@ -4150,6 +4455,12 @@ function openAporteModal(goalId) {
   document.getElementById('aporte-submit-btn').onclick = async () => {
     const amt = parseRawNumber(aporteInput.value);
     if (amt <= 0) return;
+
+    const availableCash = computeMetrics().availableCash;
+    if (amt > availableCash) {
+      showToast(`No tienes suficiente dinero disponible. Te quedan ${formatCOP(availableCash, true)}.`, 'error');
+      return;
+    }
 
     await api.contributeToGoal(goalId, amt, 'Manual');
     await refreshAllData();
@@ -4357,19 +4668,25 @@ function openEditBudgetModal() {
 }
 
 // Global Search Overlay Handlers
+function setSearchOverlayOpen(isOpen) {
+  DOM.modalSearch.classList.toggle('hidden', !isOpen);
+  document.documentElement.classList.toggle('search-open', isOpen);
+  document.body.classList.toggle('search-open', isOpen);
+}
+
 function setupSearchOverlay() {
   DOM.searchInputIcon.innerHTML = getIconSvg('search', 'w-4 h-4 text-slate-400');
   DOM.searchCloseBtn.innerHTML = getIconSvg('x', 'w-4 h-4');
 
   DOM.headerSearchBtn.onclick = () => {
-    DOM.modalSearch.classList.remove('hidden');
+    setSearchOverlayOpen(true);
     DOM.searchInput.value = '';
     DOM.searchInput.focus();
     renderSearchResults('');
   };
 
   DOM.searchCloseBtn.onclick = () => {
-    DOM.modalSearch.classList.add('hidden');
+    setSearchOverlayOpen(false);
   };
 
   DOM.searchInput.oninput = (e) => {
@@ -4426,7 +4743,7 @@ function renderSearchResults(query) {
 
   DOM.searchResultsList.querySelectorAll('.search-item-row').forEach((row) => {
     row.onclick = () => {
-      DOM.modalSearch.classList.add('hidden');
+      setSearchOverlayOpen(false);
       const tx = state.transactions.find((t) => t.id === row.dataset.searchTx);
       if (tx) openEditTransactionModal(tx);
     };

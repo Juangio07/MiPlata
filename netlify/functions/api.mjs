@@ -150,6 +150,44 @@ function dateOnly(value, fallbackToday = false) {
   return fallbackToday ? new Date().toISOString().slice(0, 10) : null;
 }
 
+function isPastGoalMonth(value) {
+  const normalized = dateOnly(value);
+  if (!normalized) return false;
+  const [year, month] = normalized.split('-').map(Number);
+  const now = new Date();
+  return year < now.getFullYear() || (year === now.getFullYear() && month < now.getMonth() + 1);
+}
+
+async function availableCashForUser(userId) {
+  const [profiles, transactions, goals] = await Promise.all([
+    restRequest('profiles', {
+      params: { id: `eq.${userId}`, limit: '1' },
+      select: 'initial_balance',
+    }),
+    restRequest('transactions', {
+      params: { user_id: `eq.${userId}` },
+      select: 'type,amount,date',
+    }),
+    restRequest('savings_goals', {
+      params: { user_id: `eq.${userId}` },
+      select: 'current_amount',
+    }),
+  ]);
+
+  const currentMonth = monthKey();
+  const totalIncome = (transactions || [])
+    .filter((transaction) => transaction.type === 'ingreso' && String(transaction.date || '').startsWith(currentMonth))
+    .reduce((sum, transaction) => sum + number(transaction.amount), 0);
+  const totalExpenses = (transactions || [])
+    .filter((transaction) => transaction.type === 'gasto' && String(transaction.date || '').startsWith(currentMonth))
+    .reduce((sum, transaction) => sum + number(transaction.amount), 0);
+  const totalSavings = (goals || [])
+    .reduce((sum, goal) => sum + number(goal.current_amount), 0);
+  const initialBalance = number(profiles?.[0]?.initial_balance);
+
+  return Math.max(0, initialBalance + totalIncome - totalExpenses - totalSavings);
+}
+
 function timestamp(value) {
   if (typeof value === 'number') return value;
   const parsed = Date.parse(value || '');
@@ -654,8 +692,11 @@ async function handleProtected(route, request, user) {
 
   if (route === 'savings-goals' && request.method === 'GET') return json(await userGoals(userId));
   if (route === 'savings-goals' && request.method === 'POST') {
+    const deadline = dateOnly(body.deadline);
+    if (body.deadline && !deadline) return json({ error: 'La fecha límite no es válida' }, 400);
+    if (deadline && isPastGoalMonth(deadline)) return json({ error: 'La fecha límite debe ser el mes actual o un mes futuro' }, 400);
     const id = body.id || `goal_${Date.now()}`;
-    await restRequest('savings_goals', { method: 'POST', returning: true, body: { id, user_id: userId, name: body.name, target_amount: body.targetAmount, current_amount: body.currentAmount || 0, deadline: dateOnly(body.deadline), icon: body.icon || 'laptop', color: body.color || '#0058bc', category: body.category || '', image_url: body.imageUrl || '' } });
+    await restRequest('savings_goals', { method: 'POST', returning: true, body: { id, user_id: userId, name: body.name, target_amount: body.targetAmount, current_amount: body.currentAmount || 0, deadline, icon: body.icon || 'laptop', color: body.color || '#0058bc', category: body.category || '', image_url: body.imageUrl || '' } });
     return json({ id, message: `Meta "${body.name}" creada con éxito` });
   }
 
@@ -665,6 +706,10 @@ async function handleProtected(route, request, user) {
     if (goalMatch[2] === 'contribute' && request.method === 'POST') {
       const amount = number(body.amount);
       if (amount <= 0) return json({ error: 'El monto debe ser mayor a 0' }, 400);
+      const availableCash = await availableCashForUser(userId);
+      if (amount > availableCash) {
+        return json({ error: `No tienes suficiente dinero disponible. Te quedan $${availableCash.toLocaleString('es-CO')} COP` }, 400);
+      }
       const rows = await restRequest('savings_goals', { params: { id: `eq.${id}`, user_id: `eq.${userId}`, limit: '1' } });
       if (!rows?.length) return json({ error: 'Meta no encontrada' }, 404);
       const newAmount = number(rows[0].current_amount) + amount;
@@ -681,7 +726,12 @@ async function handleProtected(route, request, user) {
       const fieldMap = { name: 'name', targetAmount: 'target_amount', currentAmount: 'current_amount', deadline: 'deadline', icon: 'icon', color: 'color', category: 'category', imageUrl: 'image_url' };
       const patch = {};
       Object.entries(body).forEach(([key, value]) => { if (fieldMap[key]) patch[fieldMap[key]] = value; });
-      if (patch.deadline) patch.deadline = dateOnly(patch.deadline);
+      if (Object.prototype.hasOwnProperty.call(body, 'deadline')) {
+        const deadline = dateOnly(body.deadline);
+        if (body.deadline && !deadline) return json({ error: 'La fecha límite no es válida' }, 400);
+        if (deadline && isPastGoalMonth(deadline)) return json({ error: 'La fecha límite debe ser el mes actual o un mes futuro' }, 400);
+        patch.deadline = deadline;
+      }
       await restRequest('savings_goals', { method: 'PATCH', params: { id: `eq.${id}`, user_id: `eq.${userId}` }, body: patch });
       return json({ message: 'Meta actualizada' });
     }

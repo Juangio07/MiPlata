@@ -2,6 +2,7 @@ import os
 import io
 import csv
 import re
+from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from flask import Flask, request, jsonify, send_from_directory, send_file, make_response
 
@@ -91,6 +92,17 @@ def _is_valid_email(email):
     return bool(re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email or ""))
 
 
+def _is_past_goal_month(value):
+    match = re.fullmatch(r"(\d{4})-(\d{2})(?:-\d{2})?", str(value or "").strip())
+    if not match:
+        return False
+    year, month = int(match.group(1)), int(match.group(2))
+    if month < 1 or month > 12:
+        return False
+    today = datetime.now()
+    return (year, month) < (today.year, today.month)
+
+
 def _is_duplicate_email_error(error):
     payload = error.payload or {}
     details = " ".join(
@@ -105,6 +117,34 @@ def _is_duplicate_email_error(error):
         "already exists",
     )
     return error.status == 409 or any(marker in details for marker in duplicate_markers)
+
+
+def _available_cash_for_user(user_id):
+    """Return cash that can still be reserved for a savings goal.
+
+    Savings contributions are reservations, not expenses, so they must be
+    included in this calculation without creating a transaction.
+    """
+    user = db.get_user_by_id(user_id) or {}
+    current_month = datetime.now().strftime("%Y-%m")
+    transactions = db.get_transactions(user_id) or []
+    goals = db.get_savings_goals(user_id) or []
+
+    total_income = sum(
+        float(transaction.get("amount") or 0)
+        for transaction in transactions
+        if transaction.get("type") == "ingreso"
+        and str(transaction.get("date") or "").startswith(current_month)
+    )
+    total_expenses = sum(
+        float(transaction.get("amount") or 0)
+        for transaction in transactions
+        if transaction.get("type") == "gasto"
+        and str(transaction.get("date") or "").startswith(current_month)
+    )
+    total_savings = sum(float(goal.get("currentAmount") or 0) for goal in goals)
+    initial_balance = float(user.get("initialBalance") or 0)
+    return max(0, initial_balance + total_income - total_expenses - total_savings)
 
 # --- Static Frontend Serving ---
 @app.route("/")
@@ -451,6 +491,8 @@ def add_savings_goal():
     if not user_id:
         return jsonify({"error": "No autorizado"}), 401
     data = request.get_json() or {}
+    if _is_past_goal_month(data.get("deadline")):
+        return jsonify({"error": "La fecha límite debe ser el mes actual o un mes futuro"}), 400
     goal_id = db.add_savings_goal(user_id, data)
     return jsonify({"id": goal_id, "message": f"Meta \"{data.get('name')}\" creada con éxito"})
 
@@ -460,6 +502,8 @@ def update_savings_goal(goal_id):
     if not user_id:
         return jsonify({"error": "No autorizado"}), 401
     data = request.get_json() or {}
+    if "deadline" in data and _is_past_goal_month(data.get("deadline")):
+        return jsonify({"error": "La fecha límite debe ser el mes actual o un mes futuro"}), 400
     db.update_savings_goal(user_id, goal_id, data)
     return jsonify({"message": "Meta actualizada"})
 
@@ -481,6 +525,11 @@ def contribute_goal(goal_id):
     contrib_type = data.get("type", "Manual")
     if amount <= 0:
         return jsonify({"error": "El monto debe ser mayor a 0"}), 400
+    available_cash = _available_cash_for_user(user_id)
+    if amount > available_cash:
+        return jsonify({
+            "error": f"No tienes suficiente dinero disponible. Te quedan ${available_cash:,.0f} COP"
+        }), 400
 
     res = db.contribute_to_goal(user_id, goal_id, amount, contrib_type)
     if not res:
