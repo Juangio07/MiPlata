@@ -61,7 +61,7 @@ def init_db():
         budget_wants REAL DEFAULT 30,
         budget_savings REAL DEFAULT 20,
         alert_80_percent INTEGER DEFAULT 1,
-        auto_adjust_variable INTEGER DEFAULT 0,
+        auto_adjust_variable INTEGER DEFAULT 1,
         currency TEXT DEFAULT 'COP',
         quick_keypad INTEGER DEFAULT 1,
         reset_day INTEGER DEFAULT 1,
@@ -161,12 +161,14 @@ def init_db():
 def ensure_demo_user():
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT id FROM users WHERE id = ?", (DEMO_USER_ID,))
+    cursor.execute("SELECT id, monthly_salary FROM users WHERE id = ?", (DEMO_USER_ID,))
     row = cursor.fetchone()
     conn.close()
 
-    if not row:
-        seed_demo_user_data()
+    # A salary different from the current seed means this is the old demo
+    # dataset. Reset it once; later demo interactions remain available locally.
+    if not row or float(row["monthly_salary"] or 0) != 2000000:
+        seed_demo_user_data_2000000()
 
 def seed_demo_user_data():
     conn = get_connection()
@@ -190,27 +192,27 @@ def seed_demo_user_data():
     )
     """, (
         DEMO_USER_ID,
-        "Camila Restrepo",
+        "Fixelar",
         "camila.restrepo@email.com",
         "demo",
         "https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=256&q=80",
         "Plan Personal Activo",
         format_month_key_to_label(cur_month),
         1,
-        5800000, 0, 5800000, 50, 30, 20,
-        1, 0, "COP", 1, 1, 1
+        2000000, 0, 2000000, 50, 30, 20,
+        1, 1, "COP", 1, 1, 1
     ))
 
     # Category budgets
     initial_categories = [
-        ('Alimentación', 700000, 'restaurant'),
-        ('Transporte', 250000, 'directions_car'),
-        ('Entretenimiento', 300000, 'sports_esports'),
-        ('Salud', 200000, 'medical_services'),
-        ('Compras', 350000, 'shopping_bag'),
-        ('Servicios', 250000, 'bolt'),
-        ('Educación', 200000, 'school'),
-        ('Otros', 150000, 'more_horiz'),
+        ('Alimentación', 400000, 'restaurant'),
+        ('Transporte', 180000, 'directions_car'),
+        ('Entretenimiento', 150000, 'sports_esports'),
+        ('Salud', 120000, 'medical_services'),
+        ('Compras', 150000, 'shopping_bag'),
+        ('Servicios', 180000, 'bolt'),
+        ('Educación', 100000, 'school'),
+        ('Otros', 100000, 'more_horiz'),
     ]
     cursor.execute("DELETE FROM category_budgets WHERE user_id = ?", (DEMO_USER_ID,))
     for cat, limit_val, icon in initial_categories:
@@ -222,13 +224,9 @@ def seed_demo_user_data():
     # Fixed obligations
     cursor.execute("DELETE FROM fixed_obligations WHERE user_id = ?", (DEMO_USER_ID,))
     fixed_data = [
-        ('fix_1', DEMO_USER_ID, 'Arriendo Apartamento', 450000, 5, 'Vivienda', 'pending', None, 3, 0, 'Vence Día 5 del mes'),
-        ('fix_2', DEMO_USER_ID, 'Internet Fibra Claro', 130000, 8, 'Internet y telefonía', 'pending', None, 3, 0, 'Vence Día 8 del mes'),
-        ('fix_3', DEMO_USER_ID, 'Servicios Públicos EPM', 220000, 15, 'Servicios públicos', 'paid', '12 Oct', 3, 0, 'Corte Día 15 • Pagado el 12'),
-        ('fix_4', DEMO_USER_ID, 'Crédito Bancolombia', 650000, 18, 'Deudas y créditos', 'paid', '16 Oct', 3, 0, 'Corte Día 18 • Cuota 14/36'),
-        ('fix_5', DEMO_USER_ID, 'Netflix + Spotify', 75000, 20, 'Suscripciones y membresías', 'paid', '20 Oct', 3, 1, 'Débito Día 20 • Automático'),
-        ('fix_6', DEMO_USER_ID, 'Plan Celular Tigo', 45000, 25, 'Internet y telefonía', 'paid', '23 Oct', 3, 0, 'Corte Día 25 • Ilimitado'),
-        ('fix_7', DEMO_USER_ID, 'Seguro & Asistencia Médica', 280000, 28, 'Salud y seguros', 'paid', '24 Oct', 3, 0, 'Corte Día 28 • Débito automático'),
+        ('fix_1', DEMO_USER_ID, 'Arriendo', 500000, 5, 'Vivienda', 'pending', None, 3, 0, 'Pago mensual del apartamento'),
+        ('fix_2', DEMO_USER_ID, 'Internet Fibra', 80000, 8, 'Servicios', 'paid', f'{cur_month}-15', 3, 1, 'Internet del hogar'),
+        ('fix_3', DEMO_USER_ID, 'Servicios públicos', 120000, 15, 'Servicios', 'paid', f'{cur_month}-14', 3, 0, 'Luz, agua y gas'),
     ]
     cursor.executemany("""
     INSERT INTO fixed_obligations (id, user_id, name, amount, due_day, category, status, paid_date, reminder_days_before, is_automatic, notes)
@@ -237,14 +235,9 @@ def seed_demo_user_data():
 
     # Savings goals
     cursor.execute("DELETE FROM savings_goals WHERE user_id = ?", (DEMO_USER_ID,))
-    next_deadline_m = (datetime.now().month + 2) % 12
-    next_deadline_y = datetime.now().year + (1 if datetime.now().month + 2 > 12 else 0)
-    next_deadline_str = f"{SPANISH_MONTHS[next_deadline_m - 1]} {next_deadline_y}"
-
     goals_data = [
-        ('goal_1', DEMO_USER_ID, 'Fondo de Emergencia', 4000000, 2400000, 'Enero 2025', 'security', '#006c49', 'Seguridad', ''),
-        ('goal_2', DEMO_USER_ID, 'MacBook Pro M3', 5000000, 3200000, next_deadline_str, 'laptop', '#0058bc', 'Tecnología', ''),
-        ('goal_3', DEMO_USER_ID, 'Vacaciones San Andrés', 2500000, 950000, 'Junio 2025', 'plane', '#00838f', 'Viajes', ''),
+        ('goal_1', DEMO_USER_ID, 'Fondo de Emergencia', 3000000, 850000, f'Enero {datetime.now().year + 1}', 'security', '#0058bc', 'Seguridad', ''),
+        ('goal_2', DEMO_USER_ID, 'Viaje familiar', 1800000, 530000, f'Diciembre {datetime.now().year + 1}', 'flight', '#00838f', 'Viajes', ''),
     ]
     cursor.executemany("""
     INSERT INTO savings_goals (id, user_id, name, target_amount, current_amount, deadline, icon, color, category, image_url)
@@ -254,9 +247,8 @@ def seed_demo_user_data():
     # Goal contributions
     cursor.execute("DELETE FROM goal_contributions WHERE user_id = ?", (DEMO_USER_ID,))
     contribs_data = [
-        ('contrib_1', DEMO_USER_ID, 'goal_1', 'Fondo de Emergencia', 200000, 'Ayer, 2:30 PM', 'Automático', now_ts - 86400000),
-        ('contrib_2', DEMO_USER_ID, 'goal_2', 'MacBook Pro M3', 150000, '15 Oct', 'Manual', now_ts - 86400000 * 3),
-        ('contrib_3', DEMO_USER_ID, 'goal_3', 'Vacaciones San Andrés', 45000, '12 Oct', 'Microahorro', now_ts - 86400000 * 6),
+        ('contrib_1', DEMO_USER_ID, 'goal_1', 'Fondo de Emergencia', 120000, f'{cur_month}-{max(1, datetime.now().day - 1):02d}', 'Automático', now_ts - 3600000),
+        ('contrib_2', DEMO_USER_ID, 'goal_2', 'Viaje familiar', 80000, f'{cur_month}-{max(1, datetime.now().day - 3):02d}', 'Manual', now_ts - 7200000),
     ]
     cursor.executemany("""
     INSERT INTO goal_contributions (id, user_id, goal_id, goal_name, amount, date, type, timestamp)
@@ -322,6 +314,98 @@ def seed_demo_user_data():
     # Set active user in app_settings
     cursor.execute("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('current_user_id', ?)", (DEMO_USER_ID,))
 
+    conn.commit()
+    conn.close()
+
+# This version is kept separate from the original local mock seed so the
+# migration is easy to audit and the old demo records are always replaced.
+def seed_demo_user_data_2000000():
+    conn = get_connection()
+    cursor = conn.cursor()
+    cur_month = get_current_month_key()
+    prev1 = get_relative_month_key(1)
+    prev2 = get_relative_month_key(2)
+    now = datetime.now()
+    now_ts = int(time.time() * 1000)
+    day = max(1, min(28, now.day))
+    current_date = lambda offset: f"{cur_month}-{max(1, day - offset):02d}"
+
+    cursor.execute("""
+    INSERT OR REPLACE INTO users (
+        id, name, email, password, avatar_url, plan, member_since, is_local_only,
+        monthly_salary, initial_balance, monthly_budget_limit, budget_needs, budget_wants, budget_savings,
+        alert_80_percent, auto_adjust_variable, currency, quick_keypad, reset_day, smart_categorization
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (DEMO_USER_ID, "Fixelar", "demo@miplata.app", "demo", "",
+          "Plan Personal Activo", format_month_key_to_label(cur_month), 1,
+          2000000, 0, 2000000, 50, 30, 20, 1, 1, "COP", 1, 1, 1))
+
+    cursor.execute("DELETE FROM category_budgets WHERE user_id = ?", (DEMO_USER_ID,))
+    for category, limit_amount, icon in [
+        ('Alimentación', 400000, 'restaurant'), ('Transporte', 180000, 'directions_car'),
+        ('Entretenimiento', 150000, 'sports_esports'), ('Salud', 120000, 'medical_services'),
+        ('Compras', 150000, 'shopping_bag'), ('Servicios', 180000, 'bolt'),
+        ('Educación', 100000, 'school'), ('Otros', 100000, 'more_horiz'),
+    ]:
+        cursor.execute("INSERT INTO category_budgets (id, user_id, category, limit_amount, icon) VALUES (?, ?, ?, ?, ?)",
+                       (f"cb_{DEMO_USER_ID}_{category}", DEMO_USER_ID, category, limit_amount, icon))
+
+    cursor.execute("DELETE FROM fixed_obligations WHERE user_id = ?", (DEMO_USER_ID,))
+    cursor.executemany("""
+    INSERT INTO fixed_obligations (id, user_id, name, amount, due_day, category, status, paid_date, reminder_days_before, is_automatic, notes)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, [
+        ('fix_1', DEMO_USER_ID, 'Arriendo', 500000, 5, 'Vivienda', 'pending', None, 3, 0, 'Pago mensual del apartamento'),
+        ('fix_2', DEMO_USER_ID, 'Internet Fibra', 80000, 8, 'Servicios', 'paid', current_date(5), 3, 1, 'Internet del hogar'),
+        ('fix_3', DEMO_USER_ID, 'Servicios públicos', 120000, 15, 'Servicios', 'paid', current_date(6), 3, 0, 'Luz, agua y gas'),
+    ])
+
+    cursor.execute("DELETE FROM savings_goals WHERE user_id = ?", (DEMO_USER_ID,))
+    cursor.executemany("""
+    INSERT INTO savings_goals (id, user_id, name, target_amount, current_amount, deadline, icon, color, category, image_url)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, [
+        ('goal_1', DEMO_USER_ID, 'Fondo de Emergencia', 3000000, 850000, f'Enero {now.year + 1}', 'security', '#0058bc', 'Seguridad', ''),
+        ('goal_2', DEMO_USER_ID, 'Viaje familiar', 1800000, 530000, f'Diciembre {now.year + 1}', 'flight', '#00838f', 'Viajes', ''),
+    ])
+
+    cursor.execute("DELETE FROM goal_contributions WHERE user_id = ?", (DEMO_USER_ID,))
+    cursor.executemany("""
+    INSERT INTO goal_contributions (id, user_id, goal_id, goal_name, amount, date, type, timestamp)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, [
+        ('contrib_1', DEMO_USER_ID, 'goal_1', 'Fondo de Emergencia', 120000, current_date(1), 'Automático', now_ts - 3600000),
+        ('contrib_2', DEMO_USER_ID, 'goal_2', 'Viaje familiar', 80000, current_date(3), 'Manual', now_ts - 7200000),
+    ])
+
+    cursor.execute("DELETE FROM transactions WHERE user_id = ?", (DEMO_USER_ID,))
+    transactions = [
+        ('demo_income', 'ingreso', 2000000, 'Nómina', 'Nómina mensual', current_date(3), '8:30 AM', 'Bancolombia', 0, None, now_ts - 86400000 * 3),
+        ('demo_food', 'gasto', 240000, 'Alimentación', 'Mercado de la semana', current_date(1), '6:15 PM', 'Tarjeta Débito', 0, None, now_ts - 86400000),
+        ('demo_transport', 'gasto', 85000, 'Transporte', 'Gasolina y transporte', current_date(2), '5:45 PM', 'Nequi QR', 0, None, now_ts - 86400000 * 2),
+        ('demo_health', 'gasto', 45000, 'Salud', 'Medicamentos', current_date(4), '11:10 AM', 'Efectivo', 0, None, now_ts - 86400000 * 4),
+        ('demo_internet', 'gasto', 80000, 'Servicios', 'Pago Internet Fibra', current_date(5), '9:00 AM', 'Débito automático', 1, 'fix_2', now_ts - 86400000 * 5),
+        ('demo_services', 'gasto', 120000, 'Servicios', 'Pago servicios públicos', current_date(6), '2:00 PM', 'PSE', 0, 'fix_3', now_ts - 86400000 * 6),
+        ('demo_tx_previous_1_income_salary', 'ingreso', 2000000, 'Nómina', 'Nómina mensual', f'{prev1}-15', '8:30 AM', 'Bancolombia', 0, None, now_ts - 86400000 * 40),
+        ('demo_tx_previous_1_income_extra', 'ingreso', 250000, 'Honorarios', 'Trabajo freelance', f'{prev1}-26', '4:00 PM', 'Nequi', 0, None, now_ts - 86400000 * 30),
+        ('demo_tx_previous_1_rent', 'gasto', 500000, 'Vivienda', 'Arriendo del apartamento', f'{prev1}-05', '10:00 AM', 'Transferencia Bancaria', 0, None, now_ts - 86400000 * 50),
+        ('demo_tx_previous_1_food', 'gasto', 300000, 'Alimentación', 'Mercado mensual', f'{prev1}-08', '5:30 PM', 'Tarjeta Débito', 0, None, now_ts - 86400000 * 47),
+        ('demo_tx_previous_1_services', 'gasto', 150000, 'Servicios', 'Servicios públicos e internet', f'{prev1}-12', '2:15 PM', 'PSE', 0, None, now_ts - 86400000 * 43),
+        ('demo_tx_previous_1_transport', 'gasto', 100000, 'Transporte', 'Gasolina y transporte', f'{prev1}-18', '6:30 PM', 'Bancolombia Débito', 0, None, now_ts - 86400000 * 37),
+        ('demo_tx_previous_1_leisure', 'gasto', 80000, 'Entretenimiento', 'Cine y salida de fin de semana', f'{prev1}-22', '8:45 PM', 'Tarjeta Crédito', 0, None, now_ts - 86400000 * 33),
+        ('demo_tx_previous_2_income_salary', 'ingreso', 2000000, 'Nómina', 'Nómina mensual', f'{prev2}-15', '8:30 AM', 'Bancolombia', 0, None, now_ts - 86400000 * 70),
+        ('demo_tx_previous_2_income_extra', 'ingreso', 180000, 'Honorarios', 'Asesoría independiente', f'{prev2}-26', '4:00 PM', 'Nequi', 0, None, now_ts - 86400000 * 60),
+        ('demo_tx_previous_2_rent', 'gasto', 500000, 'Vivienda', 'Arriendo del apartamento', f'{prev2}-05', '10:00 AM', 'Transferencia Bancaria', 0, None, now_ts - 86400000 * 80),
+        ('demo_tx_previous_2_food', 'gasto', 340000, 'Alimentación', 'Mercado y alimentos del hogar', f'{prev2}-10', '6:00 PM', 'Tarjeta Débito', 0, None, now_ts - 86400000 * 75),
+        ('demo_tx_previous_2_services', 'gasto', 170000, 'Servicios', 'Servicios públicos e internet', f'{prev2}-14', '2:30 PM', 'PSE', 0, None, now_ts - 86400000 * 71),
+        ('demo_tx_previous_2_transport', 'gasto', 110000, 'Transporte', 'Gasolina y mantenimiento', f'{prev2}-19', '5:15 PM', 'Nequi', 0, None, now_ts - 86400000 * 66),
+        ('demo_tx_previous_2_shopping', 'gasto', 160000, 'Compras', 'Ropa y artículos para el hogar', f'{prev2}-22', '4:30 PM', 'Tarjeta Crédito', 0, None, now_ts - 86400000 * 63),
+    ]
+    cursor.executemany("""
+    INSERT INTO transactions (id, user_id, type, amount, category, description, date, time, account_method, is_recurring, fixed_obligation_id, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, [(row[0], DEMO_USER_ID, *row[1:]) for row in transactions])
+    cursor.execute("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('current_user_id', ?)", (DEMO_USER_ID,))
     conn.commit()
     conn.close()
 
@@ -417,7 +501,7 @@ def create_user(name, email, password, monthly_salary=0, avatar_url=''):
         0,
         monthly_salary or 0,
         50, 30, 20,
-        1, 0, "COP", 1, 1, 1
+        1, 1, "COP", 1, 1, 1
     ))
 
     # Seed default category budgets for new user

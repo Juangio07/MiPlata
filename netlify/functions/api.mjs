@@ -242,7 +242,7 @@ const DEFAULT_CATEGORIES = [
   ['Otros', 150000, 'more_horiz'],
 ];
 
-async function ensureUserDefaults(userId, name, email, monthlySalary = null, avatarUrl = '') {
+async function ensureUserDefaults(userId, name, email, monthlySalary = null, avatarUrl = '', applyDefaultPreferences = false) {
   const rows = await restRequest('profiles', { params: { id: `eq.${userId}`, limit: '1' } });
   if (!rows?.length) {
     await restRequest('profiles', {
@@ -255,6 +255,9 @@ async function ensureUserDefaults(userId, name, email, monthlySalary = null, ava
         avatar_url: avatarUrl || null,
         monthly_salary: monthlySalary || 0,
         monthly_budget_limit: monthlySalary || 0,
+        alert_80_percent: true,
+        auto_adjust_variable: true,
+        smart_categorization: true,
       },
     });
   } else {
@@ -265,6 +268,11 @@ async function ensureUserDefaults(userId, name, email, monthlySalary = null, ava
     if (monthlySalary !== null) {
       patch.monthly_salary = monthlySalary || 0;
       if (!rows[0].monthly_budget_limit) patch.monthly_budget_limit = monthlySalary || 0;
+    }
+    if (applyDefaultPreferences) {
+      patch.alert_80_percent = true;
+      patch.auto_adjust_variable = true;
+      patch.smart_categorization = true;
     }
     if (Object.keys(patch).length) {
       await restRequest('profiles', { method: 'PATCH', params: { id: `eq.${userId}` }, body: patch });
@@ -310,8 +318,8 @@ async function addTransaction(userId, tx) {
   return id;
 }
 
-async function initializeRegisteredUser(userId, name, email, salary, avatarUrl) {
-  const profile = await ensureUserDefaults(userId, name, email, salary, avatarUrl);
+async function initializeRegisteredUser(userId, name, email, salary, avatarUrl, applyDefaultPreferences = true) {
+  const profile = await ensureUserDefaults(userId, name, email, salary, avatarUrl, applyDefaultPreferences);
   if (number(salary) > 0) {
     const existing = await restRequest('transactions', {
       params: {
@@ -355,72 +363,68 @@ function demoMonthDate(offset, day) {
 }
 
 async function ensureDemoData(userId) {
-  const transactions = await restRequest('transactions', { params: { user_id: `eq.${userId}` } });
-  const fixed = await restRequest('fixed_obligations', { params: { user_id: `eq.${userId}`, limit: '1' } });
-  const goals = await restRequest('savings_goals', { params: { user_id: `eq.${userId}`, limit: '1' } });
-  const existingTransactionIds = new Set((transactions || []).map((row) => row.id));
-
-  if (!transactions?.length) {
-    await restRequest('transactions', {
-      method: 'POST', returning: true, body: [
-        { id: 'demo_tx_income', user_id: userId, type: 'ingreso', amount: 5800000, category: 'Nómina', description: 'Nómina mensual', date: demoDate(3), time: '08:30:00', account_method: 'Bancolombia', is_recurring: false, fixed_obligation_id: null },
-        { id: 'demo_tx_food', user_id: userId, type: 'gasto', amount: 184500, category: 'Alimentación', description: 'Supermercado de la semana', date: demoDate(1), time: '18:15:00', account_method: 'Tarjeta Débito', is_recurring: false, fixed_obligation_id: null },
-        { id: 'demo_tx_transport', user_id: userId, type: 'gasto', amount: 65000, category: 'Transporte', description: 'Gasolina y transporte', date: demoDate(2), time: '17:45:00', account_method: 'Nequi QR', is_recurring: false, fixed_obligation_id: null },
-        { id: 'demo_tx_entertainment', user_id: userId, type: 'gasto', amount: 52000, category: 'Entretenimiento', description: 'Cine y salida', date: demoDate(4), time: '20:10:00', account_method: 'Tarjeta Crédito', is_recurring: false, fixed_obligation_id: null },
-      ],
-    });
-  }
-
-  const historicalTransactions = [
-    { id: 'demo_tx_previous_1_income_salary', user_id: userId, type: 'ingreso', amount: 2900000, category: 'Nómina', description: 'Nómina primera quincena', date: demoMonthDate(1, 15), time: '08:30:00', account_method: 'Bancolombia', is_recurring: false, fixed_obligation_id: null },
-    { id: 'demo_tx_previous_1_income_extra', user_id: userId, type: 'ingreso', amount: 650000, category: 'Honorarios', description: 'Proyecto freelance', date: demoMonthDate(1, 26), time: '16:00:00', account_method: 'Nequi', is_recurring: false, fixed_obligation_id: null },
-    { id: 'demo_tx_previous_1_rent', user_id: userId, type: 'gasto', amount: 1200000, category: 'Vivienda', description: 'Arriendo del apartamento', date: demoMonthDate(1, 5), time: '10:00:00', account_method: 'Transferencia Bancaria', is_recurring: false, fixed_obligation_id: null },
-    { id: 'demo_tx_previous_1_food', user_id: userId, type: 'gasto', amount: 460000, category: 'Alimentación', description: 'Mercado mensual', date: demoMonthDate(1, 8), time: '17:30:00', account_method: 'Tarjeta Débito', is_recurring: false, fixed_obligation_id: null },
-    { id: 'demo_tx_previous_1_services', user_id: userId, type: 'gasto', amount: 263000, category: 'Servicios', description: 'Energía, acueducto e internet', date: demoMonthDate(1, 12), time: '14:15:00', account_method: 'PSE Bancolombia', is_recurring: false, fixed_obligation_id: null },
-    { id: 'demo_tx_previous_1_transport', user_id: userId, type: 'gasto', amount: 215000, category: 'Transporte', description: 'Gasolina y estacionamiento', date: demoMonthDate(1, 18), time: '18:30:00', account_method: 'Bancolombia Débito', is_recurring: false, fixed_obligation_id: null },
-    { id: 'demo_tx_previous_1_leisure', user_id: userId, type: 'gasto', amount: 180000, category: 'Entretenimiento', description: 'Cine y salida de fin de semana', date: demoMonthDate(1, 22), time: '20:45:00', account_method: 'Tarjeta Crédito', is_recurring: false, fixed_obligation_id: null },
-    { id: 'demo_tx_previous_2_income_salary', user_id: userId, type: 'ingreso', amount: 2900000, category: 'Nómina', description: 'Nómina mensual', date: demoMonthDate(2, 15), time: '08:30:00', account_method: 'Bancolombia', is_recurring: false, fixed_obligation_id: null },
-    { id: 'demo_tx_previous_2_income_extra', user_id: userId, type: 'ingreso', amount: 750000, category: 'Honorarios', description: 'Asesoría independiente', date: demoMonthDate(2, 26), time: '16:00:00', account_method: 'Nequi', is_recurring: false, fixed_obligation_id: null },
-    { id: 'demo_tx_previous_2_rent', user_id: userId, type: 'gasto', amount: 1200000, category: 'Vivienda', description: 'Arriendo del apartamento', date: demoMonthDate(2, 5), time: '10:00:00', account_method: 'Transferencia Bancaria', is_recurring: false, fixed_obligation_id: null },
-    { id: 'demo_tx_previous_2_food', user_id: userId, type: 'gasto', amount: 680000, category: 'Alimentación', description: 'Mercado y alimentos del hogar', date: demoMonthDate(2, 10), time: '18:00:00', account_method: 'Tarjeta Débito', is_recurring: false, fixed_obligation_id: null },
-    { id: 'demo_tx_previous_2_services', user_id: userId, type: 'gasto', amount: 285000, category: 'Servicios', description: 'Servicios públicos e internet', date: demoMonthDate(2, 14), time: '14:30:00', account_method: 'PSE', is_recurring: false, fixed_obligation_id: null },
-    { id: 'demo_tx_previous_2_transport', user_id: userId, type: 'gasto', amount: 245000, category: 'Transporte', description: 'Gasolina y mantenimiento', date: demoMonthDate(2, 19), time: '17:15:00', account_method: 'Nequi', is_recurring: false, fixed_obligation_id: null },
-    { id: 'demo_tx_previous_2_shopping', user_id: userId, type: 'gasto', amount: 290000, category: 'Compras', description: 'Ropa y artículos para el hogar', date: demoMonthDate(2, 22), time: '16:30:00', account_method: 'Tarjeta Crédito', is_recurring: false, fixed_obligation_id: null },
+  const now = new Date();
+  const currentMonth = monthKey();
+  const currentDay = Math.max(1, Math.min(28, now.getDate()));
+  const dateFromToday = (offset) => `${currentMonth}-${String(Math.max(1, currentDay - offset)).padStart(2, '0')}`;
+  const tx = (id, type, amount, category, description, date, time, accountMethod, fixedObligationId = null, isRecurring = false) => ({
+    id, user_id: userId, type, amount, category, description, date, time, account_method: accountMethod,
+    is_recurring: isRecurring, fixed_obligation_id: fixedObligationId,
+  });
+  const transactions = [
+    tx('demo_tx_income', 'ingreso', 2000000, 'Nómina', 'Nómina mensual', dateFromToday(3), '08:30:00', 'Bancolombia'),
+    tx('demo_tx_food', 'gasto', 240000, 'Alimentación', 'Mercado de la semana', dateFromToday(1), '18:15:00', 'Tarjeta Débito'),
+    tx('demo_tx_transport', 'gasto', 85000, 'Transporte', 'Gasolina y transporte', dateFromToday(2), '17:45:00', 'Nequi QR'),
+    tx('demo_tx_health', 'gasto', 45000, 'Salud', 'Medicamentos', dateFromToday(4), '11:10:00', 'Efectivo'),
+    tx('demo_tx_internet', 'gasto', 80000, 'Servicios', 'Pago Internet Fibra', dateFromToday(5), '09:00:00', 'Débito automático', 'demo_fixed_internet', true),
+    tx('demo_tx_services', 'gasto', 120000, 'Servicios', 'Pago servicios públicos', dateFromToday(6), '14:00:00', 'PSE', 'demo_fixed_services'),
+    tx('demo_tx_previous_1_income_salary', 'ingreso', 2000000, 'Nómina', 'Nómina mensual', demoMonthDate(1, 15), '08:30:00', 'Bancolombia'),
+    tx('demo_tx_previous_1_income_extra', 'ingreso', 250000, 'Honorarios', 'Trabajo freelance', demoMonthDate(1, 26), '16:00:00', 'Nequi'),
+    tx('demo_tx_previous_1_rent', 'gasto', 500000, 'Vivienda', 'Arriendo del apartamento', demoMonthDate(1, 5), '10:00:00', 'Transferencia Bancaria'),
+    tx('demo_tx_previous_1_food', 'gasto', 300000, 'Alimentación', 'Mercado mensual', demoMonthDate(1, 8), '17:30:00', 'Tarjeta Débito'),
+    tx('demo_tx_previous_1_services', 'gasto', 150000, 'Servicios', 'Servicios públicos e internet', demoMonthDate(1, 12), '14:15:00', 'PSE'),
+    tx('demo_tx_previous_1_transport', 'gasto', 100000, 'Transporte', 'Gasolina y transporte', demoMonthDate(1, 18), '18:30:00', 'Bancolombia Débito'),
+    tx('demo_tx_previous_1_leisure', 'gasto', 80000, 'Entretenimiento', 'Cine y salida de fin de semana', demoMonthDate(1, 22), '20:45:00', 'Tarjeta Crédito'),
+    tx('demo_tx_previous_2_income_salary', 'ingreso', 2000000, 'Nómina', 'Nómina mensual', demoMonthDate(2, 15), '08:30:00', 'Bancolombia'),
+    tx('demo_tx_previous_2_income_extra', 'ingreso', 180000, 'Honorarios', 'Asesoría independiente', demoMonthDate(2, 26), '16:00:00', 'Nequi'),
+    tx('demo_tx_previous_2_rent', 'gasto', 500000, 'Vivienda', 'Arriendo del apartamento', demoMonthDate(2, 5), '10:00:00', 'Transferencia Bancaria'),
+    tx('demo_tx_previous_2_food', 'gasto', 340000, 'Alimentación', 'Mercado y alimentos del hogar', demoMonthDate(2, 10), '18:00:00', 'Tarjeta Débito'),
+    tx('demo_tx_previous_2_services', 'gasto', 170000, 'Servicios', 'Servicios públicos e internet', demoMonthDate(2, 14), '14:30:00', 'PSE'),
+    tx('demo_tx_previous_2_transport', 'gasto', 110000, 'Transporte', 'Gasolina y mantenimiento', demoMonthDate(2, 19), '17:15:00', 'Nequi'),
+    tx('demo_tx_previous_2_shopping', 'gasto', 160000, 'Compras', 'Ropa y artículos para el hogar', demoMonthDate(2, 22), '16:30:00', 'Tarjeta Crédito'),
   ];
-  const missingHistorical = historicalTransactions.filter((transaction) => !existingTransactionIds.has(transaction.id));
-  if (missingHistorical.length) {
-    await restRequest('transactions', { method: 'POST', returning: true, body: missingHistorical });
-  }
+  const fixed = [
+    { id: 'demo_fixed_rent', user_id: userId, name: 'Arriendo', amount: 500000, due_day: 5, category: 'Vivienda', status: 'pending', paid_date: null, reminder_days_before: 3, is_automatic: false, notes: 'Pago mensual del apartamento' },
+    { id: 'demo_fixed_internet', user_id: userId, name: 'Internet Fibra', amount: 80000, due_day: 8, category: 'Servicios', status: 'paid', paid_date: dateFromToday(5), reminder_days_before: 3, is_automatic: true, notes: 'Internet del hogar' },
+    { id: 'demo_fixed_services', user_id: userId, name: 'Servicios públicos', amount: 120000, due_day: 15, category: 'Servicios', status: 'paid', paid_date: dateFromToday(6), reminder_days_before: 3, is_automatic: false, notes: 'Luz, agua y gas' },
+  ];
+  const goals = [
+    { id: 'demo_goal_emergency', user_id: userId, name: 'Fondo de Emergencia', target_amount: 3000000, current_amount: 850000, deadline: `${now.getFullYear() + 1}-06-30`, icon: 'shield', color: '#0058bc', category: 'Seguridad', image_url: '' },
+    { id: 'demo_goal_trip', user_id: userId, name: 'Viaje familiar', target_amount: 1800000, current_amount: 530000, deadline: `${now.getFullYear() + 1}-12-15`, icon: 'flight', color: '#00838f', category: 'Viajes', image_url: '' },
+  ];
+  const contributions = [
+    { id: 'demo_contribution_1', user_id: userId, goal_id: 'demo_goal_emergency', goal_name: 'Fondo de Emergencia', amount: 120000, date: dateFromToday(1), type: 'Automático', timestamp: Date.now() - 3600000 },
+    { id: 'demo_contribution_2', user_id: userId, goal_id: 'demo_goal_trip', goal_name: 'Viaje familiar', amount: 80000, date: dateFromToday(3), type: 'Manual', timestamp: Date.now() - 7200000 },
+  ];
+  const categoryBudgets = [
+    ['Alimentación', 400000, 'restaurant'], ['Transporte', 180000, 'directions_car'],
+    ['Entretenimiento', 150000, 'sports_esports'], ['Salud', 120000, 'medical_services'],
+    ['Compras', 150000, 'shopping_bag'], ['Servicios', 180000, 'bolt'],
+    ['Educación', 100000, 'school'], ['Otros', 100000, 'more_horiz'],
+  ].map(([category, limit_amount, icon]) => ({ id: `cb_${userId}_${category}`, user_id: userId, category, limit_amount, icon }));
 
-  if (!fixed?.length) {
-    const currentMonth = monthKey();
-    await restRequest('fixed_obligations', {
-      method: 'POST', returning: true, body: [
-        { id: 'demo_fixed_rent', user_id: userId, name: 'Arriendo', amount: 800000, due_day: 5, category: 'Vivienda', status: 'pending', paid_date: null, reminder_days_before: 3, is_automatic: false, notes: 'Pago mensual del apartamento' },
-        { id: 'demo_fixed_internet', user_id: userId, name: 'Internet Fibra', amount: 130000, due_day: 8, category: 'Servicios', status: 'paid', paid_date: `${currentMonth}-${String(Math.max(1, new Date().getDate() - 2)).padStart(2, '0')}`, reminder_days_before: 3, is_automatic: true, notes: 'Internet del hogar' },
-        { id: 'demo_fixed_services', user_id: userId, name: 'Servicios públicos', amount: 220000, due_day: 15, category: 'Servicios', status: 'paid', paid_date: `${currentMonth}-${String(Math.max(1, new Date().getDate() - 1)).padStart(2, '0')}`, reminder_days_before: 3, is_automatic: false, notes: 'Luz, agua y gas' },
-      ],
-    });
-  }
-
-  if (!goals?.length) {
-    await restRequest('savings_goals', {
-      method: 'POST', returning: true, body: [
-        { id: 'demo_goal_emergency', user_id: userId, name: 'Fondo de Emergencia', target_amount: 4000000, current_amount: 2400000, deadline: `${new Date().getFullYear() + 1}-01-20`, icon: 'shield', color: '#0058bc', category: 'Seguridad', image_url: '' },
-        { id: 'demo_goal_laptop', user_id: userId, name: 'MacBook M3 Pro', target_amount: 5000000, current_amount: 3200000, deadline: `${new Date().getFullYear()}-12-20`, icon: 'laptop', color: '#0058bc', category: 'Tecnología', image_url: '' },
-      ],
-    });
-  }
-
-  const contributions = await restRequest('goal_contributions', { params: { user_id: `eq.${userId}`, limit: '1' } });
-  if (!contributions?.length) {
-    await restRequest('goal_contributions', {
-      method: 'POST', returning: true, body: [
-        { id: 'demo_contribution_1', user_id: userId, goal_id: 'demo_goal_emergency', goal_name: 'Fondo de Emergencia', amount: 200000, date: demoDate(1), type: 'Automático', timestamp: Date.now() - 3600000 },
-        { id: 'demo_contribution_2', user_id: userId, goal_id: 'demo_goal_laptop', goal_name: 'MacBook M3 Pro', amount: 150000, date: demoDate(3), type: 'Manual', timestamp: Date.now() - 7200000 },
-      ],
-    });
-  }
+  // Demo data is intentionally ephemeral: every new demo session starts clean.
+  await Promise.all(['goal_contributions', 'transactions', 'fixed_obligations', 'savings_goals', 'category_budgets'].map((table) => (
+    restRequest(table, { method: 'DELETE', params: { user_id: `eq.${userId}` } })
+  )));
+  await restRequest('profiles', { method: 'PATCH', params: { id: `eq.${userId}` }, body: {
+    name: 'Fixelar', monthly_salary: 2000000, monthly_budget_limit: 2000000, budget_needs: 50, budget_wants: 30, budget_savings: 20, alert_80_percent: true, auto_adjust_variable: true, smart_categorization: true,
+  } });
+  await restRequest('category_budgets', { method: 'POST', returning: true, body: categoryBudgets });
+  await restRequest('transactions', { method: 'POST', returning: true, body: transactions });
+  await restRequest('fixed_obligations', { method: 'POST', returning: true, body: fixed });
+  await restRequest('savings_goals', { method: 'POST', returning: true, body: goals });
+  await restRequest('goal_contributions', { method: 'POST', returning: true, body: contributions });
 }
 
 function sessionResponse(auth, profile, message) {
@@ -529,15 +533,18 @@ async function handleAuth(route, request) {
     const email = 'demo@miplata.app';
     const password = 'MiPlataDemo2026!';
     try {
-      await authRequest('/admin/users', 'POST', { email, password, email_confirm: true, user_metadata: { name: 'Cuenta de demostración' } }, SUPABASE_SECRET_KEY, SUPABASE_SECRET_KEY);
+      await authRequest('/admin/users', 'POST', { email, password, email_confirm: true, user_metadata: { name: 'Fixelar' } }, SUPABASE_SECRET_KEY, SUPABASE_SECRET_KEY);
     } catch (error) {
       if (![400, 409, 422].includes(error.status)) throw error;
     }
     const auth = await authRequest('/token?grant_type=password', 'POST', { email, password });
     const user = auth.user || {};
-    const profile = await ensureUserDefaults(user.id, 'Cuenta de demostración', email, null, '');
+    const profile = await ensureUserDefaults(user.id, 'Fixelar', email, null, '');
     await ensureDemoData(user.id);
-    return json(sessionResponse(auth, profile, 'Sesión de demostración iniciada'));
+    return json({
+      ...sessionResponse(auth, profile, 'Sesión de demostración iniciada'),
+      bootstrap: await userBootstrap(user.id),
+    });
   }
 
   if (route === 'auth/login' && request.method === 'POST') {

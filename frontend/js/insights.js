@@ -147,6 +147,7 @@ export function getFinancialAlerts(data) {
       description: `Tus gastos acumulados más compromisos fijos (${formatCOP(totalExpenses + fixedCommitted)}) exceden lo recibido por ${formatCOP(deficit, true)}.`,
       actionLabel: 'Ver balance',
       actionTab: 'inicio',
+      actionFocus: 'balance',
     });
   } else if (totalIncome === 0 && totalExpenses > 0) {
     alerts.push({
@@ -161,6 +162,7 @@ export function getFinancialAlerts(data) {
     alerts.push({
       id: 'alert_zero_available',
       type: 'warning',
+      icon: 'wallet',
       title: 'Dinero disponible en $0 COP',
       description: 'Todos tus ingresos del mes están comprometidos en gastos ya pagados o cuotas pendientes.',
       actionLabel: 'Ver compromisos',

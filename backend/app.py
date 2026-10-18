@@ -178,7 +178,7 @@ def auth_demo():
         demo_password = "MiPlataDemo2026!"
         try:
             try:
-                sb.auth_admin_create_user(demo_email, demo_password, "Cuenta de demostración")
+                sb.auth_admin_create_user(demo_email, demo_password, "Fixelar")
             except sb.SupabaseError as error:
                 # A second click should reuse the same demo account.
                 if error.status not in (400, 409, 422):
@@ -187,20 +187,28 @@ def auth_demo():
             auth_user = auth_data.get("user") or {}
             profile = db.initialize_registered_user(
                 auth_user.get("id"),
-                "Cuenta de demostración",
+                "Fixelar",
                 demo_email,
-                0,
+                2000000,
                 "",
+                apply_default_preferences=False,
             )
             db.ensure_demo_data(auth_user.get("id"))
-            return jsonify(_session_response(auth_data, profile, "Sesión de demostración iniciada"))
+            return jsonify({
+                **_session_response(auth_data, profile, "Sesión de demostración iniciada"),
+                "bootstrap": get_bootstrap_payload(auth_user.get("id")),
+            })
         except sb.SupabaseError as error:
             return jsonify({"error": str(error)}), 502
 
     db.ensure_demo_user()
     db.set_current_user_id(db.DEMO_USER_ID)
     user = db.get_user_by_id(db.DEMO_USER_ID)
-    return jsonify({"user": user, "message": "Sesión iniciada con la cuenta de Camila Restrepo"})
+    return jsonify({
+        "user": user,
+        "bootstrap": get_bootstrap_payload(db.DEMO_USER_ID),
+        "message": "Sesión iniciada con la cuenta de demostración",
+    })
 
 @app.route("/api/auth/login", methods=["POST"])
 def auth_login():
@@ -258,7 +266,8 @@ def auth_register():
             auth_data = sb.auth_sign_in(email, password)
             auth_user = auth_data.get("user") or {}
             profile = db.initialize_registered_user(
-                auth_user.get("id"), name, email, float(monthly_salary or 0), avatar_url
+                auth_user.get("id"), name, email, float(monthly_salary or 0), avatar_url,
+                apply_default_preferences=True,
             )
             return jsonify(_session_response(
                 auth_data,
@@ -318,12 +327,7 @@ def get_user():
     user = db.get_user_by_id(user_id)
     return jsonify({"user": user})
 
-@app.route("/api/bootstrap", methods=["GET"])
-def bootstrap():
-    user_id = get_current_user_id_from_req()
-    if not user_id:
-        return jsonify({"error": "No autorizado"}), 401
-
+def get_bootstrap_payload(user_id):
     # Supabase calls are independent reads. Keep one browser request while
     # fetching them concurrently so slower mobile connections do not wait for
     # each table one after another.
@@ -349,14 +353,21 @@ def bootstrap():
         goal_contributions = db.get_goal_contributions(user_id)
         category_budgets = db.get_category_budgets(user_id)
 
-    return jsonify({
+    return {
         "user": user,
         "transactions": transactions,
         "fixedObligations": fixed_obligations,
         "savingsGoals": savings_goals,
         "goalContributions": goal_contributions,
         "categoryBudgets": category_budgets,
-    })
+    }
+
+@app.route("/api/bootstrap", methods=["GET"])
+def bootstrap():
+    user_id = get_current_user_id_from_req()
+    if not user_id:
+        return jsonify({"error": "No autorizado"}), 401
+    return jsonify(get_bootstrap_payload(user_id))
 
 @app.route("/api/user/profile", methods=["PUT"])
 def update_profile():

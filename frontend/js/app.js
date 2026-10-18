@@ -448,12 +448,11 @@ function computeMetrics() {
     .reduce((sum, transaction) => sum + transaction.amount, 0);
 
   const baseBalance = currentUser?.initialBalance || 0;
-  // The current month's contribution is already inside totalExpenses. The
-  // remaining goal balance represents reservations made in other months.
-  const savingsReservedInOtherMonths = Math.max(0, totalSavings - totalGoalContributions);
   // Pending fixed obligations remain visible as "Por Pagar" and do not reduce
   // this balance until they are actually paid and recorded as an expense.
-  const availableCash = Math.max(0, baseBalance + totalIncome - totalExpenses - savingsReservedInOtherMonths);
+  // Goal contributions are virtual expense records in monthTransactions, so
+  // subtracting the accumulated goal balance here would count them twice.
+  const availableCash = Math.max(0, baseBalance + totalIncome - totalExpenses);
 
   const budgetAdjustment = getBudgetAdjustment(selectedMonth, currentUser);
   const monthlyBudgetLimit = budgetAdjustment.monthlyBudgetLimit;
@@ -518,6 +517,27 @@ function switchTab(tabId) {
   window.scrollTo({ top: 0, behavior: 'auto' });
 }
 
+function handleInsightAlertAction(button) {
+  const targetTab = button.dataset.tab || 'gastos';
+  const focusTarget = button.dataset.focus;
+
+  if (focusTarget === 'balance') {
+    const focusBalance = () => {
+      document.getElementById('dashboard-balance-card')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    };
+
+    if (state.activeTab !== 'inicio') {
+      switchTab(targetTab);
+      requestAnimationFrame(focusBalance);
+    } else {
+      focusBalance();
+    }
+    return;
+  }
+
+  switchTab(targetTab);
+}
+
 function restoreCachedState() {
   try {
     const cached = JSON.parse(localStorage.getItem('miplata_bootstrap_cache') || 'null');
@@ -538,6 +558,17 @@ function restoreCachedState() {
 }
 
 // Data Fetcher from Python Flask Backend
+function applyBootstrapData(data) {
+  if (!data?.user) return false;
+  state.currentUser = data.user;
+  state.transactions = data.transactions || [];
+  state.fixedObligations = data.fixedObligations || [];
+  state.savingsGoals = data.savingsGoals || [];
+  state.goalContributions = data.goalContributions || [];
+  state.categoryBudgets = data.categoryBudgets || [];
+  return true;
+}
+
 async function refreshAllData() {
   try {
     const data = await api.getBootstrap();
@@ -545,13 +576,7 @@ async function refreshAllData() {
       state.currentUser = null;
       return false;
     }
-    state.currentUser = data.user;
-    state.transactions = data.transactions || [];
-    state.fixedObligations = data.fixedObligations || [];
-    state.savingsGoals = data.savingsGoals || [];
-    state.goalContributions = data.goalContributions || [];
-    state.categoryBudgets = data.categoryBudgets || [];
-    return true;
+    return applyBootstrapData(data);
   } catch (err) {
     console.error('Error fetching data from backend', err);
     return false;
@@ -666,6 +691,36 @@ function renderActiveView() {
 // -------------------------------------------------------------
 // VIEW 1: DASHBOARD (INICIO) & PAST MONTH SUMMARY VIEW
 // -------------------------------------------------------------
+function renderSystemAlertCard(alert) {
+  const alertIcon = alert.icon || (alert.type === 'danger' ? 'alertTriangle' : alert.type === 'warning' ? 'alertCircle' : 'info');
+  const iconTone = alert.type === 'danger'
+    ? 'bg-[#ffe1e7] text-[#f3194d]'
+    : alert.type === 'warning'
+    ? 'bg-[#fff0d7] text-[#b45309]'
+    : 'bg-[#dce8ff] text-[#0058bc]';
+  const messageTone = alert.type === 'danger'
+    ? 'text-[#f3194d]'
+    : alert.type === 'warning'
+    ? 'text-[#b45309]'
+    : 'text-[#0058bc]';
+  const description = alert.description || alert.message || '';
+
+  return `
+    <div class="mockup-card rounded-[28px] bg-[#eef4ff] p-4 shadow-sm border border-[#dce8ff] flex items-center justify-between gap-3">
+      <div class="flex items-center gap-3 min-w-0">
+        <div class="w-12 h-12 rounded-full ${iconTone} flex items-center justify-center shrink-0">${getIconSvg(alertIcon, 'w-5 h-5')}</div>
+        <div class="min-w-0">
+          <p class="text-sm font-semibold text-[#0b1c30]">${alert.title}</p>
+          <p class="text-[11px] font-semibold ${messageTone}">${description}</p>
+        </div>
+      </div>
+      <button data-tab="${alert.actionTab || 'gastos'}" data-focus="${alert.actionFocus || ''}" class="insight-alert-action rounded-full bg-white px-4 py-2 text-sm font-semibold text-[#0058bc] border border-slate-200 shadow-sm cursor-pointer hover:bg-[#eef3ff] whitespace-nowrap">
+        ${alert.actionLabel || 'Ver'}
+      </button>
+    </div>
+  `;
+}
+
 function renderDashboardLegacy() {
   const isPastMonth = state.selectedMonth !== getCurrentMonthKey();
 
@@ -725,7 +780,7 @@ function renderDashboardLegacy() {
         </div>
 
       <!-- Main Available Balance Hero Card (Apple Wallet aesthetic) -->
-      <div class="hero-card-dark">
+      <div id="dashboard-balance-card" class="hero-card-dark">
         <div class="hero-glow-1"></div>
         <div class="hero-glow-2"></div>
 
@@ -811,30 +866,7 @@ function renderDashboardLegacy() {
       </div>
 
       <!-- Financial Alerts & Tips Feed -->
-      ${alerts
-        .map(
-          (alert) => `
-        <div class="rounded-2xl p-3 border flex items-center justify-between ${
-          alert.type === 'danger'
-            ? 'bg-rose-50 border-rose-200 text-rose-900'
-            : alert.type === 'warning'
-            ? 'bg-amber-50 border-amber-200 text-amber-950'
-            : 'bg-emerald-50 border-emerald-200 text-emerald-950'
-        }">
-          <div class="flex items-center gap-2.5 min-w-0">
-            <div class="shrink-0">${getIconSvg(alert.icon, 'w-4 h-4')}</div>
-            <div class="flex flex-col min-w-0">
-              <span class="text-xs font-bold truncate">${alert.title}</span>
-              <span class="text-[11px] opacity-80 truncate">${alert.message}</span>
-            </div>
-          </div>
-          <button data-tab="${alert.actionTab || 'gastos'}" class="insight-alert-action shrink-0 px-2.5 py-1 rounded-full bg-white text-xs font-semibold shadow-xs hover:opacity-90 active:scale-95 transition-all cursor-pointer">
-            ${alert.actionLabel || 'Ver'}
-          </button>
-        </div>
-      `
-        )
-        .join('')}
+      ${alerts.map((alert) => renderSystemAlertCard(alert)).join('')}
 
       <!-- Dynamic Financial Tip Carousel -->
       ${
@@ -1082,7 +1114,7 @@ function renderDashboardLegacy() {
   });
 
   document.querySelectorAll('.insight-alert-action').forEach((btn) => {
-    btn.onclick = () => switchTab(btn.dataset.tab);
+    btn.onclick = () => handleInsightAlertAction(btn);
   });
 
   const tipPrev = document.getElementById('tip-prev-btn');
@@ -1145,7 +1177,7 @@ function renderDashboard() {
         </div>
       </div>
 
-      <div class="hero-card-dark mockup-home-hero p-5">
+      <div id="dashboard-balance-card" class="hero-card-dark mockup-home-hero p-5">
         <div class="hero-glow-1"></div><div class="hero-glow-2"></div>
         <div class="relative z-10 flex flex-col gap-4">
           <div class="flex items-center justify-between">
@@ -1189,43 +1221,7 @@ function renderDashboard() {
 
       ${financialAlerts.length ? `
         <div class="flex flex-col gap-2">
-          ${financialAlerts.map((alert) => {
-            const isBudgetAlert = alert.id === 'alert_budget_80' || alert.id === 'alert_budget_exceeded';
-            const alertIcon = alert.icon || (isBudgetAlert ? 'pieChart' : alert.type === 'danger' ? 'alertTriangle' : alert.type === 'warning' ? 'alertCircle' : 'info');
-            const alertTone = alert.type === 'danger'
-              ? 'bg-rose-50 border-rose-200 text-rose-900'
-              : alert.type === 'warning'
-              ? 'bg-amber-50 border-amber-200 text-amber-950'
-              : 'bg-emerald-50 border-emerald-200 text-emerald-950';
-            if (isBudgetAlert) return `
-              <div class="mockup-card rounded-[28px] bg-[#eef4ff] p-4 shadow-sm border border-[#dce8ff] flex items-center justify-between gap-3">
-                <div class="flex items-center gap-3 min-w-0">
-                  <div class="w-12 h-12 rounded-full ${alert.type === 'danger' ? 'bg-[#ffe1e7] text-[#f3194d]' : 'bg-[#dce8ff] text-[#0058bc]'} flex items-center justify-center shrink-0">${getIconSvg(alertIcon, 'w-5 h-5')}</div>
-                  <div class="min-w-0">
-                    <p class="text-sm font-semibold text-[#0b1c30]">${alert.title}</p>
-                    <p class="text-[11px] text-slate-600">${alert.description}</p>
-                  </div>
-                </div>
-                <button data-tab="${alert.actionTab || 'gastos'}" class="insight-alert-action rounded-full bg-white px-4 py-2 text-sm font-semibold text-[#0058bc] border border-slate-200 shadow-sm cursor-pointer hover:bg-[#eef3ff] whitespace-nowrap">
-                  ${alert.actionLabel || 'Ver'}
-                </button>
-              </div>
-            `;
-            return `
-              <div class="rounded-2xl p-3 border flex items-center justify-between gap-3 ${alertTone}">
-                <div class="flex items-center gap-2.5 min-w-0">
-                  <div class="shrink-0">${getIconSvg(alertIcon, 'w-4 h-4')}</div>
-                  <div class="flex flex-col min-w-0">
-                    <span class="text-xs font-bold">${alert.title}</span>
-                    <span class="text-[11px] opacity-80">${alert.description}</span>
-                  </div>
-                </div>
-                <button data-tab="${alert.actionTab || 'gastos'}" class="insight-alert-action shrink-0 px-2.5 py-1 rounded-full bg-white text-xs font-semibold shadow-sm hover:opacity-90 active:scale-95 transition-all cursor-pointer">
-                  ${alert.actionLabel || 'Ver'}
-                </button>
-              </div>
-            `;
-          }).join('')}
+          ${financialAlerts.map((alert) => renderSystemAlertCard(alert)).join('')}
         </div>
       ` : ''}
 
@@ -1305,7 +1301,7 @@ function renderDashboard() {
       <div>
         <div class="flex items-center justify-between mb-2"><h2 class="text-lg font-bold">Movimientos Recientes</h2><button id="dash-ver-historial-btn" class="text-xs font-semibold text-[#0058bc] cursor-pointer">Ver historial</button></div>
         <div class="rounded-3xl bg-white px-4 shadow-sm border border-slate-100 divide-y divide-slate-100 overflow-hidden">
-      ${recent.map((tx) => `<div data-tx-id="${tx.isGoalContribution ? '' : tx.id}" data-goal-contribution="${tx.isGoalContribution ? 'true' : 'false'}" class="dash-tx-row flex items-center justify-between py-3 ${tx.isGoalContribution ? 'cursor-default' : 'cursor-pointer'}"><div class="flex items-center gap-3 min-w-0"><div class="w-10 h-10 rounded-full bg-[#dce8ff] flex items-center justify-center shrink-0">${getRecordIcon(tx, 'w-4 h-4')}</div><div class="min-w-0"><p class="text-xs font-semibold truncate">${tx.description}</p><p class="text-[11px] text-slate-500 truncate">${tx.date} • ${tx.category}</p></div></div><div class="text-right shrink-0"><strong class="text-sm tabular-nums ${tx.type === 'ingreso' ? 'text-[#006c49]' : 'text-[#0b1c30]'}">${tx.type === 'ingreso' ? '+' : '-'}${formatCOP(tx.amount)}</strong><span class="block text-[10px] ${tx.type === 'ingreso' ? 'text-[#006c49]' : 'text-slate-500'}">${tx.type === 'ingreso' ? 'Ingreso' : 'Egreso'}</span></div></div>`).join('')}
+      ${recent.map((tx) => `<div data-tx-id="${tx.isGoalContribution ? '' : tx.id}" data-goal-contribution="${tx.isGoalContribution ? 'true' : 'false'}" class="dash-tx-row flex items-center justify-between py-3 ${tx.isGoalContribution ? 'cursor-default' : 'cursor-pointer'}"><div class="flex items-center gap-3 min-w-0"><div class="w-10 h-10 rounded-2xl ${tx.type === 'ingreso' ? 'bg-emerald-50 text-[#006c49]' : 'bg-slate-100 text-slate-600'} flex items-center justify-center shrink-0">${getRecordIcon(tx, 'w-5 h-5')}</div><div class="min-w-0"><p class="text-xs font-semibold truncate">${tx.description}</p><p class="text-[11px] text-slate-500 truncate">${tx.date} • ${tx.category}</p></div></div><div class="text-right shrink-0"><strong class="text-sm tabular-nums ${tx.type === 'ingreso' ? 'text-[#006c49]' : 'text-[#0b1c30]'}">${tx.type === 'ingreso' ? '+' : '-'}${formatCOP(tx.amount)}</strong><span class="block text-[10px] ${tx.type === 'ingreso' ? 'text-[#006c49]' : 'text-slate-500'}">${tx.type === 'ingreso' ? 'Ingreso' : 'Egreso'}</span></div></div>`).join('')}
         </div>
       </div>
     </div>
@@ -1368,7 +1364,7 @@ function renderDashboard() {
   document.getElementById('dash-ver-metas-btn')?.addEventListener('click', () => switchTab('metas'));
   document.getElementById('dash-ver-historial-btn')?.addEventListener('click', () => switchTab('gastos'));
   document.querySelectorAll('.insight-alert-action').forEach((button) => {
-    button.onclick = () => switchTab(button.dataset.tab || 'gastos');
+    button.onclick = () => handleInsightAlertAction(button);
   });
   DOM.tabInicio.querySelectorAll('.dash-goal-card').forEach((card) => { card.onclick = () => switchTab('metas'); });
   DOM.tabInicio.querySelectorAll('.dash-tx-row').forEach((row) => { row.onclick = () => { if (row.dataset.goalContribution === 'true') return; const tx = state.transactions.find((item) => item.id === row.dataset.txId); if (tx) openEditTransactionModal(tx); }; });
@@ -3106,43 +3102,51 @@ function renderProfile() {
       </div>
 
       <!-- Preferencias del Sistema -->
-      <div class="flex flex-col gap-2">
-        <span class="text-[11px] font-bold text-slate-500 uppercase tracking-wider px-1">Preferencias del Sistema</span>
-        <div class="bg-white rounded-3xl p-4 shadow-sm border border-slate-200/60 flex flex-col divide-y divide-slate-100">
-          <div class="flex items-center justify-between py-2.5">
-            <div class="flex items-center gap-2.5">
-              <div class="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-slate-600">
+      <div class="rounded-3xl bg-white p-5 shadow-sm border border-slate-200/60 flex flex-col gap-3.5">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <div class="w-7 h-7 rounded-full bg-blue-100 flex items-center justify-center text-[#0058bc]">
+              ${getIconSvg('sliders', 'w-4 h-4')}
+            </div>
+            <span class="text-[11px] font-bold text-slate-600 uppercase tracking-wider">Preferencias del Sistema</span>
+          </div>
+        </div>
+
+        <div class="flex flex-col gap-2 pt-1">
+          <div class="flex items-center justify-between gap-3 p-3 rounded-2xl bg-slate-50 border border-slate-200/60">
+            <div class="flex items-center gap-2.5 min-w-0">
+              <div class="w-8 h-8 rounded-full bg-white flex items-center justify-center text-slate-600 shrink-0">
                 ${getIconSvg('coins', 'w-4 h-4')}
               </div>
-              <div>
+              <div class="min-w-0">
                 <p class="text-xs font-semibold text-slate-800">Moneda Principal</p>
                 <p class="text-[11px] text-slate-500">Formato estándar de visualización</p>
               </div>
             </div>
-            <span class="text-xs font-bold text-slate-800 bg-slate-100 px-2.5 py-1 rounded-full">COP ($)</span>
+            <span class="text-xs font-bold text-slate-800 bg-white border border-slate-200 px-2.5 py-1 rounded-full shrink-0">COP ($)</span>
           </div>
 
-          <div class="flex items-center justify-between py-2.5">
-            <div class="flex items-center gap-2.5">
-              <div class="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-[#0058bc]">${getIconSvg('calendar', 'w-4 h-4')}</div>
-              <div><p class="text-xs font-semibold text-slate-800">Reinicio mensual</p><p class="text-[11px] text-slate-500">Corte y balance periódico</p></div>
+          <div class="flex items-center justify-between gap-3 p-3 rounded-2xl bg-slate-50 border border-slate-200/60">
+            <div class="flex items-center gap-2.5 min-w-0">
+              <div class="w-8 h-8 rounded-full bg-white flex items-center justify-center text-[#0058bc] shrink-0">${getIconSvg('calendar', 'w-4 h-4')}</div>
+              <div class="min-w-0"><p class="text-xs font-semibold text-slate-800">Reinicio mensual</p><p class="text-[11px] text-slate-500">Corte y balance periódico</p></div>
             </div>
-            <span class="text-xs font-semibold text-slate-700">Día ${user.resetDay || 1} de cada mes</span>
+            <span class="text-xs font-semibold text-slate-700 text-right shrink-0">Día ${user.resetDay || 1} de cada mes</span>
           </div>
 
-          <div class="flex items-center justify-between py-2.5">
-            <div class="flex items-center gap-2.5">
-              <div class="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-slate-600">
+          <div class="flex items-center justify-between gap-3 p-3 rounded-2xl bg-slate-50 border border-slate-200/60">
+            <div class="flex items-center gap-2.5 min-w-0">
+              <div class="w-8 h-8 rounded-full bg-white flex items-center justify-center text-slate-600 shrink-0">
                 ${getIconSvg('sparkles', 'w-4 h-4')}
               </div>
-              <div>
+              <div class="min-w-0">
                 <p class="text-xs font-semibold text-slate-800">Categorización inteligente</p>
                 <p class="text-[11px] text-slate-500">Sugerir según conceptos habituales</p>
               </div>
             </div>
             <button
               id="toggle-smart-cat"
-              class="w-11 h-6 rounded-full transition-colors duration-200 p-0.5 relative cursor-pointer ${
+              class="w-11 h-6 rounded-full transition-colors duration-200 p-0.5 relative cursor-pointer shrink-0 ${
                 user.smartCategorization ? 'bg-[#0058bc]' : 'bg-slate-300'
               }"
             >
@@ -3166,9 +3170,6 @@ function renderProfile() {
           <span>Eliminar cuenta y datos locales</span>
         </button>
 
-        <button id="btn-reset-data" class="text-center text-[11px] text-slate-400 hover:text-slate-600 transition-colors py-1 underline cursor-pointer">
-          Restaurar datos demo originales
-        </button>
       </div>
 
       <!-- App Branding Footer -->
@@ -3204,15 +3205,6 @@ function renderProfile() {
     state.currentUser = res.user;
     renderProfile();
     showToast('Preferencia actualizada');
-  };
-
-  document.getElementById('btn-reset-data').onclick = async () => {
-    if (confirm('¿Restablecer todos los datos al estado de demostración?')) {
-      await api.resetUserData();
-      await refreshAllData();
-      renderProfile();
-      showToast('Datos de prueba restablecidos');
-    }
   };
 
   document.getElementById('btn-logout').onclick = async () => {
@@ -3423,8 +3415,17 @@ function renderAuth() {
     btnDemo.onclick = async () => {
       try {
         const res = await api.loginDemo();
-        state.currentUser = res.user;
-        await refreshAllData();
+        const hasBootstrap = applyBootstrapData(res.bootstrap);
+        if (hasBootstrap) {
+          try {
+            localStorage.setItem('miplata_bootstrap_cache', JSON.stringify(res.bootstrap));
+          } catch (_error) {
+            // Keep the authenticated session working when browser storage is full.
+          }
+        } else {
+          state.currentUser = res.user;
+          await refreshAllData();
+        }
         renderApp();
         showToast(res.message);
       } catch (err) {
