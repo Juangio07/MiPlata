@@ -1,6 +1,8 @@
 import os
 import io
 import csv
+import re
+from concurrent.futures import ThreadPoolExecutor
 from flask import Flask, request, jsonify, send_from_directory, send_file, make_response
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -84,6 +86,26 @@ def _session_response(auth_data, profile, message):
     }
     return {"user": profile, "session": session, **session, "message": message}
 
+
+def _is_valid_email(email):
+    return bool(re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email or ""))
+
+
+def _is_duplicate_email_error(error):
+    payload = error.payload or {}
+    details = " ".join(
+        str(payload.get(key, ""))
+        for key in ("code", "error_code", "msg", "message", "error", "error_description")
+    ).lower()
+    duplicate_markers = (
+        "email_exists",
+        "user_already_exists",
+        "already registered",
+        "already been registered",
+        "already exists",
+    )
+    return error.status == 409 or any(marker in details for marker in duplicate_markers)
+
 # --- Static Frontend Serving ---
 @app.route("/")
 def index():
@@ -165,7 +187,7 @@ def auth_login():
             return jsonify({"error": "Correo o contraseña incorrectos"}), 401 if error.status in (400, 401) else 502
 
     user = db.get_user_by_email(email)
-    if user and (not password or user.get("password") == password):
+    if user and password and user.get("password") == password:
         db.set_current_user_id(user["id"])
         return jsonify({"user": user, "message": f"¡Bienvenido de nuevo, {user['name'].split()[0]}!"})
     return jsonify({"error": "Correo o contraseña incorrectos"}), 401
@@ -175,12 +197,20 @@ def auth_register():
     data = request.get_json() or {}
     name = data.get("name", "").strip()
     email = data.get("email", "").strip().lower()
-    password = data.get("password", "123456")
+    password = str(data.get("password") or "")
     monthly_salary = data.get("monthlySalary", 0)
     avatar_url = data.get("avatarUrl", "")
 
     if not name:
         return jsonify({"error": "El nombre es requerido"}), 400
+    if not email:
+        return jsonify({"error": "El correo electrónico es requerido"}), 400
+    if not _is_valid_email(email):
+        return jsonify({"error": "Ingresa un correo electrónico válido"}), 400
+    if not password:
+        return jsonify({"error": "La contraseña es requerida"}), 400
+    if len(password) < 6:
+        return jsonify({"error": "La contraseña debe tener al menos 6 caracteres"}), 400
 
     if SUPABASE_ENABLED:
         try:
@@ -196,9 +226,9 @@ def auth_register():
                 f"¡Bienvenido a MiPlata, {name.split()[0]}! Todo listo y limpio en 0 para comenzar.",
             ))
         except sb.SupabaseError as error:
-            if error.status in (400, 409, 422):
-                return jsonify({"error": "Ya existe una cuenta con este correo"}), 409
-            return jsonify({"error": str(error)}), 502
+            if _is_duplicate_email_error(error):
+                return jsonify({"error": "Este correo ya está registrado. Inicia sesión o usa otro correo."}), 409
+            return jsonify({"error": "No se pudo crear la cuenta. Intenta nuevamente."}), 502
 
     existing = db.get_user_by_email(email)
     if existing:
@@ -248,6 +278,46 @@ def get_user():
     user = db.get_user_by_id(user_id)
     return jsonify({"user": user})
 
+@app.route("/api/bootstrap", methods=["GET"])
+def bootstrap():
+    user_id = get_current_user_id_from_req()
+    if not user_id:
+        return jsonify({"error": "No autorizado"}), 401
+
+    # Supabase calls are independent reads. Keep one browser request while
+    # fetching them concurrently so slower mobile connections do not wait for
+    # each table one after another.
+    if SUPABASE_ENABLED:
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            user_future = pool.submit(db.get_user_by_id, user_id)
+            transactions_future = pool.submit(db.get_transactions, user_id)
+            fixed_future = pool.submit(db.get_fixed_obligations, user_id)
+            goals_future = pool.submit(db.get_savings_goals, user_id)
+            contributions_future = pool.submit(db.get_goal_contributions, user_id)
+            budgets_future = pool.submit(db.get_category_budgets, user_id)
+            user = user_future.result()
+            transactions = transactions_future.result()
+            fixed_obligations = fixed_future.result()
+            savings_goals = goals_future.result()
+            goal_contributions = contributions_future.result()
+            category_budgets = budgets_future.result()
+    else:
+        user = db.get_user_by_id(user_id)
+        transactions = db.get_transactions(user_id)
+        fixed_obligations = db.get_fixed_obligations(user_id)
+        savings_goals = db.get_savings_goals(user_id)
+        goal_contributions = db.get_goal_contributions(user_id)
+        category_budgets = db.get_category_budgets(user_id)
+
+    return jsonify({
+        "user": user,
+        "transactions": transactions,
+        "fixedObligations": fixed_obligations,
+        "savingsGoals": savings_goals,
+        "goalContributions": goal_contributions,
+        "categoryBudgets": category_budgets,
+    })
+
 @app.route("/api/user/profile", methods=["PUT"])
 def update_profile():
     user_id = get_current_user_id_from_req()
@@ -273,6 +343,9 @@ def reset_data():
     if not user_id:
         return jsonify({"error": "No autorizado"}), 401
     db.reset_user_data(user_id)
+    auth_user = get_auth_user_from_req() if SUPABASE_ENABLED else None
+    if auth_user and (auth_user.get("email") or "").strip().lower() == "demo@miplata.app":
+        db.ensure_demo_data(user_id)
     return jsonify({"message": "Datos reiniciados al estado por defecto"})
 
 @app.route("/api/user", methods=["DELETE"])
@@ -316,14 +389,6 @@ def update_transaction(tx_id):
     data = request.get_json() or {}
     db.update_transaction(user_id, tx_id, data)
     return jsonify({"message": "Movimiento actualizado"})
-
-@app.route("/api/transactions/<tx_id>", methods=["DELETE"])
-def delete_transaction(tx_id):
-    user_id = get_current_user_id_from_req()
-    if not user_id:
-        return jsonify({"error": "No autorizado"}), 401
-    db.delete_transaction(user_id, tx_id)
-    return jsonify({"message": "Registro eliminado"})
 
 # --- Fixed Obligations Endpoints ---
 @app.route("/api/fixed-obligations", methods=["GET"])
@@ -482,11 +547,11 @@ def export_csv():
     writer.writerow(["Ahorro Neto", net_savings])
     writer.writerow(["Tasa de Ahorro", f"{savings_rate:.1f}%"])
     writer.writerow([])
-    writer.writerow(["Fecha", "Tipo", "Categoría", "Descripción", "Método", "Monto COP"])
+    writer.writerow(["Fecha", "Tipo", "Categoría", "Descripción", "Monto COP"])
 
     for t in month_txs:
         amt = t["amount"] if t["type"] == "ingreso" else -t["amount"]
-        writer.writerow([t["date"], t["type"].capitalize(), t["category"], t["description"], t.get("accountMethod", "Efectivo"), amt])
+        writer.writerow([t["date"], t["type"].capitalize(), t["category"], t["description"], amt])
 
     output.seek(0)
     bytes_io = io.BytesIO(output.getvalue().encode('utf-8-sig'))
@@ -503,4 +568,5 @@ def export_csv():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     print(f"Starting MiPlata backend server on port {port}...")
-    app.run(host="0.0.0.0", port=port, debug=True)
+    debug = os.environ.get("FLASK_DEBUG", "0") == "1"
+    app.run(host="0.0.0.0", port=port, debug=debug)

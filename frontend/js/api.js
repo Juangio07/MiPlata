@@ -8,6 +8,7 @@
 
 const API_BASE = '';
 const SESSION_KEY = 'miplata_supabase_session';
+const BOOTSTRAP_CACHE_KEY = 'miplata_bootstrap_cache';
 
 function readSession() {
   try {
@@ -27,6 +28,7 @@ function clearSession() {
   localStorage.removeItem(SESSION_KEY);
   localStorage.removeItem('miplata_current_user_id');
   localStorage.removeItem('miplata_user_cache');
+  localStorage.removeItem(BOOTSTRAP_CACHE_KEY);
 }
 
 function getHeaders() {
@@ -81,12 +83,41 @@ async function readError(res, fallback) {
 function storeAuthResponse(data) {
   if (data?.session?.access_token) saveSession(data.session);
   if (data?.user?.id) {
+    try {
+      const cached = JSON.parse(localStorage.getItem(BOOTSTRAP_CACHE_KEY) || 'null');
+      if (cached?.user?.id && cached.user.id !== data.user.id) {
+        localStorage.removeItem(BOOTSTRAP_CACHE_KEY);
+      }
+    } catch (_error) {
+      localStorage.removeItem(BOOTSTRAP_CACHE_KEY);
+    }
     localStorage.setItem('miplata_current_user_id', data.user.id);
     localStorage.setItem('miplata_user_cache', JSON.stringify(data.user));
   }
 }
 
 export const api = {
+  async getBootstrap() {
+    if (!readSession()?.access_token) {
+      clearSession();
+      return null;
+    }
+    const res = await request('/api/bootstrap');
+    if (res.status === 401) return null;
+    if (!res.ok) throw new Error(await readError(res, 'No se pudo cargar la aplicación'));
+    const data = await res.json();
+    if (data.user) {
+      localStorage.setItem('miplata_current_user_id', data.user.id);
+      localStorage.setItem('miplata_user_cache', JSON.stringify(data.user));
+    }
+    try {
+      localStorage.setItem(BOOTSTRAP_CACHE_KEY, JSON.stringify(data));
+    } catch (_error) {
+      // Keep the live response working even when browser storage is full.
+    }
+    return data;
+  },
+
   async getCurrentUser() {
     if (!readSession()?.access_token) {
       clearSession();
@@ -132,6 +163,9 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ name, email, password, monthlySalary, avatarUrl }),
     }, false);
+    if (res.status === 409) {
+      throw new Error('Este correo ya está registrado. Inicia sesión o usa otro correo.');
+    }
     if (!res.ok) throw new Error(await readError(res, 'Error al crear cuenta'));
     const data = await res.json();
     storeAuthResponse(data);
@@ -195,12 +229,6 @@ export const api = {
   async updateTransaction(id, updates) {
     const res = await request(`/api/transactions/${id}`, { method: 'PUT', body: JSON.stringify(updates) });
     if (!res.ok) throw new Error(await readError(res, 'Error al actualizar movimiento'));
-    return res.json();
-  },
-
-  async deleteTransaction(id) {
-    const res = await request(`/api/transactions/${id}`, { method: 'DELETE' });
-    if (!res.ok) throw new Error(await readError(res, 'Error al eliminar movimiento'));
     return res.json();
   },
 

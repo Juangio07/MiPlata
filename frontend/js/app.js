@@ -96,7 +96,6 @@ const DOM = {
   searchInputIcon: document.getElementById('search-input-icon'),
   searchCloseBtn: document.getElementById('search-close-btn'),
   searchResultsList: document.getElementById('search-results-list'),
-  modalCashDetail: document.getElementById('modal-cash-detail'),
   modalFixedObligation: document.getElementById('modal-fixed-obligation'),
   modalSavingsGoal: document.getElementById('modal-savings-goal'),
   modalAporteGoal: document.getElementById('modal-aporte-goal'),
@@ -194,6 +193,18 @@ const FIXED_OBLIGATION_CATEGORIES = [
   'Otros',
 ];
 
+const FIXED_OBLIGATION_CATEGORY_OPTIONS = [
+  { name: 'Vivienda', label: 'Vivienda', icon: 'home' },
+  { name: 'Servicios públicos', label: 'Servicios', icon: 'droplet' },
+  { name: 'Internet y telefonía', label: 'Internet', icon: 'wifi' },
+  { name: 'Transporte', label: 'Transporte', icon: 'car' },
+  { name: 'Deudas y créditos', label: 'Créditos', icon: 'creditCard' },
+  { name: 'Salud y seguros', label: 'Salud', icon: 'heartPulse' },
+  { name: 'Suscripciones y membresías', label: 'Suscripciones', icon: 'tv' },
+  { name: 'Educación y familia', label: 'Educación', icon: 'graduationCap' },
+  { name: 'Otros', label: 'Otros', icon: 'banknote' },
+];
+
 function normalizeFixedObligationCategory(category) {
   const aliases = {
     Servicios: 'Servicios públicos',
@@ -283,7 +294,10 @@ function computeMetrics() {
   const totalSavingsTarget = savingsGoals.reduce((sum, g) => sum + g.targetAmount, 0);
 
   const baseBalance = currentUser?.initialBalance || 0;
-  const availableCash = Math.max(0, baseBalance + totalIncome - totalExpenses - fixedCommitted);
+  // Available cash reflects money actually received minus registered expenses.
+  // Pending fixed obligations remain visible as "Por Pagar" and do not reduce
+  // this balance until they are actually paid and recorded as an expense.
+  const availableCash = Math.max(0, baseBalance + totalIncome - totalExpenses);
 
   // The budget limit is an explicit planning value. It must not silently fall
   // back to the salary when the user has configured a different limit.
@@ -347,24 +361,43 @@ function switchTab(tabId) {
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
+function restoreCachedState() {
+  try {
+    const cached = JSON.parse(localStorage.getItem('miplata_bootstrap_cache') || 'null');
+    const cachedUser = cached?.user;
+    const sessionUser = JSON.parse(localStorage.getItem('miplata_user_cache') || 'null');
+    if (!cachedUser?.id || cachedUser.id !== sessionUser?.id) return false;
+    state.currentUser = cachedUser;
+    state.transactions = cached.transactions || [];
+    state.fixedObligations = cached.fixedObligations || [];
+    state.savingsGoals = cached.savingsGoals || [];
+    state.goalContributions = cached.goalContributions || [];
+    state.categoryBudgets = cached.categoryBudgets || [];
+    return true;
+  } catch (_error) {
+    localStorage.removeItem('miplata_bootstrap_cache');
+    return false;
+  }
+}
+
 // Data Fetcher from Python Flask Backend
 async function refreshAllData() {
-  if (!state.currentUser) return;
   try {
-    const [txs, fixed, goals, contribs, budgets] = await Promise.all([
-      api.getTransactions(),
-      api.getFixedObligations(),
-      api.getSavingsGoals(),
-      api.getGoalContributions(),
-      api.getCategoryBudgets(),
-    ]);
-    state.transactions = txs || [];
-    state.fixedObligations = fixed || [];
-    state.savingsGoals = goals || [];
-    state.goalContributions = contribs || [];
-    state.categoryBudgets = budgets || [];
+    const data = await api.getBootstrap();
+    if (!data?.user) {
+      state.currentUser = null;
+      return false;
+    }
+    state.currentUser = data.user;
+    state.transactions = data.transactions || [];
+    state.fixedObligations = data.fixedObligations || [];
+    state.savingsGoals = data.savingsGoals || [];
+    state.goalContributions = data.goalContributions || [];
+    state.categoryBudgets = data.categoryBudgets || [];
+    return true;
   } catch (err) {
     console.error('Error fetching data from backend', err);
+    return false;
   }
 }
 
@@ -553,18 +586,11 @@ function renderDashboardLegacy() {
               <span class="text-[11px] text-slate-400">Libre para gastar hoy</span>
             </div>
 
-            <button
-              id="btn-open-cash-modal"
-              class="px-2.5 py-1 rounded-full bg-white/10 hover:bg-white/20 text-white text-[11px] font-semibold border border-white/15 transition-all active:scale-95 flex items-center gap-1 cursor-pointer"
-            >
-              <span>Ver cálculo</span>
-              ${getIconSvg('chevronRight', 'w-3 h-3')}
-            </button>
           </div>
 
           <!-- Main Amount Display -->
-          <div id="hero-cash-display" class="flex items-baseline gap-2 cursor-pointer group">
-            <span class="text-3xl sm:text-4xl font-extrabold tracking-tight text-[#6cf8bb] tabular-nums group-hover:scale-[1.01] transition-transform">
+          <div class="flex items-baseline gap-2">
+            <span class="text-3xl sm:text-4xl font-extrabold tracking-tight text-[#6cf8bb] tabular-nums">
               ${state.hideBalance ? '••••••••' : formatCOP(metrics.availableCash)}
             </span>
             <span class="text-xs font-bold text-slate-300 uppercase">COP</span>
@@ -812,7 +838,7 @@ function renderDashboardLegacy() {
                   </div>
                   <div class="flex flex-col min-w-0">
                     <p class="text-xs font-semibold text-[#0b1c30] truncate">${tx.description}</p>
-                    <p class="text-[11px] text-slate-500 truncate">${tx.date} • ${tx.accountMethod || tx.category}</p>
+                    <p class="text-[11px] text-slate-500 truncate">${tx.date} • ${tx.category}</p>
                   </div>
                 </div>
                 <div class="flex flex-col items-end shrink-0 pl-2">
@@ -858,11 +884,6 @@ function renderDashboardLegacy() {
       renderDashboard();
     };
   }
-
-  const btnCashModal = document.getElementById('btn-open-cash-modal');
-  const heroCash = document.getElementById('hero-cash-display');
-  if (btnCashModal) btnCashModal.onclick = openCashDetailModal;
-  if (heroCash) heroCash.onclick = openCashDetailModal;
 
   const pillIngresos = document.getElementById('dash-pill-ingresos');
   const pillGastado = document.getElementById('dash-pill-gastado');
@@ -977,7 +998,7 @@ function renderDashboard() {
               ${getIconSvg(state.hideBalance ? 'eyeOff' : 'eye', 'w-4 h-4')}
             </button>
           </div>
-          <div id="hero-cash-display" class="flex items-baseline gap-2 cursor-pointer">
+          <div class="flex items-baseline gap-2">
             <span class="text-[38px] leading-none font-extrabold tracking-tight text-white tabular-nums">${state.hideBalance ? '••••••••' : formatCOP(metrics.availableCash)}</span>
             <span class="text-xs font-semibold text-slate-300">COP</span>
           </div>
@@ -1023,7 +1044,7 @@ function renderDashboard() {
         <div class="mockup-card bg-white rounded-[28px] p-4 shadow-sm border border-slate-100 flex items-center justify-between gap-3">
           <div class="flex items-center gap-2.5 min-w-0">
             <div class="w-10 h-10 rounded-full bg-[#dce8ff] text-[#0058bc] flex items-center justify-center shrink-0">${getIconSvg('calendarCheck', 'w-5 h-5')}</div>
-            <div class="min-w-0"><p class="text-sm font-semibold text-[#0b1c30]">Gastos fijos del mes</p><p class="text-xs text-slate-500">¡Todo al día este mes!</p></div>
+            <div class="min-w-0"><p class="text-sm font-semibold text-[#0b1c30]">Gastos fijos del mes</p><p class="text-xs text-slate-500">${state.fixedObligations.length ? '¡Todo al día este mes!' : 'No tienes gastos fijos registrados'}</p></div>
           </div>
           <button id="dash-ver-fijos-btn" class="rounded-full bg-white px-4 py-2 text-sm font-semibold text-[#0058bc] border border-slate-200 shadow-sm cursor-pointer hover:bg-[#eef3ff] whitespace-nowrap">Ver obligaciones</button>
         </div>
@@ -1084,7 +1105,7 @@ function renderDashboard() {
       <div>
         <div class="flex items-center justify-between mb-2"><h2 class="text-lg font-bold">Movimientos Recientes</h2><button id="dash-ver-historial-btn" class="text-xs font-semibold text-[#0058bc] cursor-pointer">Ver historial</button></div>
         <div class="rounded-3xl bg-white px-4 shadow-sm border border-slate-100 divide-y divide-slate-100 overflow-hidden">
-          ${recent.map((tx) => `<div data-tx-id="${tx.id}" class="dash-tx-row flex items-center justify-between py-3 cursor-pointer"><div class="flex items-center gap-3 min-w-0"><div class="w-10 h-10 rounded-full bg-[#dce8ff] flex items-center justify-center shrink-0">${tx.type === 'ingreso' ? getIconSvg('trendingUp', 'w-4 h-4 text-[#006c49]') : getCategoryIconSvg(tx.category, 'w-4 h-4')}</div><div class="min-w-0"><p class="text-xs font-semibold truncate">${tx.description}</p><p class="text-[11px] text-slate-500 truncate">${tx.date} • ${tx.time || tx.accountMethod || tx.category}</p></div></div><div class="text-right shrink-0"><strong class="text-sm tabular-nums ${tx.type === 'ingreso' ? 'text-[#006c49]' : 'text-[#0b1c30]'}">${tx.type === 'ingreso' ? '+' : '-'}${formatCOP(tx.amount)}</strong><span class="block text-[10px] ${tx.type === 'ingreso' ? 'text-[#006c49]' : 'text-slate-500'}">${tx.type === 'ingreso' ? 'Ingreso' : tx.accountMethod || 'COP'}</span></div></div>`).join('')}
+      ${recent.map((tx) => `<div data-tx-id="${tx.id}" class="dash-tx-row flex items-center justify-between py-3 cursor-pointer"><div class="flex items-center gap-3 min-w-0"><div class="w-10 h-10 rounded-full bg-[#dce8ff] flex items-center justify-center shrink-0">${tx.type === 'ingreso' ? getIconSvg('trendingUp', 'w-4 h-4 text-[#006c49]') : getCategoryIconSvg(tx.category, 'w-4 h-4')}</div><div class="min-w-0"><p class="text-xs font-semibold truncate">${tx.description}</p><p class="text-[11px] text-slate-500 truncate">${tx.date} • ${tx.category}</p></div></div><div class="text-right shrink-0"><strong class="text-sm tabular-nums ${tx.type === 'ingreso' ? 'text-[#006c49]' : 'text-[#0b1c30]'}">${tx.type === 'ingreso' ? '+' : '-'}${formatCOP(tx.amount)}</strong><span class="block text-[10px] ${tx.type === 'ingreso' ? 'text-[#006c49]' : 'text-slate-500'}">${tx.type === 'ingreso' ? 'Ingreso' : 'Egreso'}</span></div></div>`).join('')}
         </div>
       </div>
     </div>
@@ -1140,7 +1161,6 @@ function renderDashboard() {
     });
   }
   document.getElementById('btn-toggle-hide-balance')?.addEventListener('click', () => { state.hideBalance = !state.hideBalance; renderDashboard(); });
-  document.getElementById('hero-cash-display')?.addEventListener('click', openCashDetailModal);
   document.getElementById('dash-pill-ingresos')?.addEventListener('click', () => switchTab('gastos'));
   document.getElementById('dash-pill-gastado')?.addEventListener('click', () => switchTab('gastos'));
   document.getElementById('dash-pill-fijos')?.addEventListener('click', () => switchTab('obligaciones'));
@@ -1158,6 +1178,24 @@ function renderDashboard() {
 // -------------------------------------------------------------
 // PAST MONTH SUMMARY VIEW (Mes Cerrado / Histórico Consolidado)
 // -------------------------------------------------------------
+function escapeReportHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+function formatReportDate(value) {
+  const raw = String(value ?? '').trim();
+  const datePart = raw.slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(datePart)) return raw || 'Sin fecha';
+
+  const [year, month, day] = datePart.split('-');
+  return `${day}/${month}/${year}`;
+}
+
 function renderPastMonthSummaryView(monthKey) {
   const monthLabel = formatMonthKeyToLabel(monthKey);
   const currentMonthLabel = formatMonthKeyToLabel(getCurrentMonthKey());
@@ -1221,15 +1259,17 @@ function renderPastMonthSummaryView(monthKey) {
   // Filtered transactions for the table
   const displayedTransactions = monthTransactions.filter((tx) => {
     const matchesType = state.pastMonthFilterType === 'all' || tx.type === state.pastMonthFilterType;
+    const description = String(tx.description || '');
+    const category = String(tx.category || '');
     const matchesSearch =
       !state.pastMonthSearchQuery.trim() ||
-      tx.description.toLowerCase().includes(state.pastMonthSearchQuery.toLowerCase()) ||
-      tx.category.toLowerCase().includes(state.pastMonthSearchQuery.toLowerCase());
+      description.toLowerCase().includes(state.pastMonthSearchQuery.toLowerCase()) ||
+      category.toLowerCase().includes(state.pastMonthSearchQuery.toLowerCase());
     return matchesType && matchesSearch;
   });
 
   DOM.tabInicio.innerHTML = `
-    <div class="flex flex-col w-full px-4 pt-2 pb-24 max-w-xl mx-auto gap-4 animate-in fade-in duration-200">
+    <div id="past-month-report" class="flex flex-col w-full px-4 pt-2 pb-24 max-w-xl mx-auto gap-4 animate-in fade-in duration-200">
       <!-- Return to Current Month Notice Bar -->
       <div class="flex items-center justify-between p-3 rounded-2xl bg-gradient-to-r from-blue-50 to-indigo-50/70 border border-blue-200/70 text-slate-800 shadow-sm">
         <div class="flex items-center gap-2.5 min-w-0">
@@ -1244,7 +1284,7 @@ function renderPastMonthSummaryView(monthKey) {
 
         <button
           id="btn-back-current-month"
-          class="flex items-center gap-1 px-3 py-1.5 rounded-xl bg-white hover:bg-blue-100/50 text-[#0058bc] text-xs font-semibold border border-blue-200 shadow-sm transition-all active:scale-95 shrink-0 cursor-pointer"
+          class="no-print flex items-center gap-1 px-3 py-1.5 rounded-xl bg-white hover:bg-blue-100/50 text-[#0058bc] text-xs font-semibold border border-blue-200 shadow-sm transition-all active:scale-95 shrink-0 cursor-pointer"
         >
           ${getIconSvg('arrowLeft', 'w-3.5 h-3.5')}
           <span>Volver a ${currentMonthLabel}</span>
@@ -1356,7 +1396,7 @@ function renderPastMonthSummaryView(monthKey) {
           <span class="text-[11px] font-semibold text-[#0058bc]">Mes anterior</span>
         </div>
         <div class="mt-3">
-          <button id="btn-past-print-pdf" class="w-full h-10 rounded-2xl bg-[#eef3ff] text-[#0058bc] text-xs font-semibold flex items-center justify-center gap-1 cursor-pointer hover:bg-[#dce8ff] transition-colors">
+          <button id="btn-past-print-pdf" type="button" aria-label="Descargar reporte mensual en PDF" class="no-print w-full h-10 rounded-2xl bg-[#eef3ff] text-[#0058bc] text-xs font-semibold flex items-center justify-center gap-1 cursor-pointer hover:bg-[#dce8ff] transition-colors">
             ${getIconSvg('printer', 'w-3.5 h-3.5')}
             <span>Descargar PDF</span>
           </button>
@@ -1378,7 +1418,7 @@ function renderPastMonthSummaryView(monthKey) {
                 <div class="flex items-center justify-between text-xs">
                   <div class="flex items-center gap-2">
                     <span class="w-2.5 h-2.5 rounded-full bg-[#0058bc]"></span>
-                    <span class="font-semibold text-slate-800">${item.category}</span>
+                    <span class="font-semibold text-slate-800">${escapeReportHtml(item.category)}</span>
                     <span class="text-[11px] text-slate-400">(${item.count})</span>
                   </div>
                   <div class="flex items-center gap-2">
@@ -1413,7 +1453,7 @@ function renderPastMonthSummaryView(monthKey) {
                 <div class="flex items-center justify-between text-xs">
                   <div class="flex items-center gap-2">
                     <span class="w-2.5 h-2.5 rounded-full bg-[#006c49]"></span>
-                    <span class="font-semibold text-slate-800">${item.category}</span>
+                    <span class="font-semibold text-slate-800">${escapeReportHtml(item.category)}</span>
                     <span class="text-[11px] text-slate-400">(${item.count})</span>
                   </div>
                   <div class="flex items-center gap-2">
@@ -1434,14 +1474,14 @@ function renderPastMonthSummaryView(monthKey) {
       </div>
 
       <!-- Transaction Log for the Past Month with Search & Filter -->
-      <div class="bg-white rounded-3xl p-5 shadow-sm border border-slate-200/60 flex flex-col gap-3">
+      <div class="past-month-report__transactions-card bg-white rounded-3xl p-5 shadow-sm border border-slate-200/60 flex flex-col gap-3">
         <div class="flex items-center justify-between">
           <h3 class="font-bold text-sm text-[#0b1c30]">Movimientos Registrados</h3>
           <span class="text-xs text-slate-400">${displayedTransactions.length} de ${monthTransactions.length}</span>
         </div>
 
         <!-- Filter Segmented Control & Search -->
-        <div class="flex flex-col sm:flex-row gap-2">
+        <div class="past-month-report__filters flex flex-col sm:flex-row gap-2 no-print">
           <div class="bg-slate-100 p-1 rounded-full flex items-center shrink-0">
             <button id="filter-pm-all" class="px-3 py-1 rounded-full text-xs font-semibold cursor-pointer ${state.pastMonthFilterType === 'all' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500'}">Todos</button>
             <button id="filter-pm-gasto" class="px-3 py-1 rounded-full text-xs font-semibold cursor-pointer ${state.pastMonthFilterType === 'gasto' ? 'bg-white text-rose-600 shadow-sm' : 'text-slate-500'}">Gastos</button>
@@ -1460,21 +1500,21 @@ function renderPastMonthSummaryView(monthKey) {
         </div>
 
         <!-- List -->
-        <div class="divide-y divide-slate-100 max-h-80 overflow-y-auto no-scrollbar">
+        <div class="past-month-report__transaction-list divide-y divide-slate-100 max-h-80 overflow-y-auto no-scrollbar">
           ${
             displayedTransactions.length === 0
               ? '<p class="text-xs text-slate-400 py-4 text-center">No hay movimientos que coincidan con la búsqueda.</p>'
               : displayedTransactions
                   .map(
                     (tx) => `
-                <div data-tx-id="${tx.id}" class="py-2.5 flex items-center justify-between text-xs hover:bg-slate-50 transition-colors cursor-pointer rounded-xl px-2">
+                <div data-tx-id="${escapeReportHtml(tx.id)}" class="py-2.5 flex items-center justify-between text-xs hover:bg-slate-50 transition-colors cursor-pointer rounded-xl px-2">
                   <div class="flex items-center gap-2.5 min-w-0">
                     <div class="w-8 h-8 rounded-xl bg-slate-100 flex items-center justify-center shrink-0">
                       ${tx.type === 'ingreso' ? `<span class="text-[#006c49]">${getIconSvg('arrowUpRight', 'w-4 h-4')}</span>` : getCategoryIconSvg(tx.category, 'w-4 h-4')}
                     </div>
                     <div class="flex flex-col min-w-0">
-                      <span class="font-semibold text-slate-800 truncate">${tx.description}</span>
-                      <span class="text-[10px] text-slate-400">${tx.date} • ${tx.category}</span>
+                      <span class="font-semibold text-slate-800 truncate">${escapeReportHtml(tx.description || 'Sin descripción')}</span>
+                      <span class="text-[10px] text-slate-400">${formatReportDate(tx.date)} • ${escapeReportHtml(tx.category || 'Sin categoría')}</span>
                     </div>
                   </div>
                   <span class="font-bold tabular-nums ${tx.type === 'ingreso' ? 'text-[#006c49]' : 'text-slate-800'}">
@@ -1497,7 +1537,18 @@ function renderPastMonthSummaryView(monthKey) {
   };
 
   document.getElementById('btn-past-print-pdf').onclick = () => {
+    const previousTitle = document.title;
+    let restored = false;
+    const restoreTitle = () => {
+      if (restored) return;
+      restored = true;
+      document.title = previousTitle;
+    };
+
+    document.title = `MiPlata - Reporte ${monthLabel}`;
+    window.addEventListener('afterprint', restoreTitle, { once: true });
     window.print();
+    window.setTimeout(restoreTitle, 15000);
   };
 
   document.getElementById('filter-pm-all').onclick = () => {
@@ -1687,7 +1738,7 @@ function renderIncomes() {
                   </div>
                   <div class="flex flex-col min-w-0">
                     <p class="text-xs font-semibold text-[#0b1c30] truncate">${tx.description}</p>
-                    <p class="text-[11px] text-slate-500 truncate">${tx.date} • ${tx.category} • ${tx.accountMethod || 'Bancolombia'}</p>
+                    <p class="text-[11px] text-slate-500 truncate">${tx.date} • ${tx.category}</p>
                   </div>
                 </div>
                 <div class="flex items-center gap-2 shrink-0">
@@ -2037,7 +2088,7 @@ function renderExpenses() {
                           </div>
                           <div class="flex flex-col min-w-0">
                             <p class="text-xs font-semibold text-[#0b1c30] truncate">${tx.description}</p>
-                            <p class="text-[11px] text-slate-500 truncate">${tx.date} • ${tx.category} • ${tx.accountMethod || 'Efectivo'}</p>
+                            <p class="text-[11px] text-slate-500 truncate">${tx.date} • ${tx.category}</p>
                           </div>
                         </div>
                         <div class="flex items-center gap-2 shrink-0">
@@ -2295,9 +2346,6 @@ function renderObligations() {
                 Registra tus compromisos que se repiten cada mes (arriendo, internet, celular, servicios) para controlarlos con tranquilidad.
               </p>
             </div>
-            <button id="btn-add-obligation-empty" class="px-4 py-2 rounded-full bg-[#0058bc] text-white text-xs font-semibold shadow-sm hover:bg-[#004bb0] active:scale-95 transition-all cursor-pointer">
-              Registrar primer gasto fijo
-            </button>
           </div>
         `
             : `
@@ -2348,10 +2396,8 @@ function renderObligations() {
   `;
 
   const btnAdd = document.getElementById('btn-add-obligation');
-  const btnEmptyAdd = document.getElementById('btn-add-obligation-empty');
   const btnBottomAdd = document.getElementById('btn-add-obligation-bottom');
   if (btnAdd) btnAdd.onclick = () => openAddOrEditObligationModal(null);
-  if (btnEmptyAdd) btnEmptyAdd.onclick = () => openAddOrEditObligationModal(null);
   if (btnBottomAdd) btnBottomAdd.onclick = () => openAddOrEditObligationModal(null);
 
   DOM.tabObligaciones.querySelectorAll('.ob-status-tab').forEach((btn) => {
@@ -2518,7 +2564,7 @@ function renderGoalsLegacy() {
                 <div class="rounded-3xl bg-white p-4 shadow-sm border border-slate-200/60 flex flex-col justify-between gap-3 relative overflow-hidden">
                   ${
                     goal.imageUrl
-                      ? `<div class="h-24 -mx-4 -mt-4 mb-1 overflow-hidden relative"><img src="${goal.imageUrl}" alt="${goal.name}" class="w-full h-full object-cover" /></div>`
+                      ? `<div class="h-24 -mx-4 -mt-4 mb-1 overflow-hidden relative"><img src="${goal.imageUrl}" alt="${goal.name}" loading="lazy" decoding="async" class="w-full h-full object-cover" /></div>`
                       : ''
                   }
 
@@ -2626,7 +2672,7 @@ function renderGoalMedia(goal, imageClass = 'w-full h-full object-cover', fallba
   }
 
   const safeUrl = imageUrl.replace(/"/g, '&quot;');
-  return `<img src="${safeUrl}" alt="${String(goal?.name || 'Imagen de meta').replace(/"/g, '&quot;')}" class="${imageClass}" onerror="this.classList.add('hidden'); this.nextElementSibling.classList.remove('hidden');" /><span class="hidden w-full h-full items-center justify-center">${fallbackIcon}</span>`;
+  return `<img src="${safeUrl}" alt="${String(goal?.name || 'Imagen de meta').replace(/"/g, '&quot;')}" loading="lazy" decoding="async" class="${imageClass}" onerror="this.classList.add('hidden'); this.nextElementSibling.classList.remove('hidden');" /><span class="hidden w-full h-full items-center justify-center">${fallbackIcon}</span>`;
 }
 
 function renderGoals() {
@@ -3048,8 +3094,7 @@ function renderAuth() {
           </button>
         </div>
 
-        ${
-          isRegisterMode
+        ${isRegisterMode
             ? `
           <!-- Registration Form -->
           <form id="form-register" class="flex flex-col gap-3.5">
@@ -3076,12 +3121,37 @@ function renderAuth() {
 
             <div>
               <label class="text-xs font-bold text-[#0b1c30]">Correo electrónico</label>
-              <input id="reg-email" type="email" placeholder="ej. camila@email.com" class="w-full mt-1 px-3.5 py-2.5 rounded-2xl border border-slate-200 bg-slate-50 text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#0058bc]" />
+              <input id="reg-email" type="email" autocomplete="email" required placeholder="ej. camila@email.com" class="w-full mt-1 px-3.5 py-2.5 rounded-2xl border border-slate-200 bg-slate-50 text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#0058bc]" />
             </div>
 
             <div>
-              <label class="text-xs font-bold text-[#0b1c30]">Salario o ingreso mensual estimado (COP)</label>
-              <input id="reg-salary" type="text" placeholder="ej. 5.800.000" class="w-full mt-1 px-3.5 py-2.5 rounded-2xl border border-slate-200 bg-slate-50 text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#0058bc] tabular-nums" />
+              <label class="text-xs font-bold text-[#0b1c30]">Contraseña</label>
+              <div class="relative mt-1">
+                <input id="reg-pass" type="password" autocomplete="new-password" required minlength="6" placeholder="Mínimo 6 caracteres" class="w-full px-3.5 pr-10 py-2.5 rounded-2xl border border-slate-200 bg-slate-50 text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#0058bc]" />
+                <button id="toggle-reg-pass" type="button" aria-label="Mostrar contraseña" title="Mostrar contraseña" class="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-[#0058bc] cursor-pointer transition-colors">
+                  ${getIconSvg('eye', 'w-4 h-4')}
+                </button>
+              </div>
+            </div>
+
+            <div>
+              <div class="flex items-center justify-between gap-3">
+                <label class="text-xs font-bold text-[#0b1c30]">Salario o ingreso mensual estimado (COP)</label>
+                <span class="text-[10px] font-semibold text-slate-400">Opcional</span>
+              </div>
+              <input id="reg-salary" type="text" inputmode="decimal" autocomplete="off" placeholder="ej. 5.800.000" class="w-full mt-1 px-3.5 py-2.5 rounded-2xl border border-slate-200 bg-slate-50 text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#0058bc] tabular-nums" />
+              <div class="mt-2">
+                <p class="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Valores frecuentes</p>
+                <div class="flex flex-wrap gap-2 mt-2" role="group" aria-label="Valores de ingreso frecuentes">
+                  <button type="button" data-salary-value="1300000" aria-pressed="false" class="reg-salary-option flex-1 min-w-[78px] px-2 py-1.5 rounded-lg border border-slate-200 bg-white text-[10px] font-bold text-slate-600 hover:border-[#0058bc]/50 hover:bg-[#f5f9ff] transition-colors cursor-pointer">$1.300.000</button>
+                  <button type="button" data-salary-value="2000000" aria-pressed="false" class="reg-salary-option flex-1 min-w-[78px] px-2 py-1.5 rounded-lg border border-slate-200 bg-white text-[10px] font-bold text-slate-600 hover:border-[#0058bc]/50 hover:bg-[#f5f9ff] transition-colors cursor-pointer">$2.000.000</button>
+                  <button type="button" data-salary-value="3000000" aria-pressed="false" class="reg-salary-option flex-1 min-w-[78px] px-2 py-1.5 rounded-lg border border-slate-200 bg-white text-[10px] font-bold text-slate-600 hover:border-[#0058bc]/50 hover:bg-[#f5f9ff] transition-colors cursor-pointer">$3.000.000</button>
+                  <button type="button" data-salary-value="5000000" aria-pressed="false" class="reg-salary-option flex-1 min-w-[78px] px-2 py-1.5 rounded-lg border border-slate-200 bg-white text-[10px] font-bold text-slate-600 hover:border-[#0058bc]/50 hover:bg-[#f5f9ff] transition-colors cursor-pointer">$5.000.000</button>
+                  <button type="button" data-salary-value="8000000" aria-pressed="false" class="reg-salary-option flex-1 min-w-[78px] px-2 py-1.5 rounded-lg border border-slate-200 bg-white text-[10px] font-bold text-slate-600 hover:border-[#0058bc]/50 hover:bg-[#f5f9ff] transition-colors cursor-pointer">$8.000.000</button>
+                  <button type="button" data-salary-value="10000000" aria-pressed="false" class="reg-salary-option flex-1 min-w-[78px] px-2 py-1.5 rounded-lg border border-slate-200 bg-white text-[10px] font-bold text-slate-600 hover:border-[#0058bc]/50 hover:bg-[#f5f9ff] transition-colors cursor-pointer">$10.000.000</button>
+                </div>
+              </div>
+              <p class="mt-1 text-[10px] text-slate-400">También puedes escribir un valor diferente.</p>
             </div>
 
             <button type="submit" class="w-full py-3 mt-2 rounded-2xl bg-[#0058bc] text-white font-bold text-xs shadow-md shadow-[#0058bc]/25 hover:bg-[#004bb0] active:scale-95 transition-all cursor-pointer">
@@ -3099,7 +3169,12 @@ function renderAuth() {
 
             <div>
               <label class="text-xs font-bold text-[#0b1c30]">Contraseña</label>
-              <input id="login-pass" type="password" placeholder="demo" class="w-full mt-1 px-3.5 py-2.5 rounded-2xl border border-slate-200 bg-slate-50 text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#0058bc]" />
+              <div class="relative mt-1">
+                <input id="login-pass" type="password" autocomplete="current-password" placeholder="demo" class="w-full px-3.5 pr-10 py-2.5 rounded-2xl border border-slate-200 bg-slate-50 text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#0058bc]" />
+                <button id="toggle-login-pass" type="button" aria-label="Mostrar contraseña" title="Mostrar contraseña" class="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-[#0058bc] cursor-pointer transition-colors">
+                  ${getIconSvg('eye', 'w-4 h-4')}
+                </button>
+              </div>
             </div>
 
             <button type="submit" class="w-full py-3 mt-2 rounded-2xl bg-[#0058bc] text-white font-bold text-xs shadow-md shadow-[#0058bc]/25 hover:bg-[#004bb0] active:scale-95 transition-all cursor-pointer">
@@ -3109,6 +3184,7 @@ function renderAuth() {
         `
         }
 
+        ${`
         <!-- Demo Account Instant Shortcut -->
         <div class="pt-3 border-t border-slate-100 flex flex-col items-center gap-2">
           <span class="text-[11px] text-slate-400 font-medium">¿Quieres probar la app de inmediato?</span>
@@ -3121,6 +3197,7 @@ function renderAuth() {
             <span>Entrar con cuenta de demostración</span>
           </button>
         </div>
+        `}
       </div>
       <div class="flex items-center justify-center gap-1.5 pt-1 pb-2 text-[11px] text-slate-400 font-medium">
         <span>By</span>
@@ -3157,19 +3234,59 @@ function renderAuth() {
   const formReg = document.getElementById('form-register');
   if (formReg) {
     const regName = document.getElementById('reg-name');
+    const regEmail = document.getElementById('reg-email');
+    const regPass = document.getElementById('reg-pass');
+    const toggleRegPass = document.getElementById('toggle-reg-pass');
     const regSalary = document.getElementById('reg-salary');
+    const regSalaryOptions = Array.from(formReg.querySelectorAll('[data-salary-value]'));
     const avatarInput = document.getElementById('input-avatar-file');
     const previewName = document.getElementById('auth-preview-name');
     const avatarPreview = document.getElementById('auth-avatar-preview');
+
+    // Use the app's Spanish feedback instead of inconsistent browser-native
+    // validation messages on different phones and browsers.
+    formReg.noValidate = true;
+
+    toggleRegPass.onclick = () => {
+      const showing = regPass.type === 'password';
+      regPass.type = showing ? 'text' : 'password';
+      toggleRegPass.innerHTML = getIconSvg(showing ? 'eyeOff' : 'eye', 'w-4 h-4');
+      toggleRegPass.setAttribute('aria-label', showing ? 'Ocultar contraseña' : 'Mostrar contraseña');
+      toggleRegPass.setAttribute('title', showing ? 'Ocultar contraseña' : 'Mostrar contraseña');
+    };
 
     regName.oninput = () => {
       previewName.textContent = regName.value.trim() || 'Tu perfil';
       avatarPreview.innerHTML = renderAvatarHtml(regName.value || 'Tu', registerAvatarUrl, 'lg');
     };
 
+    const syncSalaryOptionState = () => {
+      const currentValue = parseInt(regSalary.value.replace(/\D/g, ''), 10) || 0;
+      regSalaryOptions.forEach((option) => {
+        const selected = Number(option.dataset.salaryValue) === currentValue;
+        option.setAttribute('aria-pressed', String(selected));
+        option.classList.toggle('bg-[#0058bc]', selected);
+        option.classList.toggle('border-[#0058bc]', selected);
+        option.classList.toggle('text-white', selected);
+        option.classList.toggle('shadow-sm', selected);
+        option.classList.toggle('bg-white', !selected);
+        option.classList.toggle('border-slate-200', !selected);
+        option.classList.toggle('text-slate-600', !selected);
+      });
+    };
+
+    regSalaryOptions.forEach((option) => {
+      option.onclick = () => {
+        const selectedSalary = Number(option.dataset.salaryValue);
+        regSalary.value = selectedSalary.toLocaleString('es-CO');
+        syncSalaryOptionState();
+      };
+    });
+
     regSalary.oninput = () => {
       const num = parseInt(regSalary.value.replace(/\D/g, ''), 10);
       regSalary.value = isNaN(num) ? '' : num.toLocaleString('es-CO');
+      syncSalaryOptionState();
     };
 
     avatarInput.onchange = (e) => {
@@ -3186,11 +3303,38 @@ function renderAuth() {
     formReg.onsubmit = async (e) => {
       e.preventDefault();
       const name = regName.value.trim();
-      const email = document.getElementById('reg-email').value.trim() || `${name.toLowerCase().replace(/\s+/g, '.')}@miplata.local`;
+      const email = regEmail.value.trim().toLowerCase();
+      const password = regPass.value;
       const salary = parseInt(regSalary.value.replace(/\D/g, ''), 10) || 0;
 
+      if (!name) {
+        showToast('Escribe tu nombre completo para continuar', 'error');
+        regName.focus();
+        return;
+      }
+      if (!email) {
+        showToast('Escribe un correo electrónico para crear la cuenta', 'error');
+        regEmail.focus();
+        return;
+      }
+      if (!regEmail.checkValidity()) {
+        showToast('Ingresa un correo electrónico válido', 'error');
+        regEmail.focus();
+        return;
+      }
+      if (!password) {
+        showToast('Escribe una contraseña para crear la cuenta', 'error');
+        regPass.focus();
+        return;
+      }
+      if (password.length < 6) {
+        showToast('La contraseña debe tener al menos 6 caracteres', 'error');
+        regPass.focus();
+        return;
+      }
+
       try {
-        const res = await api.register(name, email, '123456', salary, registerAvatarUrl);
+        const res = await api.register(name, email, password, salary, registerAvatarUrl);
         state.currentUser = res.user;
         await refreshAllData();
         renderApp();
@@ -3203,10 +3347,21 @@ function renderAuth() {
 
   const formLog = document.getElementById('form-login');
   if (formLog) {
+    const loginPass = document.getElementById('login-pass');
+    const toggleLoginPass = document.getElementById('toggle-login-pass');
+
+    toggleLoginPass.onclick = () => {
+      const showing = loginPass.type === 'password';
+      loginPass.type = showing ? 'text' : 'password';
+      toggleLoginPass.innerHTML = getIconSvg(showing ? 'eyeOff' : 'eye', 'w-4 h-4');
+      toggleLoginPass.setAttribute('aria-label', showing ? 'Ocultar contraseña' : 'Mostrar contraseña');
+      toggleLoginPass.setAttribute('title', showing ? 'Ocultar contraseña' : 'Mostrar contraseña');
+    };
+
     formLog.onsubmit = async (e) => {
       e.preventDefault();
       const email = document.getElementById('login-email').value.trim();
-      const pass = document.getElementById('login-pass').value;
+      const pass = loginPass.value;
 
       try {
         const res = await api.login(email, pass);
@@ -3402,7 +3557,6 @@ function renderQuickAddModalContent() {
         description: desc,
         date: state.quickAdd.date,
         time: getCurrentTimeString(),
-        accountMethod: state.quickAdd.type === 'ingreso' ? 'Bancolombia' : 'Bancolombia Débito',
         isRecurring: false,
       };
 
@@ -3419,21 +3573,16 @@ function renderQuickAddModalContent() {
   }
 }
 
-// Edit / Delete Transaction Modal
+// Edit Transaction Modal
 function openEditTransactionModal(tx) {
   if (!tx) return;
-
-  const categories =
-    tx.type === 'ingreso'
-      ? ['Nómina', 'Honorarios', 'Negocio', 'Inversión', 'Otros']
-      : ['Alimentación', 'Transporte', 'Compras', 'Servicios', 'Salud', 'Entretenimiento', 'Educación', 'Otros'];
 
   DOM.modalEditTransaction.classList.remove('hidden');
   DOM.modalEditTransaction.innerHTML = `
     <div class="bg-white rounded-3xl p-5 sm:p-6 max-w-sm w-full shadow-2xl flex flex-col gap-3.5 border border-slate-100">
       <div class="flex items-center justify-between pb-1 border-b border-slate-100">
-        <h3 class="font-bold text-sm text-[#0b1c30]">Modificar Movimiento</h3>
-        <button id="edit-tx-close" class="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 cursor-pointer">
+        <h3 class="font-bold text-sm text-[#0b1c30]">Editar nombre del movimiento</h3>
+        <button id="edit-tx-close" type="button" aria-label="Cerrar edición del movimiento" class="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 cursor-pointer">
           ${getIconSvg('x', 'w-4 h-4')}
         </button>
       </div>
@@ -3444,183 +3593,63 @@ function openEditTransactionModal(tx) {
           <input id="edit-tx-desc" type="text" value="${tx.description}" required class="w-full mt-1 px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#0058bc]" />
         </div>
 
-        <div>
-          <label class="text-xs font-bold text-[#0b1c30]">Monto (COP)</label>
-          <input id="edit-tx-amount" type="text" value="${tx.amount.toLocaleString('es-CO')}" required class="w-full mt-1 px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-xs font-bold text-slate-800 tabular-nums focus:outline-none focus:ring-2 focus:ring-[#0058bc]" />
+        <div class="grid grid-cols-2 gap-2">
+          <div>
+            <label class="text-xs font-bold text-[#0b1c30]">Tipo</label>
+            <input type="text" value="${tx.type === 'ingreso' ? 'Ingreso' : 'Gasto / Egreso'}" disabled class="w-full mt-1 px-3 py-2 rounded-xl border border-slate-200 bg-slate-100 text-xs font-semibold text-slate-500 cursor-not-allowed" />
+          </div>
+
+          <div>
+            <label class="text-xs font-bold text-[#0b1c30]">Monto (COP)</label>
+            <input type="text" value="${tx.amount.toLocaleString('es-CO')}" disabled class="w-full mt-1 px-3 py-2 rounded-xl border border-slate-200 bg-slate-100 text-xs font-bold text-slate-500 tabular-nums cursor-not-allowed" />
+          </div>
         </div>
 
         <div class="grid grid-cols-2 gap-2">
           <div>
             <label class="text-xs font-bold text-[#0b1c30]">Categoría</label>
-            <select id="edit-tx-category" class="w-full mt-1 px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#0058bc]">
-              ${categories
-                .map((c) => `<option value="${c}" ${tx.category === c ? 'selected' : ''}>${c}</option>`)
-                .join('')}
-            </select>
+            <input type="text" value="${tx.category || 'Otros'}" disabled class="w-full mt-1 px-3 py-2 rounded-xl border border-slate-200 bg-slate-100 text-xs font-semibold text-slate-500 cursor-not-allowed" />
           </div>
 
           <div>
             <label class="text-xs font-bold text-[#0b1c30]">Fecha</label>
-            <input id="edit-tx-date" type="date" value="${tx.date}" required class="w-full mt-1 px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#0058bc]" />
+            <input type="text" value="${tx.date || 'Sin fecha'}" disabled class="w-full mt-1 px-3 py-2 rounded-xl border border-slate-200 bg-slate-100 text-xs font-semibold text-slate-500 cursor-not-allowed" />
           </div>
         </div>
 
+        <p class="text-[11px] text-slate-400">Solo puedes cambiar el nombre. Los demás datos permanecen protegidos.</p>
+
         <button type="submit" class="w-full py-2.5 mt-2 rounded-xl bg-[#0058bc] text-white font-bold text-xs shadow-md hover:bg-[#004bb0] active:scale-95 transition-all cursor-pointer">
-          Guardar Cambios
+          Guardar nombre
         </button>
 
-        <button type="button" id="btn-delete-tx" class="w-full py-2 rounded-xl text-rose-600 bg-rose-50 hover:bg-rose-100 font-semibold text-xs transition-colors cursor-pointer flex items-center justify-center gap-1.5">
-          ${getIconSvg('trash2', 'w-4 h-4')}
-          <span>Eliminar este movimiento</span>
-        </button>
       </form>
     </div>
   `;
 
   document.getElementById('edit-tx-close').onclick = () => DOM.modalEditTransaction.classList.add('hidden');
 
-  const amountInput = document.getElementById('edit-tx-amount');
-  amountInput.oninput = () => {
-    const num = parseInt(amountInput.value.replace(/\D/g, ''), 10);
-    amountInput.value = isNaN(num) ? '' : num.toLocaleString('es-CO');
-  };
-
   document.getElementById('form-edit-tx').onsubmit = async (e) => {
     e.preventDefault();
     const desc = document.getElementById('edit-tx-desc').value.trim();
-    const amt = parseInt(amountInput.value.replace(/\D/g, ''), 10) || 0;
-    const cat = document.getElementById('edit-tx-category').value;
-    const date = document.getElementById('edit-tx-date').value;
 
-    if (!desc || amt <= 0) return;
+    if (!desc) {
+      showToast('Escribe un concepto para el movimiento', 'error');
+      return;
+    }
 
-    await api.updateTransaction(tx.id, {
-      description: desc,
-      amount: amt,
-      category: cat,
-      date,
-    });
+    try {
+      await api.updateTransaction(tx.id, { description: desc });
 
-    await refreshAllData();
-    DOM.modalEditTransaction.classList.add('hidden');
-    renderActiveView();
-    showToast('Movimiento actualizado');
-  };
-
-  document.getElementById('btn-delete-tx').onclick = async () => {
-    if (confirm('¿Deseas eliminar este movimiento permanentemente?')) {
-      await api.deleteTransaction(tx.id);
       await refreshAllData();
       DOM.modalEditTransaction.classList.add('hidden');
       renderActiveView();
-      showToast('Movimiento eliminado');
+      showToast('Movimiento actualizado');
+    } catch (err) {
+      showToast(err.message || 'No se pudo actualizar el movimiento', 'error');
     }
   };
-}
 
-// Cash Detail & Adjust Balance Modal
-function openCashDetailModal() {
-  const metrics = computeMetrics();
-  DOM.modalCashDetail.classList.remove('hidden');
-
-  DOM.modalCashDetail.innerHTML = `
-    <div class="bg-white rounded-3xl p-5 sm:p-6 max-w-md w-full shadow-2xl flex flex-col gap-4 border border-slate-100">
-      <div class="flex items-center justify-between pb-1 border-b border-slate-100">
-        <div class="flex items-center gap-2">
-          <div class="w-9 h-9 rounded-2xl bg-[#eff4ff] text-[#0058bc] flex items-center justify-center font-bold">
-            ${getIconSvg('shieldCheck', 'w-5 h-5 text-[#0058bc]')}
-          </div>
-          <div>
-            <h3 class="font-bold text-sm text-[#0b1c30]">Dinero Disponible</h3>
-            <p class="text-[11px] text-slate-500">Cálculo real y gestión de saldo</p>
-          </div>
-        </div>
-        <button id="cash-modal-close" class="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-slate-500 cursor-pointer">
-          ${getIconSvg('x', 'w-4 h-4')}
-        </button>
-      </div>
-
-      <div class="p-4 rounded-2xl bg-gradient-to-br from-[#0b1c30] to-[#182739] text-white flex flex-col gap-1 shadow-inner">
-        <span class="text-[11px] text-slate-300 font-medium">Disponible para gastar hoy con tranquilidad:</span>
-        <div class="flex items-baseline gap-2">
-          <span class="text-3xl font-extrabold tracking-tight text-[#6cf8bb] tabular-nums">
-            ${formatCOP(metrics.availableCash)}
-          </span>
-          <span class="text-xs font-semibold text-slate-400">COP</span>
-        </div>
-      </div>
-
-      <!-- Real-time formula breakdown -->
-      <div class="rounded-2xl border border-slate-200 bg-slate-50/70 p-3 divide-y divide-slate-200/70 text-xs flex flex-col gap-2">
-        <div class="flex items-center justify-between pt-1">
-          <span class="text-slate-600 flex items-center gap-1.5">
-            <span class="w-2 h-2 rounded-full bg-[#006c49]"></span>
-            Ingresos recibidos:
-          </span>
-          <span class="font-bold text-[#006c49] tabular-nums">+${formatCOP(metrics.totalIncome)}</span>
-        </div>
-
-        <div class="flex items-center justify-between pt-2">
-          <span class="text-slate-600 flex items-center gap-1.5">
-            <span class="w-2 h-2 rounded-full bg-slate-700"></span>
-            Gastos ejecutados del mes:
-          </span>
-          <span class="font-bold text-slate-800 tabular-nums">-${formatCOP(metrics.totalExpenses)}</span>
-        </div>
-
-        <div class="flex items-center justify-between pt-2">
-          <span class="text-slate-600 flex items-center gap-1.5">
-            <span class="w-2 h-2 rounded-full bg-rose-500"></span>
-            Gastos fijos comprometidos (pendientes):
-          </span>
-          <span class="font-bold text-rose-600 tabular-nums">-${formatCOP(metrics.fixedCommitted)}</span>
-        </div>
-
-        <div class="flex items-center justify-between pt-2 font-bold text-[#0058bc]">
-          <span>Total Disponible:</span>
-          <span class="tabular-nums">${formatCOP(metrics.availableCash)} COP</span>
-        </div>
-      </div>
-
-      <!-- Adjust Initial Balance -->
-      <div class="flex flex-col gap-2 pt-1 border-t border-slate-100">
-        <label class="text-xs font-bold text-[#0b1c30]">Ajustar saldo base en cuenta</label>
-        <p class="text-[11px] text-slate-500 leading-snug">Si tienes dinero adicional inicial en tu cuenta, puedes ajustarlo aquí:</p>
-        <div class="flex items-center gap-2 mt-0.5">
-          <div class="relative flex-1">
-            <span class="absolute left-3 top-2.5 text-xs font-bold text-slate-400">$</span>
-            <input
-              id="cash-adjust-input"
-              type="text"
-              placeholder="0"
-              value="${state.currentUser?.initialBalance ? state.currentUser.initialBalance.toLocaleString('es-CO') : ''}"
-              class="w-full pl-7 pr-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#0058bc] tabular-nums"
-            />
-          </div>
-          <button id="cash-adjust-save-btn" class="px-3.5 py-2 rounded-xl bg-[#0058bc] text-white text-xs font-semibold hover:bg-[#004bb0] active:scale-95 transition-all cursor-pointer">
-            Guardar
-          </button>
-        </div>
-      </div>
-    </div>
-  `;
-
-  document.getElementById('cash-modal-close').onclick = () => DOM.modalCashDetail.classList.add('hidden');
-
-  const adjustInput = document.getElementById('cash-adjust-input');
-  adjustInput.oninput = () => {
-    const num = parseInt(adjustInput.value.replace(/\D/g, ''), 10);
-    adjustInput.value = isNaN(num) ? '' : num.toLocaleString('es-CO');
-  };
-
-  document.getElementById('cash-adjust-save-btn').onclick = async () => {
-    const parsed = parseInt(adjustInput.value.replace(/\D/g, ''), 10) || 0;
-    await api.updateInitialBalance(parsed);
-    await refreshAllData();
-    DOM.modalCashDetail.classList.add('hidden');
-    renderActiveView();
-    showToast('Saldo disponible base actualizado');
-  };
 }
 
 // Add or Edit Fixed Obligation Modal
@@ -3637,7 +3666,7 @@ function openAddOrEditObligationModal(obligation = null) {
       <div class="w-12 h-1 rounded-full bg-[#c7d6e8] mx-auto mb-4 sm:hidden"></div>
       <div class="flex items-center justify-between mb-5">
         <h3 class="font-extrabold text-lg text-[#0b1c30]">${title}</h3>
-        <button id="ob-modal-close" class="w-9 h-9 rounded-full bg-[#f1f5fa] flex items-center justify-center text-[#607797] cursor-pointer">
+        <button id="ob-modal-close" type="button" aria-label="Cerrar gasto fijo" class="w-9 h-9 rounded-full bg-[#f1f5fa] flex items-center justify-center text-[#607797] cursor-pointer">
           ${getIconSvg('x', 'w-4 h-4')}
         </button>
       </div>
@@ -3665,9 +3694,15 @@ function openAddOrEditObligationModal(obligation = null) {
 
         <div>
           <label class="text-sm font-medium text-[#607797]">Categoría</label>
-          <select id="ob-input-category" class="w-full mt-1.5 h-12 px-4 rounded-2xl border-2 border-[#0058bc] bg-[#f7f9fc] text-sm font-semibold text-[#25364d] focus:outline-none focus:ring-2 focus:ring-[#dce8ff]">
-            ${FIXED_OBLIGATION_CATEGORIES.map((category) => `<option value="${category}" ${selectedCategory === category ? 'selected' : ''}>${category}</option>`).join('')}
-          </select>
+          <input id="ob-input-category" type="hidden" value="${selectedCategory}" />
+          <div id="ob-categories-scroll" class="qa-categories-scroll flex gap-2.5 sm:gap-3 overflow-x-auto no-scrollbar pb-1.5 sm:pb-2 mt-1.5" role="listbox" aria-label="Categorías de gasto fijo">
+            ${FIXED_OBLIGATION_CATEGORY_OPTIONS.map((option) => `
+              <button type="button" data-category="${option.name}" role="option" aria-selected="${selectedCategory === option.name}" class="ob-category-btn shrink-0 w-[68px] sm:w-[76px] flex flex-col items-center gap-1.5 sm:gap-2 cursor-pointer">
+                <span class="ob-category-icon w-[60px] h-[60px] sm:w-[68px] sm:h-[68px] rounded-3xl flex items-center justify-center ${selectedCategory === option.name ? 'bg-[#0058bc] text-white shadow-md' : 'bg-[#dce8ff] text-slate-600'}">${getIconSvg(option.icon, 'w-6 h-6 sm:w-7 sm:h-7')}</span>
+                <span class="ob-category-label text-[11px] sm:text-sm whitespace-nowrap ${selectedCategory === option.name ? 'text-[#0058bc] font-semibold' : 'text-slate-700'}">${option.label}</span>
+              </button>
+            `).join('')}
+          </div>
         </div>
 
         <div class="flex items-center justify-between h-14 px-4 rounded-2xl border border-[#dce5ef] bg-[#f7f9fc]">
@@ -3702,6 +3737,21 @@ function openAddOrEditObligationModal(obligation = null) {
     const num = parseInt(amountInput.value.replace(/\D/g, ''), 10);
     amountInput.value = isNaN(num) ? '' : num.toLocaleString('es-CO');
   };
+
+  const categoryInput = document.getElementById('ob-input-category');
+  DOM.modalFixedObligation.querySelectorAll('.ob-category-btn').forEach((button) => {
+    button.onclick = () => {
+      categoryInput.value = button.dataset.category;
+      DOM.modalFixedObligation.querySelectorAll('.ob-category-btn').forEach((optionButton) => {
+        const isSelected = optionButton === button;
+        optionButton.setAttribute('aria-selected', String(isSelected));
+        const icon = optionButton.querySelector('.ob-category-icon');
+        const label = optionButton.querySelector('.ob-category-label');
+        if (icon) icon.className = `ob-category-icon w-[60px] h-[60px] sm:w-[68px] sm:h-[68px] rounded-3xl flex items-center justify-center ${isSelected ? 'bg-[#0058bc] text-white shadow-md' : 'bg-[#dce8ff] text-slate-600'}`;
+        if (label) label.className = `ob-category-label text-[11px] sm:text-sm whitespace-nowrap ${isSelected ? 'text-[#0058bc] font-semibold' : 'text-slate-700'}`;
+      });
+    };
+  });
 
   const reminderToggle = document.getElementById('ob-reminder-toggle');
   if (reminderToggle) {
@@ -3835,7 +3885,7 @@ function openAddOrEditGoalModal(goal = null) {
     <div class="bg-white rounded-[26px] p-6 max-w-md w-full min-w-0 max-h-[calc(100vh-24px)] overflow-y-auto overflow-x-hidden no-scrollbar shadow-2xl border border-slate-100">
       <div class="flex items-center justify-between mb-4">
         <h3 class="font-bold text-[18px] text-[#0b1c30]">${isEdit ? 'Editar Meta de Ahorro' : 'Nueva Meta de Ahorro'}</h3>
-        <button id="goal-modal-close" class="w-9 h-9 rounded-full bg-[#f0f4f9] flex items-center justify-center text-[#6b7d98] cursor-pointer">
+        <button id="goal-modal-close" type="button" aria-label="Cerrar meta de ahorro" class="w-9 h-9 rounded-full bg-[#f0f4f9] flex items-center justify-center text-[#6b7d98] cursor-pointer">
           ${getIconSvg('x', 'w-4 h-4')}
         </button>
       </div>
@@ -4053,7 +4103,7 @@ function openAporteModal(goalId) {
           </div>
           <h3 class="font-bold text-[18px] text-[#0b1c30] truncate">Aportar a ${goal.name}</h3>
         </div>
-        <button id="aporte-modal-close" class="w-9 h-9 rounded-full bg-[#f0f4f9] flex items-center justify-center text-[#6b7d98] cursor-pointer shrink-0">
+        <button id="aporte-modal-close" type="button" aria-label="Cerrar aporte a la meta" class="w-9 h-9 rounded-full bg-[#f0f4f9] flex items-center justify-center text-[#6b7d98] cursor-pointer shrink-0">
           ${getIconSvg('x', 'w-4 h-4')}
         </button>
       </div>
@@ -4216,7 +4266,7 @@ function openCategoryBudgetModal(categoryBudget) {
           <h3 class="font-bold text-sm text-[#0b1c30]">Límite de ${categoryBudget.category}</h3>
           <p class="text-[11px] text-slate-500 mt-0.5">Presupuesto mensual de la categoría</p>
         </div>
-        <button id="edit-category-budget-close" type="button" class="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 cursor-pointer">
+        <button id="edit-category-budget-close" type="button" aria-label="Cerrar presupuesto de categoría" class="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 cursor-pointer">
           ${getIconSvg('x', 'w-4 h-4')}
         </button>
       </div>
@@ -4268,7 +4318,7 @@ function openEditBudgetModal() {
     <div class="bg-white rounded-3xl p-5 sm:p-6 max-w-sm w-full shadow-2xl flex flex-col gap-3.5 border border-slate-100">
       <div class="flex items-center justify-between pb-1 border-b border-slate-100">
         <h3 class="font-bold text-sm text-[#0b1c30]">Ajustar Salario Mensual</h3>
-        <button id="edit-budget-close" class="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 cursor-pointer">
+        <button id="edit-budget-close" type="button" aria-label="Cerrar ajuste de salario" class="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 cursor-pointer">
           ${getIconSvg('x', 'w-4 h-4')}
         </button>
       </div>
@@ -4440,18 +4490,23 @@ async function init() {
   setupSearchOverlay();
   setupKeyboardListeners();
 
-  // Load initial user session
+  // Paint the last verified state immediately, then synchronize in the
+  // background so returning users never see a blank screen while Supabase
+  // responds.
+  const restoredCachedState = restoreCachedState();
+  const cachedBootstrapSnapshot = localStorage.getItem('miplata_bootstrap_cache');
+  renderApp();
+
+  // Load the session and all initial data in one request.
   try {
-    const user = await api.getCurrentUser();
-    state.currentUser = user;
-    if (user) {
-      await refreshAllData();
+    const refreshed = await refreshAllData();
+    const freshBootstrapSnapshot = localStorage.getItem('miplata_bootstrap_cache');
+    if (refreshed && (!restoredCachedState || cachedBootstrapSnapshot !== freshBootstrapSnapshot)) {
+      renderApp();
     }
   } catch (e) {
     console.warn('Initial session check error', e);
   }
-
-  renderApp();
 }
 
 // Run when DOM is ready

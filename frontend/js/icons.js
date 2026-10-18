@@ -5,15 +5,15 @@
  */
 
 export function getLogoIcon(className = 'w-8 h-8 object-contain') {
-  return `<img src="assets/Logo.png" alt="MiPlata" class="${className} select-none transition-transform duration-200 hover:scale-105" />`;
+  return `<img src="assets/Logo.png" alt="MiPlata" decoding="async" class="${className} select-none transition-transform duration-200 hover:scale-105" />`;
 }
 
 export function getImagotipoHorizontal(className = 'h-8 w-auto object-contain') {
-  return `<img src="assets/Imagotipo.png" alt="MiPlata" class="${className} select-none transition-transform duration-200 hover:scale-105" />`;
+  return `<img src="assets/Imagotipo.png" alt="MiPlata" decoding="async" class="${className} select-none transition-transform duration-200 hover:scale-105" />`;
 }
 
 export function getFixelarImagotipo(className = 'h-6 w-auto object-contain') {
-  return `<img src="assets/ImagotipoOscuroFixelar.png" alt="Fixelar" class="${className} select-none" />`;
+  return `<img src="assets/ImagotipoOscuroFixelar.png" alt="Fixelar" loading="lazy" decoding="async" class="${className} select-none" />`;
 }
 
 export function getLogoSvg(size = 'md', showWordmark = true) {

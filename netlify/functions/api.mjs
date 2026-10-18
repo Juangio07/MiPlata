@@ -76,9 +76,10 @@ async function authRequest(path, method = 'GET', body = null, key = SUPABASE_PUB
   });
 }
 
-async function restRequest(table, { method = 'GET', params = {}, body = null, returning = false } = {}) {
+async function restRequest(table, { method = 'GET', params = {}, body = null, returning = false, select = '' } = {}) {
   const url = new URL(`${SUPABASE_URL}/rest/v1/${table}`);
   Object.entries(params).forEach(([key, value]) => url.searchParams.set(key, value));
+  if (select) url.searchParams.set('select', select);
   return supabaseRequest(url, {
     method,
     headers: {
@@ -101,6 +102,32 @@ function monthLabel(key) {
 function number(value) {
   const result = Number(value);
   return Number.isFinite(result) ? result : 0;
+}
+
+function isValidEmail(email) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email || '');
+}
+
+function isDuplicateEmailError(error) {
+  const payload = error?.payload || {};
+  const details = [
+    payload.code,
+    payload.error_code,
+    payload.msg,
+    payload.message,
+    payload.error,
+    payload.error_description,
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+  return error?.status === 409 || [
+    'email_exists',
+    'user_already_exists',
+    'already registered',
+    'already been registered',
+    'already exists',
+  ].some((marker) => details.includes(marker));
 }
 
 function dateOnly(value, fallbackToday = false) {
@@ -159,7 +186,10 @@ function profileToClient(row) {
 }
 
 async function getProfile(userId) {
-  const rows = await restRequest('profiles', { params: { id: `eq.${userId}`, limit: '1' } });
+  const rows = await restRequest('profiles', {
+    params: { id: `eq.${userId}`, limit: '1' },
+    select: 'id,name,email,avatar_url,plan,member_since,monthly_salary,initial_balance,monthly_budget_limit,budget_needs,budget_wants,budget_savings,alert_80_percent,auto_adjust_variable,currency,reset_day,smart_categorization',
+  });
   return profileToClient(rows?.[0]);
 }
 
@@ -382,7 +412,10 @@ async function readBody(request) {
 }
 
 async function userTransactions(userId) {
-  const rows = await restRequest('transactions', { params: { user_id: `eq.${userId}`, order: 'date.desc,created_at.desc' } }) || [];
+  const rows = await restRequest('transactions', {
+    params: { user_id: `eq.${userId}`, order: 'date.desc,created_at.desc' },
+    select: 'id,user_id,type,amount,category,description,date,time,account_method,is_recurring,fixed_obligation_id,created_at',
+  }) || [];
   return rows.map((row) => ({
     id: row.id, userId: row.user_id, type: row.type, amount: number(row.amount), category: row.category,
     description: row.description, date: String(row.date || '').slice(0, 10), time: row.time || '',
@@ -392,7 +425,10 @@ async function userTransactions(userId) {
 }
 
 async function userFixed(userId) {
-  const rows = await restRequest('fixed_obligations', { params: { user_id: `eq.${userId}`, order: 'due_day.asc' } }) || [];
+  const rows = await restRequest('fixed_obligations', {
+    params: { user_id: `eq.${userId}`, order: 'due_day.asc' },
+    select: 'id,user_id,name,amount,due_day,category,status,paid_date,reminder_days_before,is_automatic,notes',
+  }) || [];
   return rows.map((row) => ({
     id: row.id, userId: row.user_id, name: row.name, amount: number(row.amount), dueDay: row.due_day,
     category: row.category, status: row.status, paidDate: row.paid_date, reminderDaysBefore: row.reminder_days_before,
@@ -401,7 +437,10 @@ async function userFixed(userId) {
 }
 
 async function userGoals(userId) {
-  const rows = await restRequest('savings_goals', { params: { user_id: `eq.${userId}`, order: 'created_at.asc' } }) || [];
+  const rows = await restRequest('savings_goals', {
+    params: { user_id: `eq.${userId}`, order: 'created_at.asc' },
+    select: 'id,user_id,name,target_amount,current_amount,deadline,icon,color,category,image_url',
+  }) || [];
   return rows.map((row) => ({
     id: row.id, userId: row.user_id, name: row.name, targetAmount: number(row.target_amount),
     currentAmount: number(row.current_amount), deadline: row.deadline || '', icon: row.icon, color: row.color,
@@ -410,7 +449,10 @@ async function userGoals(userId) {
 }
 
 async function userContributions(userId) {
-  const rows = await restRequest('goal_contributions', { params: { user_id: `eq.${userId}`, order: 'timestamp.desc' } }) || [];
+  const rows = await restRequest('goal_contributions', {
+    params: { user_id: `eq.${userId}`, order: 'timestamp.desc' },
+    select: 'id,user_id,goal_id,goal_name,amount,date,type,timestamp',
+  }) || [];
   return rows.map((row) => ({
     id: row.id, userId: row.user_id, goalId: row.goal_id, goalName: row.goal_name, amount: number(row.amount),
     date: row.date || '', type: row.type, timestamp: row.timestamp,
@@ -418,8 +460,23 @@ async function userContributions(userId) {
 }
 
 async function userBudgets(userId) {
-  const rows = await restRequest('category_budgets', { params: { user_id: `eq.${userId}`, order: 'category.asc' } }) || [];
+  const rows = await restRequest('category_budgets', {
+    params: { user_id: `eq.${userId}`, order: 'category.asc' },
+    select: 'category,limit_amount,icon',
+  }) || [];
   return rows.map((row) => ({ category: row.category, limit: number(row.limit_amount), icon: row.icon }));
+}
+
+async function userBootstrap(userId) {
+  const [profile, transactions, fixedObligations, savingsGoals, goalContributions, categoryBudgets] = await Promise.all([
+    getProfile(userId),
+    userTransactions(userId),
+    userFixed(userId),
+    userGoals(userId),
+    userContributions(userId),
+    userBudgets(userId),
+  ]);
+  return { user: profile, transactions, fixedObligations, savingsGoals, goalContributions, categoryBudgets };
 }
 
 async function deleteUserData(userId) {
@@ -461,8 +518,12 @@ async function handleAuth(route, request) {
   if (route === 'auth/register' && request.method === 'POST') {
     const name = String(body.name || '').trim();
     const email = String(body.email || '').trim().toLowerCase();
-    const password = body.password || '123456';
+    const password = String(body.password || '');
     if (!name) return json({ error: 'El nombre es requerido' }, 400);
+    if (!email) return json({ error: 'El correo electrónico es requerido' }, 400);
+    if (!isValidEmail(email)) return json({ error: 'Ingresa un correo electrónico válido' }, 400);
+    if (!password) return json({ error: 'La contraseña es requerida' }, 400);
+    if (password.length < 6) return json({ error: 'La contraseña debe tener al menos 6 caracteres' }, 400);
     try {
       await authRequest('/admin/users', 'POST', {
         email, password, email_confirm: true, user_metadata: { name, avatar_url: body.avatarUrl || '' },
@@ -472,8 +533,10 @@ async function handleAuth(route, request) {
       const profile = await initializeRegisteredUser(user.id, name, email, number(body.monthlySalary), body.avatarUrl || '');
       return json(sessionResponse(auth, profile, `¡Bienvenido a MiPlata, ${name.split(' ')[0]}! Todo listo y limpio en 0 para comenzar.`));
     } catch (error) {
-      if ([400, 409, 422].includes(error.status)) return json({ error: 'Ya existe una cuenta con este correo' }, 409);
-      return json({ error: error.message }, 502);
+      if (isDuplicateEmailError(error)) {
+        return json({ error: 'Este correo ya está registrado. Inicia sesión o usa otro correo.' }, 409);
+      }
+      return json({ error: 'No se pudo crear la cuenta. Intenta nuevamente.' }, 502);
     }
   }
 
@@ -498,6 +561,10 @@ async function handleProtected(route, request, user) {
   const userId = user.id;
   const body = await readBody(request);
 
+  if (route === 'bootstrap' && request.method === 'GET') {
+    return json(await userBootstrap(userId));
+  }
+
   if (route === 'user' && request.method === 'GET') {
     if ((user.email || '').trim().toLowerCase() === 'demo@miplata.app') await ensureDemoData(userId);
     return json({ user: await getProfile(userId) });
@@ -521,6 +588,7 @@ async function handleProtected(route, request, user) {
 
   if (route === 'user/reset' && request.method === 'POST') {
     for (const table of ['goal_contributions', 'transactions', 'fixed_obligations', 'savings_goals']) await restRequest(table, { method: 'DELETE', params: { user_id: `eq.${userId}` } });
+    if ((user.email || '').trim().toLowerCase() === 'demo@miplata.app') await ensureDemoData(userId);
     return json({ message: 'Datos reiniciados al estado por defecto' });
   }
 
@@ -536,12 +604,8 @@ async function handleProtected(route, request, user) {
   const transactionMatch = route.match(/^transactions\/([^/]+)$/);
   if (transactionMatch) {
     const id = decodeURIComponent(transactionMatch[1]);
-    if (request.method === 'DELETE') {
-      await restRequest('transactions', { method: 'DELETE', params: { id: `eq.${id}`, user_id: `eq.${userId}` } });
-      return json({ message: 'Registro eliminado' });
-    }
     if (request.method === 'PUT') {
-      const fieldMap = { amount: 'amount', description: 'description', category: 'category', date: 'date', time: 'time', accountMethod: 'account_method', isRecurring: 'is_recurring', type: 'type' };
+      const fieldMap = { description: 'description' };
       const patch = {};
       Object.entries(body).forEach(([key, value]) => { if (fieldMap[key]) patch[fieldMap[key]] = value; });
       if (patch.date) patch.date = dateOnly(patch.date, true);

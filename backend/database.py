@@ -577,14 +577,7 @@ def update_transaction(user_id, tx_id, updates):
     cursor = conn.cursor()
 
     field_map = {
-        "amount": "amount",
         "description": "description",
-        "category": "category",
-        "date": "date",
-        "time": "time",
-        "accountMethod": "account_method",
-        "isRecurring": "is_recurring",
-        "type": "type"
     }
 
     set_clauses = []
