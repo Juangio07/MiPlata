@@ -3317,8 +3317,179 @@ function renderProfile() {
 // -------------------------------------------------------------
 let isRegisterMode = true;
 let registerAvatarUrl = '';
+let authRecoveryMode = null;
+let recoveryAccessToken = '';
+let recoveryNotice = '';
+
+function recoveryRedirectUrl() {
+  const url = new URL(window.location.href);
+  url.searchParams.set('password_reset', '1');
+  url.hash = '';
+  return url.toString();
+}
+
+function readRecoveryAccessToken() {
+  const hash = window.location.hash.startsWith('#') ? window.location.hash.slice(1) : window.location.hash;
+  if (!hash) return '';
+  const params = new URLSearchParams(hash);
+  const type = params.get('type');
+  return type === 'recovery' ? params.get('access_token') || '' : '';
+}
+
+function prepareRecoveryFromUrl() {
+  const accessToken = readRecoveryAccessToken();
+  if (accessToken) {
+    recoveryAccessToken = accessToken;
+    authRecoveryMode = 'update';
+    return true;
+  }
+  if (new URLSearchParams(window.location.search).get('password_reset') === '1') {
+    authRecoveryMode = 'request';
+    return true;
+  }
+  return false;
+}
+
+function renderPasswordRecovery() {
+  const isUpdate = authRecoveryMode === 'update';
+  const isRequest = authRecoveryMode === 'request';
+  const title = isUpdate ? 'Crear nueva contraseña' : 'Recuperar contraseña';
+  const description = isUpdate
+    ? 'Escribe una nueva contraseña para volver a entrar a tu cuenta.'
+    : 'Te enviaremos un enlace seguro al correo asociado a tu cuenta.';
+
+  DOM.viewAuth.innerHTML = `
+    <div class="max-w-md w-full flex flex-col gap-5 animate-in fade-in duration-300">
+      <div class="flex flex-col items-center text-center gap-2">
+        <div class="px-5 py-2.5 rounded-3xl bg-white border border-[#dce8ff] shadow-[0_8px_24px_rgba(0,88,188,0.12)]">
+          ${getImagotipoHorizontal('h-11 sm:h-12 w-auto object-contain drop-shadow-sm')}
+        </div>
+        <p class="text-sm font-semibold text-[#0058bc] tracking-wide mt-1">Tu dinero claro, tus metas cerca.</p>
+      </div>
+
+      <div class="bg-white rounded-3xl p-6 shadow-sm border border-slate-200/60 flex flex-col gap-4">
+        <div>
+          <h2 class="text-lg font-extrabold text-[#0b1c30]">${title}</h2>
+          <p class="text-xs text-slate-500 mt-1 leading-relaxed">${description}</p>
+        </div>
+
+        ${isRequest ? `
+          <form id="form-password-reset-request" class="flex flex-col gap-3.5">
+            <div>
+              <label class="text-xs font-bold text-[#0b1c30]">Correo electrónico</label>
+              <input id="reset-email" type="email" autocomplete="email" required placeholder="camila.restrepo@email.com" class="w-full mt-1 px-3.5 py-2.5 rounded-2xl border border-slate-200 bg-slate-50 text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#0058bc]" />
+            </div>
+            <button id="reset-request-submit" type="submit" class="w-full py-3 rounded-2xl bg-[#0058bc] text-white font-bold text-xs shadow-md shadow-[#0058bc]/25 hover:bg-[#004bb0] active:scale-95 transition-all cursor-pointer">Enviar enlace de recuperación</button>
+          </form>
+          ${recoveryNotice ? `<div class="rounded-2xl bg-emerald-50 border border-emerald-200 px-3 py-2.5 text-xs font-semibold text-[#006c49]">${recoveryNotice}</div>` : ''}
+        ` : `
+          <form id="form-password-reset-update" class="flex flex-col gap-3.5">
+            <div>
+              <label class="text-xs font-bold text-[#0b1c30]">Nueva contraseña</label>
+              <div class="relative mt-1">
+                <input id="reset-new-password" type="password" autocomplete="new-password" minlength="6" required placeholder="Mínimo 6 caracteres" class="w-full px-3.5 pr-10 py-2.5 rounded-2xl border border-slate-200 bg-slate-50 text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#0058bc]" />
+                <button id="toggle-reset-password" type="button" aria-label="Mostrar contraseña" title="Mostrar contraseña" class="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-[#0058bc] cursor-pointer transition-colors">${getIconSvg('eye', 'w-4 h-4')}</button>
+              </div>
+            </div>
+            <div>
+              <label class="text-xs font-bold text-[#0b1c30]">Confirmar contraseña</label>
+              <div class="relative mt-1">
+                <input id="reset-confirm-password" type="password" autocomplete="new-password" minlength="6" required placeholder="Repite la contraseña" class="w-full px-3.5 pr-10 py-2.5 rounded-2xl border border-slate-200 bg-slate-50 text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#0058bc]" />
+                <button id="toggle-reset-confirm-password" type="button" aria-label="Mostrar confirmación de contraseña" title="Mostrar confirmación de contraseña" class="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-[#0058bc] cursor-pointer transition-colors">${getIconSvg('eye', 'w-4 h-4')}</button>
+              </div>
+            </div>
+            <button id="reset-update-submit" type="submit" class="w-full py-3 rounded-2xl bg-[#0058bc] text-white font-bold text-xs shadow-md shadow-[#0058bc]/25 hover:bg-[#004bb0] active:scale-95 transition-all cursor-pointer">Guardar nueva contraseña</button>
+          </form>
+        `}
+
+        <button id="back-to-login" type="button" class="text-xs font-semibold text-[#0058bc] hover:underline cursor-pointer">Volver a iniciar sesión</button>
+      </div>
+      <div class="flex items-center justify-center gap-1.5 pt-1 pb-2 text-[11px] text-slate-400 font-medium"><span>By</span>${getFixelarImagotipo('h-5 w-auto opacity-80')}</div>
+    </div>
+  `;
+
+  document.getElementById('back-to-login').onclick = () => {
+    authRecoveryMode = null;
+    recoveryAccessToken = '';
+    recoveryNotice = '';
+    isRegisterMode = false;
+    renderAuth();
+  };
+
+  if (isRequest) {
+    const form = document.getElementById('form-password-reset-request');
+    form.onsubmit = async (event) => {
+      event.preventDefault();
+      const emailInput = document.getElementById('reset-email');
+      const email = emailInput.value.trim().toLowerCase();
+      if (!emailInput.checkValidity()) {
+        showToast('Ingresa un correo electrónico válido', 'error');
+        emailInput.focus();
+        return;
+      }
+      try {
+        const result = await api.requestPasswordReset(email, recoveryRedirectUrl());
+        recoveryNotice = result.message;
+        renderPasswordRecovery();
+      } catch (error) {
+        showToast(error.message, 'error');
+      }
+    };
+    return;
+  }
+
+  const newPassword = document.getElementById('reset-new-password');
+  const confirmPassword = document.getElementById('reset-confirm-password');
+  const togglePassword = document.getElementById('toggle-reset-password');
+  const toggleConfirmPassword = document.getElementById('toggle-reset-confirm-password');
+  const bindPasswordToggle = (input, button, label) => {
+    button.onclick = () => {
+      const showing = input.type === 'password';
+      input.type = showing ? 'text' : 'password';
+      const action = showing ? 'Ocultar' : 'Mostrar';
+      button.innerHTML = getIconSvg(showing ? 'eyeOff' : 'eye', 'w-4 h-4');
+      button.setAttribute('aria-label', `${action} ${label}`);
+      button.setAttribute('title', `${action} ${label}`);
+    };
+  };
+  bindPasswordToggle(newPassword, togglePassword, 'contraseña');
+  bindPasswordToggle(confirmPassword, toggleConfirmPassword, 'confirmación de contraseña');
+  document.getElementById('form-password-reset-update').onsubmit = async (event) => {
+    event.preventDefault();
+    const password = newPassword.value;
+    if (password.length < 6) {
+      showToast('La contraseña debe tener al menos 6 caracteres', 'error');
+      newPassword.focus();
+      return;
+    }
+    if (password !== confirmPassword.value) {
+      showToast('Las contraseñas no coinciden', 'error');
+      confirmPassword.focus();
+      return;
+    }
+    try {
+      await api.confirmPasswordReset(recoveryAccessToken, password);
+      const cleanUrl = new URL(window.location.href);
+      cleanUrl.searchParams.delete('password_reset');
+      cleanUrl.hash = '';
+      window.history.replaceState({}, document.title, `${cleanUrl.pathname}${cleanUrl.search}`);
+      authRecoveryMode = null;
+      recoveryAccessToken = '';
+      recoveryNotice = '';
+      isRegisterMode = false;
+      renderAuth();
+      showToast('Contraseña actualizada. Ya puedes iniciar sesión');
+    } catch (error) {
+      showToast(error.message, 'error');
+    }
+  };
+}
 
 function renderAuth() {
+  if (authRecoveryMode) {
+    renderPasswordRecovery();
+    return;
+  }
   DOM.viewAuth.innerHTML = `
     <div class="max-w-md w-full flex flex-col gap-5 animate-in fade-in duration-300">
       <!-- Brand Header with Official Logo & Imagotipo -->
@@ -3444,6 +3615,7 @@ function renderAuth() {
             <button type="submit" class="w-full py-3 mt-2 rounded-2xl bg-[#0058bc] text-white font-bold text-xs shadow-md shadow-[#0058bc]/25 hover:bg-[#004bb0] active:scale-95 transition-all cursor-pointer">
               Iniciar Sesión
             </button>
+            <button id="auth-forgot-password" type="button" class="text-xs font-semibold text-[#0058bc] hover:underline cursor-pointer">¿Olvidaste tu contraseña?</button>
           </form>
         `
         }
@@ -3622,6 +3794,15 @@ function renderAuth() {
   if (formLog) {
     const loginPass = document.getElementById('login-pass');
     const toggleLoginPass = document.getElementById('toggle-login-pass');
+    const forgotPassword = document.getElementById('auth-forgot-password');
+
+    if (forgotPassword) {
+      forgotPassword.onclick = () => {
+        authRecoveryMode = 'request';
+        recoveryNotice = '';
+        renderAuth();
+      };
+    }
 
     toggleLoginPass.onclick = () => {
       const showing = loginPass.type === 'password';
@@ -4878,6 +5059,13 @@ async function init() {
   setupSearchOverlay();
   setupKeyboardListeners();
   setupMonthlyRolloverWatcher();
+
+  const hasRecoveryContext = prepareRecoveryFromUrl();
+  if (hasRecoveryContext) {
+    state.currentUser = null;
+    renderApp();
+    return;
+  }
 
   // Paint the last verified state immediately, then synchronize in the
   // background so returning users never see a blank screen while Supabase

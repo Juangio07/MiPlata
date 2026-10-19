@@ -119,6 +119,24 @@ def auth_refresh(refresh_token):
     )
 
 
+def auth_request_password_reset(email, redirect_to):
+    return _json_request(
+        f"{SUPABASE_URL}/auth/v1/recover",
+        method="POST",
+        body={"email": email, "redirect_to": redirect_to},
+        headers=_auth_headers(SUPABASE_PUBLISHABLE_KEY),
+    )
+
+
+def auth_update_password(access_token, password):
+    return _json_request(
+        f"{SUPABASE_URL}/auth/v1/user",
+        method="PUT",
+        body={"password": password},
+        headers=_auth_headers(SUPABASE_PUBLISHABLE_KEY, access_token),
+    )
+
+
 def auth_get_user(access_token):
     return _json_request(
         f"{SUPABASE_URL}/auth/v1/user",

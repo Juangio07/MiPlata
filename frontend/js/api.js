@@ -260,6 +260,26 @@ export const api = {
     return data;
   },
 
+  async requestPasswordReset(email, redirectTo) {
+    const res = await fetch(`${API_BASE}/api/auth/password-reset/request`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, redirectTo }),
+    });
+    if (!res.ok) throw new Error(await readError(res, 'No se pudo enviar el enlace de recuperación'));
+    return res.json();
+  },
+
+  async confirmPasswordReset(accessToken, password) {
+    const res = await fetch(`${API_BASE}/api/auth/password-reset/confirm`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ accessToken, password }),
+    });
+    if (!res.ok) throw new Error(await readError(res, 'No se pudo actualizar la contraseña'));
+    return res.json();
+  },
+
   async logout() {
     try {
       await request('/api/auth/logout', { method: 'POST' }, false);

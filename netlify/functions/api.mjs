@@ -615,6 +615,38 @@ async function handleAuth(route, request) {
     }
   }
 
+  if (route === 'auth/password-reset/request' && request.method === 'POST') {
+    const email = String(body.email || '').trim().toLowerCase();
+    const redirectTo = String(body.redirectTo || '').trim();
+    if (!isValidEmail(email)) return json({ error: 'Ingresa un correo electrónico válido' }, 400);
+    if (!/^https?:\/\/\S+$/.test(redirectTo)) return json({ error: 'La URL de recuperación no es válida' }, 400);
+    try {
+      await authRequest('/recover', 'POST', { email, redirect_to: redirectTo });
+      return json({ message: 'Si el correo está registrado, recibirás un enlace para recuperar tu contraseña.' });
+    } catch (error) {
+      if ([400, 422].includes(error.status)) {
+        return json({ error: 'No se pudo enviar el enlace. Verifica la URL de redirección en Supabase.' }, 400);
+      }
+      return json({ error: 'No se pudo enviar el enlace de recuperación. Intenta nuevamente.' }, 502);
+    }
+  }
+
+  if (route === 'auth/password-reset/confirm' && request.method === 'POST') {
+    const accessToken = String(body.accessToken || '').trim();
+    const password = String(body.password || '');
+    if (!accessToken) return json({ error: 'El enlace de recuperación no es válido o ya expiró' }, 401);
+    if (password.length < 6) return json({ error: 'La contraseña debe tener al menos 6 caracteres' }, 400);
+    try {
+      await authRequest('/user', 'PUT', { password }, SUPABASE_PUBLISHABLE_KEY, accessToken);
+      return json({ message: 'Contraseña actualizada correctamente' });
+    } catch (error) {
+      if ([400, 401, 403, 404].includes(error.status)) {
+        return json({ error: 'El enlace de recuperación no es válido o ya expiró' }, 401);
+      }
+      return json({ error: 'No se pudo actualizar la contraseña. Intenta nuevamente.' }, 502);
+    }
+  }
+
   if (route === 'auth/register' && request.method === 'POST') {
     const name = String(body.name || '').trim();
     const email = String(body.email || '').trim().toLowerCase();

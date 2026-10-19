@@ -240,6 +240,49 @@ def auth_login():
         return jsonify({"user": user, "message": f"¡Bienvenido de nuevo, {user['name'].split()[0]}!"})
     return jsonify({"error": "Correo o contraseña incorrectos"}), 401
 
+@app.route("/api/auth/password-reset/request", methods=["POST"])
+def auth_password_reset_request():
+    if not SUPABASE_ENABLED:
+        return jsonify({"error": "La recuperación por correo requiere Supabase"}), 503
+    data = request.get_json() or {}
+    email = str(data.get("email") or "").strip().lower()
+    redirect_to = str(data.get("redirectTo") or "").strip()
+    if not _is_valid_email(email):
+        return jsonify({"error": "Ingresa un correo electrónico válido"}), 400
+    if not re.fullmatch(r"https?://[^\s]+", redirect_to):
+        return jsonify({"error": "La URL de recuperación no es válida"}), 400
+    try:
+        sb.auth_request_password_reset(email, redirect_to)
+        return jsonify({"message": "Si el correo está registrado, recibirás un enlace para recuperar tu contraseña."})
+    except sb.SupabaseError as error:
+        app.logger.warning("Password recovery email failed (status=%s): %s", error.status, error)
+        if error.status == 429:
+            return jsonify({"error": "Supabase limitó temporalmente los correos de recuperación. Espera unos minutos y vuelve a intentarlo."}), 429
+        if error.status in (400, 422):
+            return jsonify({"error": "No se pudo enviar el enlace. Verifica la URL de redirección en Supabase."}), 400
+        return jsonify({"error": "No se pudo enviar el enlace de recuperación. Intenta nuevamente."}), 502
+
+
+@app.route("/api/auth/password-reset/confirm", methods=["POST"])
+def auth_password_reset_confirm():
+    if not SUPABASE_ENABLED:
+        return jsonify({"error": "La recuperación por correo requiere Supabase"}), 503
+    data = request.get_json() or {}
+    access_token = str(data.get("accessToken") or "").strip()
+    password = str(data.get("password") or "")
+    if not access_token:
+        return jsonify({"error": "El enlace de recuperación no es válido o ya expiró"}), 401
+    if len(password) < 6:
+        return jsonify({"error": "La contraseña debe tener al menos 6 caracteres"}), 400
+    try:
+        sb.auth_update_password(access_token, password)
+        return jsonify({"message": "Contraseña actualizada correctamente"})
+    except sb.SupabaseError as error:
+        if error.status in (400, 401, 403, 404):
+            return jsonify({"error": "El enlace de recuperación no es válido o ya expiró"}), 401
+        return jsonify({"error": "No se pudo actualizar la contraseña. Intenta nuevamente."}), 502
+
+
 @app.route("/api/auth/register", methods=["POST"])
 def auth_register():
     data = request.get_json() or {}
