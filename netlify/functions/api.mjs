@@ -94,6 +94,12 @@ function monthKey(date = new Date()) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
 }
 
+function monthBounds(key) {
+  const [year, month] = String(key).split('-').map(Number);
+  const next = new Date(year, month, 1);
+  return [`${year}-${String(month).padStart(2, '0')}-01`, `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, '0')}-01`];
+}
+
 function monthLabel(key) {
   const [year, month] = String(key || monthKey()).split('-');
   return `${MONTHS[(Number(month) || 1) - 1] || month} ${year}`;
@@ -453,9 +459,15 @@ async function readBody(request) {
   }
 }
 
-async function userTransactions(userId) {
+async function userTransactions(userId, selectedMonth = null) {
+  const params = { user_id: `eq.${userId}`, order: 'date.desc,created_at.desc' };
+  if (selectedMonth) {
+    const [startDate, endDate] = monthBounds(selectedMonth);
+    params.date = `gte.${startDate}`;
+    params['date.lt'] = endDate;
+  }
   const rows = await restRequest('transactions', {
-    params: { user_id: `eq.${userId}`, order: 'date.desc,created_at.desc' },
+    params,
     select: 'id,user_id,type,amount,category,description,date,time,account_method,is_recurring,fixed_obligation_id,created_at',
   }) || [];
   return rows.map((row) => ({
@@ -466,7 +478,22 @@ async function userTransactions(userId) {
   }));
 }
 
+async function resetMonthlyFixedObligations(userId) {
+  const currentMonth = monthKey();
+  const rows = await restRequest('fixed_obligations', {
+    params: { user_id: `eq.${userId}` },
+    select: 'id,status,paid_date',
+  }) || [];
+  const staleRows = rows.filter((row) => row.status === 'paid' && !String(row.paid_date || '').startsWith(currentMonth));
+  await Promise.all(staleRows.map((row) => restRequest('fixed_obligations', {
+    method: 'PATCH',
+    params: { id: `eq.${row.id}`, user_id: `eq.${userId}` },
+    body: { status: 'pending', paid_date: null },
+  })));
+}
+
 async function userFixed(userId) {
+  await resetMonthlyFixedObligations(userId);
   const rows = await restRequest('fixed_obligations', {
     params: { user_id: `eq.${userId}`, order: 'due_day.asc' },
     select: 'id,user_id,name,amount,due_day,category,status,paid_date,reminder_days_before,is_automatic,notes',
@@ -496,9 +523,15 @@ async function userGoals(userId) {
   }));
 }
 
-async function userContributions(userId) {
+async function userContributions(userId, selectedMonth = null) {
+  const params = { user_id: `eq.${userId}`, order: 'timestamp.desc' };
+  if (selectedMonth) {
+    const [startDate, endDate] = monthBounds(selectedMonth);
+    params.date = `gte.${startDate}`;
+    params['date.lt'] = endDate;
+  }
   const rows = await restRequest('goal_contributions', {
-    params: { user_id: `eq.${userId}`, order: 'timestamp.desc' },
+    params,
     select: 'id,user_id,goal_id,goal_name,amount,date,type,timestamp',
   }) || [];
   return rows.map((row) => ({
@@ -515,25 +548,32 @@ async function userBudgets(userId) {
   return rows.map((row) => ({ category: row.category, limit: number(row.limit_amount), icon: row.icon }));
 }
 
+async function userRecordMonths(userId) {
+  const [transactions, contributions] = await Promise.all([
+    restRequest('transactions', { params: { user_id: `eq.${userId}` }, select: 'date' }),
+    restRequest('goal_contributions', { params: { user_id: `eq.${userId}` }, select: 'date' }),
+  ]);
+  const months = new Set([...(transactions || []), ...(contributions || [])]
+    .map((row) => String(row.date || '').slice(0, 7))
+    .filter((value) => /^\d{4}-\d{2}$/.test(value)));
+  months.add(monthKey());
+  return [...months].sort().reverse();
+}
+
 async function userBootstrap(userId) {
+  const currentMonth = monthKey();
   const [profile, transactions, fixedObligations, savingsGoals, goalContributions, categoryBudgets] = await Promise.all([
     getProfile(userId),
-    userTransactions(userId),
+    userTransactions(userId, currentMonth),
     userFixed(userId),
     userGoals(userId),
-    userContributions(userId),
+    userContributions(userId, currentMonth),
     userBudgets(userId),
   ]);
-  const contributionTotals = goalContributions.reduce((result, contribution) => {
-    const goalId = String(contribution.goalId || '');
-    if (goalId) result[goalId] = (result[goalId] || 0) + number(contribution.amount);
-    return result;
-  }, {});
-  const synchronizedGoals = savingsGoals.map((goal) => ({
-    ...goal,
-    currentAmount: contributionTotals[String(goal.id)] || 0,
-  }));
-  return { user: profile, transactions, fixedObligations, savingsGoals: synchronizedGoals, goalContributions, categoryBudgets };
+  const availableMonths = await userRecordMonths(userId);
+  // userGoals already synchronizes currentAmount from the complete history;
+  // only the current month's movements are intentionally sent to the client.
+  return { user: profile, transactions, fixedObligations, savingsGoals, goalContributions, categoryBudgets, availableMonths };
 }
 
 async function deleteUserData(userId) {
@@ -623,6 +663,17 @@ async function handleProtected(route, request, user) {
 
   if (route === 'bootstrap' && request.method === 'GET') {
     return json(await userBootstrap(userId));
+  }
+
+  const monthlyReportMatch = route === 'reports/monthly' && request.method === 'GET';
+  if (monthlyReportMatch) {
+    const requestedMonth = new URL(request.url).searchParams.get('month') || monthKey();
+    if (!/^\d{4}-\d{2}$/.test(requestedMonth)) return json({ error: 'El mes solicitado no es válido' }, 400);
+    return json({
+      month: requestedMonth,
+      transactions: await userTransactions(userId, requestedMonth),
+      goalContributions: await userContributions(userId, requestedMonth),
+    });
   }
 
   if (route === 'user' && request.method === 'GET') {

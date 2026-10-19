@@ -15,6 +15,16 @@ def get_current_month_key():
     now = datetime.now()
     return f"{now.year}-{now.month:02d}"
 
+
+def normalize_contribution_date(value, timestamp=None):
+    """Keep older local demo contributions compatible with month reports."""
+    raw = str(value or "").strip()
+    if len(raw) >= 10 and raw[4:5] == "-" and raw[7:8] == "-":
+        return raw[:10]
+    if timestamp:
+        return datetime.fromtimestamp(float(timestamp) / 1000).strftime("%Y-%m-%d")
+    return raw
+
 def format_month_key_to_label(month_key):
     if not month_key or '-' not in month_key:
         now = datetime.now()
@@ -604,10 +614,16 @@ def delete_user(user_id):
     conn.commit()
     conn.close()
 
-def get_transactions(user_id):
+def get_transactions(user_id, month_key=None):
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM transactions WHERE user_id = ? ORDER BY date DESC, created_at DESC", (user_id,))
+    if month_key:
+        cursor.execute(
+            "SELECT * FROM transactions WHERE user_id = ? AND date LIKE ? ORDER BY date DESC, created_at DESC",
+            (user_id, f"{month_key}-%"),
+        )
+    else:
+        cursor.execute("SELECT * FROM transactions WHERE user_id = ? ORDER BY date DESC, created_at DESC", (user_id,))
     rows = cursor.fetchall()
     conn.close()
 
@@ -685,7 +701,34 @@ def delete_transaction(user_id, tx_id):
     conn.close()
 
 # Fixed obligations
+def reset_monthly_fixed_obligations(user_id, month_key=None):
+    """Make recurring obligations pending again when a new month begins.
+
+    The linked transaction is deliberately kept: it belongs to the closed
+    month and remains available through that month's report.
+    """
+    month_key = month_key or get_current_month_key()
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, status, paid_date FROM fixed_obligations WHERE user_id = ?", (user_id,))
+    rows = cursor.fetchall()
+    changed = 0
+    for row in rows:
+        paid_date = str(row["paid_date"] or "")
+        if row["status"] == "paid" and not paid_date.startswith(month_key):
+            cursor.execute(
+                "UPDATE fixed_obligations SET status = 'pending', paid_date = NULL WHERE id = ? AND user_id = ?",
+                (row["id"], user_id),
+            )
+            changed += cursor.rowcount
+    if changed:
+        conn.commit()
+    conn.close()
+    return changed
+
+
 def get_fixed_obligations(user_id):
+    reset_monthly_fixed_obligations(user_id)
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM fixed_obligations WHERE user_id = ? ORDER BY due_day ASC", (user_id,))
@@ -783,7 +826,7 @@ def toggle_pay_fixed_obligation(user_id, item_id):
 
     is_now_paid = (row["status"] != "paid")
     new_status = "paid" if is_now_paid else "pending"
-    paid_date = datetime.now().strftime("Hoy, %d %b") if is_now_paid else None
+    paid_date = datetime.now().strftime("%Y-%m-%d") if is_now_paid else None
 
     cursor.execute("""
     UPDATE fixed_obligations SET status = ?, paid_date = ? WHERE id = ? AND user_id = ?
@@ -938,7 +981,6 @@ def contribute_to_goal(user_id, goal_id, amount, contribution_type="Manual"):
     cursor.execute("UPDATE savings_goals SET current_amount = ? WHERE id = ? AND user_id = ?", (new_amount, goal_id, user_id))
 
     contrib_id = f"contrib_{int(time.time() * 1000)}"
-    now_time = datetime.now().strftime("Hoy, %I:%M %p")
     cursor.execute("""
     INSERT INTO goal_contributions (id, user_id, goal_id, goal_name, amount, date, type, timestamp)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -948,7 +990,7 @@ def contribute_to_goal(user_id, goal_id, amount, contribution_type="Manual"):
         goal_id,
         goal["name"],
         amount,
-        now_time,
+        datetime.now().strftime("%Y-%m-%d"),
         contribution_type,
         int(time.time() * 1000)
     ))
@@ -957,26 +999,49 @@ def contribute_to_goal(user_id, goal_id, amount, contribution_type="Manual"):
     conn.close()
     return {"goalId": goal_id, "newAmount": new_amount, "contributionId": contrib_id}
 
-def get_goal_contributions(user_id):
+def get_goal_contributions(user_id, month_key=None):
     conn = get_connection()
     cursor = conn.cursor()
+    # Read legacy human-readable dates too, then normalize and filter in
+    # Python. New records are stored as ISO dates and remain index-friendly.
     cursor.execute("SELECT * FROM goal_contributions WHERE user_id = ? ORDER BY timestamp DESC", (user_id,))
     rows = cursor.fetchall()
     conn.close()
 
     result = []
     for r in rows:
+        normalized_date = normalize_contribution_date(r["date"], r["timestamp"])
+        if month_key and not normalized_date.startswith(month_key):
+            continue
         result.append({
             "id": r["id"],
             "userId": r["user_id"],
             "goalId": r["goal_id"],
             "goalName": r["goal_name"],
             "amount": r["amount"],
-            "date": r["date"],
+            "date": normalized_date,
             "type": r["type"],
             "timestamp": r["timestamp"]
         })
     return result
+
+def get_record_months(user_id):
+    """Return only the month keys needed to populate the history selector."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT DISTINCT substr(date, 1, 7) AS month_key
+        FROM transactions
+        WHERE user_id = ? AND date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-*'
+        UNION
+        SELECT DISTINCT substr(date, 1, 7) AS month_key
+        FROM goal_contributions
+        WHERE user_id = ? AND date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-*'
+        ORDER BY month_key DESC
+    """, (user_id, user_id))
+    months = [row["month_key"] for row in cursor.fetchall() if row["month_key"]]
+    conn.close()
+    return months
 
 def get_category_budgets(user_id):
     conn = get_connection()

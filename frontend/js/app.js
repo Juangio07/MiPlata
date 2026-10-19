@@ -44,6 +44,8 @@ const state = {
   savingsGoals: [],
   goalContributions: [],
   categoryBudgets: [],
+  availableMonths: [],
+  monthlyReports: {},
 
   // View specific filters
   filterRecordsType: 'all', // 'all' | 'gasto' | 'ingreso'
@@ -68,6 +70,9 @@ const state = {
   // Carousel & UI states
   activeTipIndex: 0,
 };
+
+let lastLoadedMonthKey = getCurrentMonthKey();
+let monthlyRolloverTimer = null;
 
 // Initial DOM Selectors
 const DOM = {
@@ -311,8 +316,8 @@ function getRecordIcon(tx, className = 'w-5 h-5') {
   return getCategoryIconSvg(tx.category, className);
 }
 
-function getGoalContributionRecords(monthKey = null) {
-  return state.goalContributions
+function getGoalContributionRecords(monthKey = null, contributions = state.goalContributions) {
+  return contributions
     .filter((contribution) => !monthKey || String(contribution.date || '').startsWith(monthKey))
     .map((contribution) => {
       const createdAt = normalizeRecordTimestamp(contribution.timestamp);
@@ -341,9 +346,14 @@ function getGoalContributionRecords(monthKey = null) {
 }
 
 function getMonthlyRecords(monthKey) {
+  const report = state.monthlyReports[monthKey];
+  const transactions = report
+    ? (report.transactions || [])
+    : state.transactions.filter((transaction) => transaction.date && transaction.date.startsWith(monthKey));
+  const contributions = report ? (report.goalContributions || []) : state.goalContributions;
   return [
-    ...state.transactions.filter((transaction) => transaction.date && transaction.date.startsWith(monthKey)),
-    ...getGoalContributionRecords(monthKey),
+    ...transactions,
+    ...getGoalContributionRecords(monthKey, contributions),
   ].sort((a, b) => {
     const left = getRecordSortParts(a);
     const right = getRecordSortParts(b);
@@ -484,9 +494,11 @@ function computeMetrics() {
 
 function getRecordMonthsList() {
   const monthKeys = new Set([
+    ...state.availableMonths,
     ...state.transactions.map((transaction) => String(transaction.date || '').slice(0, 7)),
     ...state.goalContributions.map((contribution) => String(contribution.date || '').slice(0, 7)),
   ].filter((monthKey) => /^\d{4}-\d{2}$/.test(monthKey)));
+  monthKeys.add(getCurrentMonthKey());
 
   return [...monthKeys]
     .sort((a, b) => b.localeCompare(a))
@@ -548,8 +560,10 @@ function restoreCachedState() {
     state.transactions = cached.transactions || [];
     state.fixedObligations = cached.fixedObligations || [];
     state.goalContributions = cached.goalContributions || [];
-    state.savingsGoals = syncGoalAmountsWithContributions(cached.savingsGoals || [], state.goalContributions);
+    state.savingsGoals = cached.savingsGoals || [];
     state.categoryBudgets = cached.categoryBudgets || [];
+    state.availableMonths = cached.availableMonths || [];
+    state.monthlyReports = {};
     return true;
   } catch (_error) {
     localStorage.removeItem('miplata_bootstrap_cache');
@@ -564,8 +578,13 @@ function applyBootstrapData(data) {
   state.transactions = data.transactions || [];
   state.fixedObligations = data.fixedObligations || [];
   state.goalContributions = data.goalContributions || [];
-  state.savingsGoals = syncGoalAmountsWithContributions(data.savingsGoals || [], state.goalContributions);
+  // Goal progress is cumulative and is already synchronized by the backend;
+  // this bootstrap intentionally contains only current-month contributions.
+  state.savingsGoals = data.savingsGoals || [];
   state.categoryBudgets = data.categoryBudgets || [];
+  state.availableMonths = data.availableMonths || [];
+  state.monthlyReports = {};
+  state.selectedMonth = getCurrentMonthKey();
   return true;
 }
 
@@ -590,11 +609,24 @@ async function refreshAllData() {
       state.currentUser = null;
       return false;
     }
+    lastLoadedMonthKey = getCurrentMonthKey();
     return applyBootstrapData(data);
   } catch (err) {
     console.error('Error fetching data from backend', err);
     return false;
   }
+}
+
+function setupMonthlyRolloverWatcher() {
+  if (monthlyRolloverTimer) return;
+  monthlyRolloverTimer = window.setInterval(async () => {
+    if (!state.currentUser) return;
+    const currentMonth = getCurrentMonthKey();
+    if (currentMonth === lastLoadedMonthKey) return;
+    state.selectedMonth = currentMonth;
+    const refreshed = await refreshAllData();
+    if (refreshed) renderApp();
+  }, 60000);
 }
 
 // --- RENDER APP & VIEWS ---
@@ -1215,10 +1247,10 @@ function renderDashboard() {
       </div>
 
       <div class="grid grid-cols-4 gap-2">
-        <button id="btn-quick-gasto" class="mockup-quick-action active flex flex-col items-center justify-center gap-1.5 rounded-2xl bg-[#0058bc] text-white py-3 cursor-pointer">${getIconSvg('plusCircle', 'w-5 h-5')}<span class="text-[11px] font-semibold">Gasto</span></button>
+        <button id="btn-quick-gasto" class="mockup-quick-action flex flex-col items-center justify-center gap-1.5 rounded-2xl bg-white text-rose-600 py-3 border border-slate-100 cursor-pointer">${getIconSvg('plusCircle', 'w-5 h-5')}<span class="text-[11px] font-semibold">Gasto</span></button>
         <button id="btn-quick-ingreso" class="mockup-quick-action flex flex-col items-center justify-center gap-1.5 rounded-2xl bg-white text-[#006c49] py-3 border border-slate-100 cursor-pointer">${getIconSvg('arrowDownCircle', 'w-5 h-5')}<span class="text-[11px] font-semibold">Ingreso</span></button>
         <button id="btn-quick-obligaciones" class="mockup-quick-action flex flex-col items-center justify-center gap-1.5 rounded-2xl bg-white text-[#0058bc] py-3 border border-slate-100 cursor-pointer">${getIconSvg('calendar', 'w-5 h-5')}<span class="text-[11px] font-semibold">Pagar Fijo</span></button>
-        <button id="btn-quick-metas" class="mockup-quick-action flex flex-col items-center justify-center gap-1.5 rounded-2xl bg-white text-rose-600 py-3 border border-slate-100 cursor-pointer">${getIconSvg('flag', 'w-5 h-5')}<span class="text-[11px] font-semibold">Nueva Meta</span></button>
+        <button id="btn-quick-metas" class="mockup-quick-action flex flex-col items-center justify-center gap-1.5 rounded-2xl bg-white text-amber-600 py-3 border border-slate-100 cursor-pointer">${getIconSvg('flag', 'w-5 h-5')}<span class="text-[11px] font-semibold">Nueva Meta</span></button>
       </div>
 
       <div class="mockup-card bg-white rounded-[28px] p-4 shadow-sm border border-slate-100">
@@ -1406,6 +1438,30 @@ function formatReportDate(value) {
 }
 
 function renderPastMonthSummaryView(monthKey) {
+  if (!state.monthlyReports[monthKey]) {
+    DOM.tabInicio.innerHTML = `
+      <div class="flex flex-col items-center justify-center min-h-[50vh] gap-3 px-6 text-center">
+        <div class="w-10 h-10 rounded-full border-4 border-blue-100 border-t-[#0058bc] animate-spin"></div>
+        <p class="text-sm font-semibold text-slate-600">Cargando reporte de ${formatMonthKeyToLabel(monthKey)}…</p>
+      </div>
+    `;
+    api.getMonthlyReport(monthKey)
+      .then((report) => {
+        state.monthlyReports[monthKey] = report;
+        if (state.selectedMonth === monthKey) renderPastMonthSummaryView(monthKey);
+      })
+      .catch((error) => {
+        console.error('Error loading monthly report', error);
+        DOM.tabInicio.innerHTML = `
+          <div class="flex flex-col items-center justify-center min-h-[50vh] gap-3 px-6 text-center">
+            <p class="text-sm font-semibold text-rose-600">No se pudo cargar este reporte.</p>
+            <button id="retry-month-report" type="button" class="px-4 py-2 rounded-full bg-[#0058bc] text-white text-xs font-semibold cursor-pointer">Reintentar</button>
+          </div>
+        `;
+        document.getElementById('retry-month-report')?.addEventListener('click', () => renderPastMonthSummaryView(monthKey));
+      });
+    return;
+  }
   const monthLabel = formatMonthKeyToLabel(monthKey);
   const currentMonthLabel = formatMonthKeyToLabel(getCurrentMonthKey());
 
@@ -4821,6 +4877,7 @@ async function init() {
 
   setupSearchOverlay();
   setupKeyboardListeners();
+  setupMonthlyRolloverWatcher();
 
   // Paint the last verified state immediately, then synchronize in the
   // background so returning users never see a blank screen while Supabase

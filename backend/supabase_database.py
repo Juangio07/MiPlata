@@ -52,6 +52,16 @@ def get_current_month_key():
     return f"{now.year}-{now.month:02d}"
 
 
+def _month_bounds(month_key):
+    """Return inclusive/exclusive ISO dates for a YYYY-MM report period."""
+    year, month = (int(part) for part in str(month_key).split("-", 1))
+    if month == 12:
+        next_year, next_month = year + 1, 1
+    else:
+        next_year, next_month = year, month + 1
+    return f"{year:04d}-{month:02d}-01", f"{next_year:04d}-{next_month:02d}-01"
+
+
 def get_relative_month_key(offset_months):
     now = datetime.now()
     year = now.year
@@ -362,10 +372,15 @@ def delete_user(user_id):
         sb.rest_request(table, method="DELETE", params={"user_id" if table != "profiles" else "id": f"eq.{user_id}"})
 
 
-def get_transactions(user_id):
+def get_transactions(user_id, month_key=None):
+    params = {"user_id": f"eq.{user_id}", "order": "date.desc,created_at.desc"}
+    if month_key:
+        start_date, end_date = _month_bounds(month_key)
+        params["date"] = f"gte.{start_date}"
+        params["date.lt"] = end_date
     rows = sb.rest_request(
         "transactions",
-        params={"user_id": f"eq.{user_id}", "order": "date.desc,created_at.desc"},
+        params=params,
         select="id,user_id,type,amount,category,description,date,time,account_method,is_recurring,fixed_obligation_id,created_at",
     ) or []
     return [
@@ -420,7 +435,30 @@ def delete_transaction(user_id, tx_id):
     sb.rest_request("transactions", method="DELETE", params={"id": f"eq.{tx_id}", "user_id": f"eq.{user_id}"})
 
 
+def reset_monthly_fixed_obligations(user_id, month_key=None):
+    """Reset recurring payment state without deleting closed-month records."""
+    month_key = month_key or get_current_month_key()
+    rows = sb.rest_request(
+        "fixed_obligations",
+        params={"user_id": f"eq.{user_id}"},
+        select="id,status,paid_date",
+    ) or []
+    stale_rows = [
+        row for row in rows
+        if row.get("status") == "paid" and not str(row.get("paid_date") or "").startswith(month_key)
+    ]
+    for row in stale_rows:
+        sb.rest_request(
+            "fixed_obligations",
+            method="PATCH",
+            params={"id": f"eq.{row.get('id')}", "user_id": f"eq.{user_id}"},
+            body={"status": "pending", "paid_date": None},
+        )
+    return len(stale_rows)
+
+
 def get_fixed_obligations(user_id):
+    reset_monthly_fixed_obligations(user_id)
     rows = sb.rest_request(
         "fixed_obligations",
         params={"user_id": f"eq.{user_id}", "order": "due_day.asc"},
@@ -584,10 +622,15 @@ def contribute_to_goal(user_id, goal_id, amount, contribution_type="Manual"):
     return {"goalId": goal_id, "newAmount": new_amount, "contributionId": contribution_id}
 
 
-def get_goal_contributions(user_id):
+def get_goal_contributions(user_id, month_key=None):
+    params = {"user_id": f"eq.{user_id}", "order": "timestamp.desc"}
+    if month_key:
+        start_date, end_date = _month_bounds(month_key)
+        params["date"] = f"gte.{start_date}"
+        params["date.lt"] = end_date
     rows = sb.rest_request(
         "goal_contributions",
-        params={"user_id": f"eq.{user_id}", "order": "timestamp.desc"},
+        params=params,
         select="id,user_id,goal_id,goal_name,amount,date,type,timestamp",
     ) or []
     return [
@@ -598,6 +641,26 @@ def get_goal_contributions(user_id):
         }
         for row in rows
     ]
+
+
+def get_record_months(user_id):
+    """Return month keys without loading full transaction histories."""
+    transaction_rows = sb.rest_request(
+        "transactions",
+        params={"user_id": f"eq.{user_id}"},
+        select="date",
+    ) or []
+    contribution_rows = sb.rest_request(
+        "goal_contributions",
+        params={"user_id": f"eq.{user_id}"},
+        select="date",
+    ) or []
+    months = {
+        str(row.get("date") or "")[:7]
+        for row in [*transaction_rows, *contribution_rows]
+        if len(str(row.get("date") or "")) >= 7
+    }
+    return sorted((month for month in months if month[4:5] == "-"), reverse=True)
 
 
 def get_category_budgets(user_id):

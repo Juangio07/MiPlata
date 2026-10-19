@@ -328,30 +328,35 @@ def get_user():
     return jsonify({"user": user})
 
 def get_bootstrap_payload(user_id):
+    current_month = db.get_current_month_key()
     # Supabase calls are independent reads. Keep one browser request while
     # fetching them concurrently so slower mobile connections do not wait for
-    # each table one after another.
+    # each table one after another. Only the active month is sent here; older
+    # months are loaded on demand from the report endpoint.
     if SUPABASE_ENABLED:
-        with ThreadPoolExecutor(max_workers=6) as pool:
+        with ThreadPoolExecutor(max_workers=7) as pool:
             user_future = pool.submit(db.get_user_by_id, user_id)
-            transactions_future = pool.submit(db.get_transactions, user_id)
+            transactions_future = pool.submit(db.get_transactions, user_id, current_month)
             fixed_future = pool.submit(db.get_fixed_obligations, user_id)
             goals_future = pool.submit(db.get_savings_goals, user_id)
-            contributions_future = pool.submit(db.get_goal_contributions, user_id)
+            contributions_future = pool.submit(db.get_goal_contributions, user_id, current_month)
             budgets_future = pool.submit(db.get_category_budgets, user_id)
+            months_future = pool.submit(db.get_record_months, user_id)
             user = user_future.result()
             transactions = transactions_future.result()
             fixed_obligations = fixed_future.result()
             savings_goals = goals_future.result()
             goal_contributions = contributions_future.result()
             category_budgets = budgets_future.result()
+            available_months = months_future.result()
     else:
         user = db.get_user_by_id(user_id)
-        transactions = db.get_transactions(user_id)
+        transactions = db.get_transactions(user_id, current_month)
         fixed_obligations = db.get_fixed_obligations(user_id)
         savings_goals = db.get_savings_goals(user_id)
-        goal_contributions = db.get_goal_contributions(user_id)
+        goal_contributions = db.get_goal_contributions(user_id, current_month)
         category_budgets = db.get_category_budgets(user_id)
+        available_months = db.get_record_months(user_id)
 
     return {
         "user": user,
@@ -360,6 +365,7 @@ def get_bootstrap_payload(user_id):
         "savingsGoals": savings_goals,
         "goalContributions": goal_contributions,
         "categoryBudgets": category_budgets,
+        "availableMonths": sorted(set([current_month, *(available_months or [])]), reverse=True),
     }
 
 @app.route("/api/bootstrap", methods=["GET"])
@@ -555,6 +561,20 @@ def get_goal_contributions():
     contribs = db.get_goal_contributions(user_id)
     return jsonify(contribs)
 
+@app.route("/api/reports/monthly", methods=["GET"])
+def get_monthly_report():
+    user_id = get_current_user_id_from_req()
+    if not user_id:
+        return jsonify({"error": "No autorizado"}), 401
+    month_key = request.args.get("month", db.get_current_month_key())
+    if not re.fullmatch(r"\d{4}-\d{2}", month_key or ""):
+        return jsonify({"error": "El mes solicitado no es válido"}), 400
+    return jsonify({
+        "month": month_key,
+        "transactions": db.get_transactions(user_id, month_key),
+        "goalContributions": db.get_goal_contributions(user_id, month_key),
+    })
+
 # --- Category Budgets Endpoints ---
 @app.route("/api/category-budgets", methods=["GET"])
 def get_category_budgets():
@@ -583,11 +603,20 @@ def export_csv():
         return jsonify({"error": "No autorizado"}), 401
 
     user = db.get_user_by_id(user_id)
-    txs = db.get_transactions(user_id)
     month_key = request.args.get("month", db.get_current_month_key())
     month_label = db.format_month_key_to_label(month_key)
-
-    month_txs = [t for t in txs if t.get("date", "").startswith(month_key)]
+    report = {
+        "transactions": db.get_transactions(user_id, month_key),
+        "goalContributions": db.get_goal_contributions(user_id, month_key),
+    }
+    month_txs = list(report["transactions"])
+    month_txs.extend({
+        "type": "gasto",
+        "amount": contribution["amount"],
+        "category": "Metas",
+        "description": f"Aporte a {contribution.get('goalName') or 'meta'}",
+        "date": contribution.get("date", ""),
+    } for contribution in report["goalContributions"])
     total_income = sum(t["amount"] for t in month_txs if t["type"] == "ingreso")
     total_expenses = sum(t["amount"] for t in month_txs if t["type"] == "gasto")
     net_savings = total_income - total_expenses

@@ -57,9 +57,12 @@ function activateDemoRuntime(data) {
     user: clone(data.user),
     transactions: clone(data.transactions || []),
     fixedObligations: clone(data.fixedObligations || []),
-    savingsGoals: syncDemoGoalAmounts(clone(data.savingsGoals || []), goalContributions),
+    // The backend already calculates this from the complete contribution
+    // history; only current-month movements are sent in the bootstrap.
+    savingsGoals: clone(data.savingsGoals || []),
     goalContributions,
     categoryBudgets: clone(data.categoryBudgets || []),
+    availableMonths: clone(data.availableMonths || []),
   };
   return demoRuntime;
 }
@@ -77,6 +80,7 @@ function getDemoBootstrap() {
     savingsGoals: demoRuntime.savingsGoals,
     goalContributions: demoRuntime.goalContributions,
     categoryBudgets: demoRuntime.categoryBudgets,
+    availableMonths: demoRuntime.availableMonths,
   });
 }
 
@@ -190,6 +194,12 @@ export const api = {
       // Keep the live response working even when browser storage is full.
     }
     return data;
+  },
+
+  async getMonthlyReport(monthKey) {
+    const res = await request(`/api/reports/monthly?month=${encodeURIComponent(monthKey)}`);
+    if (!res.ok) throw new Error(await readError(res, 'No se pudo cargar el reporte mensual'));
+    return res.json();
   },
 
   async getCurrentUser() {
