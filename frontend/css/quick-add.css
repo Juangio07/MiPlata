@@ -22,3 +22,593 @@
   background: var(--primary-soft);
   color: #001a41;
 }
+
+/* Keep the quick-add flow compact on phones so the keypad and save action
+   fit naturally in the viewport without changing the desktop composition. */
+@media (max-width: 640px) {
+  #modal-quick-add {
+    align-items: stretch;
+  }
+
+  #modal-quick-add .quick-add-page.qa-form-shell {
+    width: 100%;
+    max-width: none;
+    padding: max(6px, env(safe-area-inset-top)) 10px max(10px, env(safe-area-inset-bottom));
+  }
+
+  #modal-quick-add .qa-header {
+    min-height: 32px;
+    margin-bottom: 4px !important;
+  }
+
+  #modal-quick-add .qa-header h1 {
+    font-size: 1rem !important;
+  }
+
+  #modal-quick-add .qa-header img,
+  #modal-quick-add .qa-header > button {
+    width: 2rem !important;
+    height: 2rem !important;
+  }
+
+  #modal-quick-add .qa-header > button svg {
+    width: 1.25rem;
+    height: 1.25rem;
+  }
+
+  #modal-quick-add .qa-drag-handle {
+    margin-bottom: 4px !important;
+  }
+
+  #modal-quick-add .qa-type-switch {
+    margin-bottom: 6px !important;
+  }
+
+  #modal-quick-add .qa-type-switch button {
+    padding-top: 0.3rem !important;
+    padding-bottom: 0.3rem !important;
+    font-size: 0.8rem !important;
+  }
+
+  #modal-quick-add .qa-amount-display {
+    margin-bottom: 6px !important;
+  }
+
+  #modal-quick-add .qa-amount-value {
+    font-size: 1.9rem !important;
+    line-height: 1 !important;
+  }
+
+  #modal-quick-add .qa-amount-status {
+    margin-top: 2px !important;
+    font-size: 0.625rem !important;
+  }
+
+  #modal-quick-add .qa-category-heading {
+    margin-bottom: 2px !important;
+  }
+
+  #modal-quick-add .qa-category-heading h2,
+  #modal-quick-add #qa-selected-category {
+    font-size: 0.8rem !important;
+  }
+
+  #modal-quick-add .qa-category-scroller {
+    gap: 6px !important;
+    margin-bottom: 4px !important;
+    padding-bottom: 0 !important;
+  }
+
+  #modal-quick-add .qa-cat-btn {
+    width: 50px !important;
+    gap: 3px !important;
+  }
+
+  #modal-quick-add .qa-cat-icon {
+    width: 40px !important;
+    height: 40px !important;
+    border-radius: 0.875rem !important;
+  }
+
+  #modal-quick-add .qa-cat-icon svg {
+    width: 1.1rem;
+    height: 1.1rem;
+  }
+
+  #modal-quick-add .qa-cat-label {
+    font-size: 0.56rem !important;
+    line-height: 0.8rem;
+  }
+
+  #modal-quick-add .qa-smart-hint {
+    min-height: 0.8rem;
+    margin-top: -2px !important;
+    margin-bottom: 4px !important;
+    font-size: 0.56rem !important;
+  }
+
+  #modal-quick-add .qa-smart-hint.invisible {
+    min-height: 0;
+    height: 0;
+    margin-top: 0 !important;
+    margin-bottom: 0 !important;
+    overflow: hidden;
+  }
+
+  #modal-quick-add .qa-details-card {
+    padding: 8px !important;
+    margin-bottom: 6px !important;
+    border-radius: 1.125rem !important;
+  }
+
+  #modal-quick-add .qa-details-card > div:first-child {
+    gap: 6px;
+  }
+
+  #modal-quick-add .qa-details-card > div:first-child > span,
+  #modal-quick-add .qa-details-card > div:last-child span {
+    width: 1.875rem !important;
+    height: 1.875rem !important;
+    flex: 0 0 1.875rem;
+  }
+
+  #modal-quick-add .qa-details-card input {
+    font-size: 0.9rem !important;
+  }
+
+  #modal-quick-add .qa-details-card > div:last-child {
+    margin-top: 6px !important;
+    padding-top: 6px !important;
+  }
+
+  #modal-quick-add .qa-details-card > div:last-child button {
+    padding: 0.25rem 0.6rem !important;
+    font-size: 0.7rem !important;
+  }
+
+  #modal-quick-add .qa-keypad {
+    gap: 4px !important;
+    margin-bottom: 6px !important;
+  }
+
+  #modal-quick-add .qa-keypad .keypad-btn {
+    height: 44px !important;
+    min-height: 44px !important;
+    border-radius: 0.875rem !important;
+    font-size: 0.9rem !important;
+  }
+
+  #modal-quick-add .qa-keypad .keypad-btn svg {
+    width: 1.1rem;
+    height: 1.1rem;
+  }
+
+  #modal-quick-add .qa-submit-button {
+    height: 44px !important;
+    min-height: 44px !important;
+    margin-bottom: 2px;
+    font-size: 0.9rem !important;
+  }
+}
+
+@media (max-width: 640px) and (max-height: 740px) {
+  #modal-quick-add .quick-add-page.qa-form-shell {
+    padding-top: 6px;
+  }
+
+  #modal-quick-add .qa-header {
+    margin-bottom: 4px !important;
+  }
+
+  #modal-quick-add .qa-keypad .keypad-btn,
+  #modal-quick-add .qa-submit-button {
+    height: 44px !important;
+    min-height: 44px !important;
+  }
+}
+
+/* Extra compact phone layout: keep the complete flow visible with minimal scrolling. */
+@media (max-width: 640px) {
+  #modal-quick-add .quick-add-page.qa-form-shell {
+    padding-top: max(2px, env(safe-area-inset-top));
+    padding-bottom: max(8px, env(safe-area-inset-bottom));
+  }
+
+  #modal-quick-add .qa-header {
+    min-height: 28px;
+    margin-bottom: 2px !important;
+  }
+
+  #modal-quick-add .qa-header h1 {
+    font-size: 0.95rem !important;
+  }
+
+  #modal-quick-add .qa-header img,
+  #modal-quick-add .qa-header > button {
+    width: 1.75rem !important;
+    height: 1.75rem !important;
+  }
+
+  #modal-quick-add .qa-header > button svg {
+    width: 1.15rem;
+    height: 1.15rem;
+  }
+
+  #modal-quick-add .qa-drag-handle {
+    display: none;
+  }
+
+  #modal-quick-add .qa-type-switch {
+    margin-bottom: 4px !important;
+  }
+
+  #modal-quick-add .qa-type-switch button {
+    padding-top: 0.2rem !important;
+    padding-bottom: 0.2rem !important;
+    font-size: 0.75rem !important;
+  }
+
+  #modal-quick-add .qa-amount-display {
+    margin-bottom: 4px !important;
+  }
+
+  #modal-quick-add .qa-amount-value {
+    font-size: 1.75rem !important;
+  }
+
+  #modal-quick-add .qa-amount-status {
+    margin-top: 1px !important;
+    font-size: 0.56rem !important;
+  }
+
+  #modal-quick-add .qa-category-heading {
+    margin-bottom: 1px !important;
+  }
+
+  #modal-quick-add .qa-category-heading h2,
+  #modal-quick-add #qa-selected-category {
+    font-size: 0.72rem !important;
+  }
+
+  #modal-quick-add .qa-category-scroller {
+    gap: 5px !important;
+    margin-bottom: 2px !important;
+  }
+
+  #modal-quick-add .qa-cat-btn {
+    width: 46px !important;
+    gap: 1px !important;
+  }
+
+  #modal-quick-add .qa-cat-icon {
+    width: 36px !important;
+    height: 36px !important;
+    border-radius: 0.75rem !important;
+  }
+
+  #modal-quick-add .qa-cat-icon svg {
+    width: 1rem;
+    height: 1rem;
+  }
+
+  #modal-quick-add .qa-cat-label {
+    font-size: 0.5rem !important;
+    line-height: 0.7rem;
+  }
+
+  #modal-quick-add .qa-smart-hint.invisible {
+    visibility: hidden;
+    min-height: 0;
+    height: 0;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  #modal-quick-add .qa-smart-hint:not(.invisible) {
+    min-height: 0.7rem;
+    margin: 0 0 2px !important;
+    font-size: 0.52rem !important;
+  }
+
+  #modal-quick-add .qa-details-card {
+    padding: 6px !important;
+    margin-bottom: 4px !important;
+    border-radius: 1rem !important;
+  }
+
+  #modal-quick-add .qa-details-card > div:first-child {
+    gap: 5px;
+  }
+
+  #modal-quick-add .qa-details-card > div:first-child > span,
+  #modal-quick-add .qa-details-card > div:last-child span {
+    width: 1.625rem !important;
+    height: 1.625rem !important;
+    flex-basis: 1.625rem;
+  }
+
+  #modal-quick-add .qa-details-card > div:first-child > span svg,
+  #modal-quick-add .qa-details-card > div:last-child span svg {
+    width: 1rem;
+    height: 1rem;
+  }
+
+  #modal-quick-add .qa-details-card input {
+    font-size: 0.82rem !important;
+    line-height: 1.1 !important;
+  }
+
+  #modal-quick-add .qa-details-card > div:last-child {
+    margin-top: 4px !important;
+    padding-top: 4px !important;
+  }
+
+  #modal-quick-add .qa-details-card > div:last-child p:first-child {
+    font-size: 0.62rem !important;
+    line-height: 0.75rem;
+  }
+
+  #modal-quick-add .qa-details-card > div:last-child p:last-child {
+    font-size: 0.72rem !important;
+    line-height: 0.9rem;
+  }
+
+  #modal-quick-add .qa-details-card > div:last-child button {
+    padding: 0.18rem 0.5rem !important;
+    font-size: 0.62rem !important;
+  }
+
+  #modal-quick-add .qa-keypad {
+    gap: 3px !important;
+    margin-bottom: 4px !important;
+  }
+
+  #modal-quick-add .qa-keypad .keypad-btn {
+    height: 40px !important;
+    min-height: 40px !important;
+    border-radius: 0.75rem !important;
+    font-size: 0.85rem !important;
+  }
+
+  #modal-quick-add .qa-submit-button {
+    height: 40px !important;
+    min-height: 40px !important;
+    font-size: 0.82rem !important;
+  }
+}
+
+/* On narrow tablets and embedded previews, preserve a centered phone-like column
+   instead of stretching every control across the full viewport. */
+@media (min-width: 481px) and (max-width: 640px) {
+  #modal-quick-add {
+    align-items: center;
+    padding: 8px;
+  }
+
+  #modal-quick-add .quick-add-page.qa-form-shell {
+    width: 100%;
+    max-width: 460px;
+    border-radius: 1.5rem;
+    box-shadow: 0 12px 30px rgba(11, 28, 48, 0.12);
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+}
+
+/* Match the centered card treatment used by "Nueva Meta de Ahorro".
+   The transaction flow keeps its full content and keypad, but the surface
+   is now a contained, readable card instead of a wide edge-to-edge panel. */
+#modal-quick-add {
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+
+#modal-quick-add .quick-add-page.qa-form-shell {
+  width: 100%;
+  max-width: 28rem;
+  height: auto;
+  max-height: calc(100dvh - 24px);
+  min-height: 0;
+  padding: 1.5rem;
+  border-radius: 26px;
+  background: #fff;
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.2), 0 8px 10px -6px rgba(0, 0, 0, 0.12);
+  border: 1px solid #f1f5f9;
+}
+
+@media (max-width: 480px) {
+  #modal-quick-add {
+    padding: 12px;
+  }
+
+  #modal-quick-add .quick-add-page.qa-form-shell {
+    max-width: none;
+  }
+}
+
+/* Keep the card width unchanged, but give the numeric keypad a lighter,
+   narrower footprint so the composition reads vertically like the goal card. */
+#modal-quick-add .qa-keypad {
+  width: 100%;
+  max-width: 320px;
+  margin-left: auto;
+  margin-right: auto;
+  gap: 6px !important;
+}
+
+#modal-quick-add .qa-keypad .keypad-btn {
+  height: 38px !important;
+  min-height: 38px !important;
+  border-radius: 0.75rem !important;
+  font-size: 1rem !important;
+}
+
+@media (max-width: 480px) {
+  #modal-quick-add .qa-keypad {
+    max-width: 300px;
+  }
+}
+
+/* Keep the category rail intentionally scrollable so the card stays calm
+   and only the first group of categories is visible at once. */
+#modal-quick-add .qa-category-scroller {
+  justify-content: flex-start;
+  overflow-x: auto;
+  padding-left: 2px;
+  padding-right: 2px;
+}
+
+#modal-quick-add .qa-cat-btn {
+  width: 60px !important;
+  flex: 0 0 60px;
+}
+
+#modal-quick-add .qa-cat-icon {
+  width: 48px !important;
+  height: 48px !important;
+  border-radius: 1rem !important;
+}
+
+#modal-quick-add .qa-cat-icon svg {
+  width: 1.15rem;
+  height: 1.15rem;
+}
+
+#modal-quick-add .qa-cat-label {
+  font-size: 0.62rem !important;
+  line-height: 0.8rem;
+}
+
+@media (max-width: 480px) {
+  #modal-quick-add .qa-cat-btn {
+    width: 56px !important;
+    flex-basis: 56px;
+  }
+
+  #modal-quick-add .qa-cat-icon {
+    width: 44px !important;
+    height: 44px !important;
+  }
+}
+
+/* Give the compact flow the same vertical rhythm as the savings-goal card
+   without enlarging the keypad itself. */
+@media (max-width: 640px) {
+  #modal-quick-add .qa-header {
+    margin-bottom: 10px !important;
+  }
+
+  #modal-quick-add .qa-type-switch {
+    margin-bottom: 10px !important;
+  }
+
+  #modal-quick-add .qa-amount-display {
+    margin-bottom: 10px !important;
+  }
+
+  #modal-quick-add .qa-category-heading {
+    margin-bottom: 5px !important;
+  }
+
+  #modal-quick-add .qa-category-scroller {
+    margin-bottom: 7px !important;
+    padding-bottom: 2px !important;
+  }
+
+  #modal-quick-add .qa-details-card {
+    padding: 10px !important;
+    margin-bottom: 10px !important;
+    border-radius: 1.25rem !important;
+  }
+
+  #modal-quick-add .qa-details-card > div:first-child > span,
+  #modal-quick-add .qa-details-card > div:last-child span {
+    width: 2rem !important;
+    height: 2rem !important;
+    flex-basis: 2rem;
+  }
+
+  #modal-quick-add .qa-details-card input {
+    font-size: 0.92rem !important;
+  }
+
+  #modal-quick-add .qa-details-card > div:last-child {
+    margin-top: 8px !important;
+    padding-top: 8px !important;
+  }
+
+  #modal-quick-add .qa-keypad {
+    margin-bottom: 10px !important;
+  }
+
+  #modal-quick-add .qa-submit-button {
+    height: 44px !important;
+    min-height: 44px !important;
+  }
+}
+
+/* Final override: automatic categorization remains active, but its helper
+   copy never takes visual space or changes the card height. */
+#modal-quick-add .qa-smart-hint.qa-smart-hint-hidden {
+  visibility: hidden !important;
+  color: transparent !important;
+  font-size: 0 !important;
+  line-height: 0 !important;
+  min-height: 0 !important;
+  height: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+}
+
+/* Keep the description text vertically centered without clipping descenders
+   such as g, j, p, and y on either expense or income entries. */
+#modal-quick-add .qa-description-input {
+  height: 1.7rem !important;
+  min-height: 1.7rem !important;
+  line-height: 1.7rem !important;
+  padding: 0 !important;
+  overflow: visible !important;
+}
+
+/* Match the spacing used by the date row so the description does not sit
+   against its leading icon on compact screens. */
+#modal-quick-add .qa-details-card > div:first-child {
+  gap: 0.75rem !important;
+}
+
+/* On phones, keep the card width unchanged but center a narrower content
+   column so the form reads vertically, like the savings-goal card. */
+@media (max-width: 640px) {
+  #modal-quick-add .qa-type-switch,
+  #modal-quick-add .qa-amount-display,
+  #modal-quick-add .qa-category-heading,
+  #modal-quick-add .qa-category-scroller,
+  #modal-quick-add .qa-details-card,
+  #modal-quick-add .qa-submit-button {
+    width: 100%;
+    max-width: 320px;
+    margin-left: auto;
+    margin-right: auto;
+  }
+
+  #modal-quick-add .qa-category-heading {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0;
+    text-align: left;
+  }
+
+  #modal-quick-add .qa-category-scroller {
+    justify-content: flex-start;
+  }
+
+  #modal-quick-add .qa-keypad {
+    max-width: 300px;
+  }
+}

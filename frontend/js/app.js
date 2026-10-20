@@ -4175,7 +4175,7 @@ function renderQuickAddModalContent() {
   const numVal = parseInt(rawValue, 10) || 0;
 
   const expenseCategories = [
-    { name: 'Alimentación', label: 'Comida', icon: 'forkKnife' },
+    { name: 'Alimentación', label: 'Comida', icon: 'pizzaSlice' },
     { name: 'Transporte', label: 'Transporte', icon: 'car' },
     { name: 'Compras', label: 'Compras', icon: 'shoppingBag' },
     { name: 'Servicios', label: 'Servicios', icon: 'zap' },
@@ -4196,39 +4196,39 @@ function renderQuickAddModalContent() {
   const categories = type === 'ingreso' ? incomeCategories : expenseCategories;
 
   DOM.modalQuickAdd.innerHTML = `
-    <div class="quick-add-page w-full max-w-[460px] h-[100dvh] min-h-0 bg-[#f8f9ff] overflow-y-auto no-scrollbar px-3 sm:px-4 pt-3 sm:pt-5 pb-6">
-      <div class="flex items-center justify-between mb-4 sm:mb-5">
+    <div class="quick-add-page qa-form-shell bg-white rounded-[26px] p-6 max-w-md w-full min-w-0 max-h-[calc(100vh-24px)] overflow-y-auto overflow-x-hidden no-scrollbar shadow-2xl border border-slate-100">
+      <div class="qa-header flex items-center justify-between mb-4 sm:mb-5">
         <button id="qa-close-btn" aria-label="Volver" class="w-9 h-9 flex items-center justify-center text-[#0058bc] cursor-pointer">${getIconSvg('arrowLeft', 'w-7 h-7')}</button>
         <div class="flex items-center gap-2"><img src="assets/optimized/Logo.png" alt="MiPlata" width="160" height="160" decoding="async" class="w-10 h-10 rounded-xl" /><h1 class="text-xl font-semibold">Nuevo Registro</h1></div>
         ${renderAvatarHtml(state.currentUser?.name, state.currentUser?.avatarUrl, 'sm')}
       </div>
-      <div class="h-1.5 w-12 rounded-full bg-[#dce8ff] mx-auto mb-3 sm:mb-4"></div>
+      <div class="qa-drag-handle h-1.5 w-12 rounded-full bg-[#dce8ff] mx-auto mb-3 sm:mb-4"></div>
 
-      <div class="flex items-center bg-[#dce8ff] p-1 rounded-full mb-4 sm:mb-6">
+      <div class="qa-type-switch flex items-center bg-[#dce8ff] p-1 rounded-full mb-4 sm:mb-6">
         <button id="qa-type-gasto" class="flex-1 py-2.5 sm:py-3 rounded-full text-sm sm:text-base font-semibold transition-all cursor-pointer ${type === 'gasto' ? 'bg-white text-[#0b1c30] shadow-sm' : 'text-slate-600'}">Gasto</button>
         <button id="qa-type-ingreso" class="flex-1 py-2.5 sm:py-3 rounded-full text-sm sm:text-base font-semibold transition-all cursor-pointer ${type === 'ingreso' ? 'bg-white text-[#0b1c30] shadow-sm' : 'text-slate-600'}">Ingreso</button>
       </div>
 
-      <div class="text-center mb-4 sm:mb-5"><div class="flex items-baseline justify-center gap-1"><span class="text-4xl sm:text-5xl font-extrabold text-[#0b1c30] tabular-nums"><span class="text-slate-300">$</span>${formatCOP(numVal).replace('$', '')}</span><span class="text-base sm:text-xl font-medium text-slate-500">COP</span></div><p class="mt-2 text-xs sm:text-sm font-semibold text-[#0058bc]"><span class="inline-block w-3 h-3 rounded-full bg-[#006c49] mr-1"></span>${type === 'ingreso' ? 'Registrando ingreso inmediato' : 'Registrando egreso inmediato'}</p></div>
+      <div class="qa-amount-display text-center mb-4 sm:mb-5"><div class="flex items-baseline justify-center gap-1"><span class="qa-amount-value text-4xl sm:text-5xl font-extrabold text-[#0b1c30] tabular-nums"><span class="text-slate-300">$</span>${formatCOP(numVal).replace('$', '')}</span><span class="text-base sm:text-xl font-medium text-slate-500">COP</span></div><p class="qa-amount-status mt-2 text-xs sm:text-sm font-semibold text-[#0058bc]"><span class="inline-block w-3 h-3 rounded-full bg-[#006c49] mr-1"></span>${type === 'ingreso' ? 'Registrando ingreso inmediato' : 'Registrando egreso inmediato'}</p></div>
 
-      <div class="flex items-center justify-between mb-2.5 sm:mb-3"><h2 class="text-base sm:text-lg font-semibold uppercase tracking-wide text-slate-600">Categoría</h2><span id="qa-selected-category" class="text-base sm:text-lg font-semibold text-[#0058bc]">${category}</span></div>
-      <div id="qa-categories-scroll" class="qa-categories-scroll flex gap-2.5 sm:gap-3 overflow-x-auto no-scrollbar pb-1.5 sm:pb-2 mb-4 sm:mb-5" role="listbox" aria-label="Categorías de ${type === 'ingreso' ? 'ingreso' : 'gasto'}">
-        ${categories.map((c) => `<button type="button" data-cat="${c.name}" role="option" aria-selected="${category === c.name}" class="qa-cat-btn shrink-0 w-[68px] sm:w-[76px] flex flex-col items-center gap-1.5 sm:gap-2 cursor-pointer"><span class="w-[60px] h-[60px] sm:w-[68px] sm:h-[68px] rounded-3xl flex items-center justify-center ${category === c.name ? 'bg-[#0058bc] text-white shadow-md' : 'bg-[#dce8ff] text-slate-600'}">${getIconSvg(c.icon, 'w-6 h-6 sm:w-7 sm:h-7')}</span><span class="text-[11px] sm:text-sm whitespace-nowrap ${category === c.name ? 'text-[#0058bc] font-semibold' : 'text-slate-700'}">${c.label}</span></button>`).join('')}
+      <div class="qa-category-heading flex items-center justify-between mb-2.5 sm:mb-3"><h2 class="text-base sm:text-lg font-semibold uppercase tracking-wide text-slate-600">Categoría</h2><span id="qa-selected-category" class="text-base sm:text-lg font-semibold text-[#0058bc]">${category}</span></div>
+      <div id="qa-categories-scroll" class="qa-category-scroller qa-categories-scroll flex gap-2.5 sm:gap-3 overflow-x-auto no-scrollbar pb-1.5 sm:pb-2 mb-4 sm:mb-5" role="listbox" aria-label="Categorías de ${type === 'ingreso' ? 'ingreso' : 'gasto'}">
+        ${categories.map((c) => `<button type="button" data-cat="${c.name}" role="option" aria-selected="${category === c.name}" class="qa-cat-btn shrink-0 w-[68px] sm:w-[76px] flex flex-col items-center gap-1.5 sm:gap-2 cursor-pointer"><span class="qa-cat-icon w-[60px] h-[60px] sm:w-[68px] sm:h-[68px] rounded-3xl flex items-center justify-center ${category === c.name ? 'bg-[#0058bc] text-white shadow-md' : 'bg-[#dce8ff] text-slate-600'}">${getIconSvg(c.icon, 'w-6 h-6 sm:w-7 sm:h-7')}</span><span class="qa-cat-label text-[11px] sm:text-sm whitespace-nowrap ${category === c.name ? 'text-[#0058bc] font-semibold' : 'text-slate-700'}">${c.label}</span></button>`).join('')}
       </div>
-      <p id="qa-smart-category-hint" aria-live="polite" class="text-[11px] text-[#0058bc] font-medium text-center -mt-3 mb-3 ${smartSuggestion ? '' : 'invisible'}">${smartSuggestion ? `Sugerencia automática: ${smartSuggestion}` : 'Sugerencia automática'}</p>
+      <p id="qa-smart-category-hint" aria-hidden="true" style="display: none !important;" class="qa-smart-hint qa-smart-hint-hidden text-[11px] text-[#0058bc] font-medium text-center -mt-3 mb-3 ${smartSuggestion ? '' : 'invisible'}">${smartSuggestion ? `Sugerencia automática: ${smartSuggestion}` : 'Sugerencia automática'}</p>
 
-      <div class="rounded-3xl bg-white p-3.5 sm:p-4 shadow-sm border border-slate-100 mb-4 sm:mb-6">
+      <div class="qa-details-card rounded-3xl bg-white p-3.5 sm:p-4 shadow-sm border border-slate-100 mb-4 sm:mb-6">
         <div class="flex items-center gap-3"><span class="w-10 h-10 rounded-full bg-[#dce8ff] text-slate-600 flex items-center justify-center">${getIconSvg('fileText', 'w-5 h-5')}</span><input id="qa-description-input" type="text" placeholder="${type === 'ingreso' ? 'Concepto del ingreso' : 'Café y empanada Juan Valdez'}" value="${description}" class="qa-description-input flex-1 min-w-0 text-lg bg-transparent focus:outline-none focus:ring-0" /></div>
         <div class="flex items-center justify-between mt-5 pt-4 border-t border-slate-100"><div class="flex items-center gap-3"><span class="w-10 h-10 rounded-full bg-[#dce8ff] text-slate-600 flex items-center justify-center">${getIconSvg('calendar', 'w-5 h-5')}</span><div><p class="text-sm font-semibold text-slate-500">Fecha</p><p class="text-base font-semibold">${formatQuickAddDateLabel(date)}</p></div></div><div class="relative"><button id="qa-change-date-btn" type="button" class="rounded-full bg-[#dce8ff] px-3 py-2 text-sm font-semibold text-[#0058bc] cursor-pointer">Cambiar</button><input id="qa-date-input" type="date" value="${date}" aria-label="Cambiar fecha del registro" class="absolute inset-0 h-full w-full opacity-0 pointer-events-none" /></div></div>
       </div>
 
-      <div class="keypad-grid gap-2.5 sm:gap-3 mb-5 sm:mb-6">
+      <div class="qa-keypad keypad-grid gap-2.5 sm:gap-3 mb-5 sm:mb-6">
         <button data-key="1" class="keypad-btn bg-white border-0 shadow-sm h-16 sm:h-[72px] rounded-full">1</button><button data-key="2" class="keypad-btn bg-white border-0 shadow-sm h-16 sm:h-[72px] rounded-full">2</button><button data-key="3" class="keypad-btn bg-white border-0 shadow-sm h-16 sm:h-[72px] rounded-full">3</button>
         <button data-key="4" class="keypad-btn bg-white border-0 shadow-sm h-16 sm:h-[72px] rounded-full">4</button><button data-key="5" class="keypad-btn bg-white border-0 shadow-sm h-16 sm:h-[72px] rounded-full">5</button><button data-key="6" class="keypad-btn bg-white border-0 shadow-sm h-16 sm:h-[72px] rounded-full">6</button>
         <button data-key="7" class="keypad-btn bg-white border-0 shadow-sm h-16 sm:h-[72px] rounded-full">7</button><button data-key="8" class="keypad-btn bg-white border-0 shadow-sm h-16 sm:h-[72px] rounded-full">8</button><button data-key="9" class="keypad-btn bg-white border-0 shadow-sm h-16 sm:h-[72px] rounded-full">9</button>
         <button data-key="000" class="keypad-btn bg-[#eef3ff] border-0 text-[#0058bc] h-16 sm:h-[72px] rounded-full">+000</button><button data-key="0" class="keypad-btn bg-white border-0 shadow-sm h-16 sm:h-[72px] rounded-full">0</button><button data-key="backspace" class="keypad-btn bg-[#eef3ff] border-0 h-16 sm:h-[72px] rounded-full">${getIconSvg('deleteKey', 'w-7 h-7')}</button>
       </div>
-      <button id="qa-submit-btn" class="w-full h-14 sm:h-16 rounded-full ${numVal > 0 ? 'bg-[#0058bc]' : 'bg-slate-300 pointer-events-none'} text-white font-bold text-lg sm:text-xl shadow-md cursor-pointer flex items-center justify-center gap-2">${getIconSvg('checkCircle2', 'w-6 h-6 sm:w-7 sm:h-7')}<span>Guardar ${type === 'ingreso' ? 'Ingreso' : 'Gasto'}</span></button>
+      <button id="qa-submit-btn" class="qa-submit-button w-full h-14 sm:h-16 rounded-full ${numVal > 0 ? 'bg-[#0058bc]' : 'bg-slate-300 pointer-events-none'} text-white font-bold text-lg sm:text-xl shadow-md cursor-pointer flex items-center justify-center gap-2">${getIconSvg('checkCircle2', 'w-6 h-6 sm:w-7 sm:h-7')}<span>Guardar ${type === 'ingreso' ? 'Ingreso' : 'Gasto'}</span></button>
     </div>
   `;
 
@@ -4272,8 +4272,8 @@ function renderQuickAddModalContent() {
       button.setAttribute('aria-selected', String(isSelected));
       const icon = button.querySelector('span:first-child');
       const label = button.querySelector('span:last-child');
-      if (icon) icon.className = `w-[60px] h-[60px] sm:w-[68px] sm:h-[68px] rounded-3xl flex items-center justify-center ${isSelected ? 'bg-[#0058bc] text-white shadow-md' : 'bg-[#dce8ff] text-slate-600'}`;
-      if (label) label.className = `text-[11px] sm:text-sm whitespace-nowrap ${isSelected ? 'text-[#0058bc] font-semibold' : 'text-slate-700'}`;
+      if (icon) icon.className = `qa-cat-icon w-[60px] h-[60px] sm:w-[68px] sm:h-[68px] rounded-3xl flex items-center justify-center ${isSelected ? 'bg-[#0058bc] text-white shadow-md' : 'bg-[#dce8ff] text-slate-600'}`;
+      if (label) label.className = `qa-cat-label text-[11px] sm:text-sm whitespace-nowrap ${isSelected ? 'text-[#0058bc] font-semibold' : 'text-slate-700'}`;
     });
   };
 
@@ -5011,10 +5011,10 @@ function openAporteModal(goalId) {
 
       <div class="mt-7 text-center">
         <label class="block text-sm font-semibold tracking-wide text-[#6b7d98]">MONTO A RESERVAR</label>
-        <div class="flex items-baseline justify-center gap-3 mt-2 text-[#0058bc]">
-          <span class="text-[34px] font-bold leading-none">$</span>
-          <input id="aporte-input" type="text" inputmode="numeric" value="100.000" placeholder="100.000" class="w-44 bg-transparent text-center text-[38px] font-extrabold leading-none tabular-nums focus:outline-none" />
-          <span class="text-sm font-semibold text-[#6b7d98]">COP</span>
+        <div class="flex items-center justify-center gap-2 mt-2 w-full min-w-0 text-[#0058bc]">
+          <span class="shrink-0 text-[34px] font-bold leading-none">$</span>
+          <input id="aporte-input" type="text" inputmode="numeric" value="100.000" placeholder="100.000" class="min-w-0 flex-1 max-w-xs bg-transparent text-center text-3xl sm:text-[38px] font-extrabold leading-tight tabular-nums focus:outline-none" />
+          <span class="shrink-0 text-sm font-semibold text-[#6b7d98]">COP</span>
         </div>
       </div>
 

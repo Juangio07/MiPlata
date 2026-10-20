@@ -76,6 +76,8 @@ const ICON_PATHS = {
   plane: '<path d="M17.8 19.2 16 11l3.5-3.5C21 6 21.5 4 21 3c-1-.5-3 0-4.5 1.5L13 8 4.8 6.2c-.5-.1-.9.1-1.1.5l-.3.5c-.2.5-.1 1 .3 1.3L9 12l-2 3H4l-1 1 3 2 2 3 1-1v-3l3-2 3.5 5.3c.3.4.8.5 1.3.3l.5-.2c.4-.3.6-.7.5-1.2z"/>',
   car: '<path d="M19 17h2c.6 0 1-.4 1-1v-3c0-.9-.7-1.7-1.5-1.9C18.7 10.6 16 10 16 10s-1.3-1.4-2.2-2.3c-.5-.4-1.1-.7-1.8-.7H5c-.6 0-1.1.4-1.4.9l-1.4 2.9A3.7 3.7 0 0 0 2 12v4c0 .6.4 1 1 1h2"/><circle cx="7" cy="17" r="2"/><path d="M9 17h6"/><circle cx="17" cy="17" r="2"/>',
   utensils: '<path d="M18 2v6a3 3 0 0 1-3 3 3 3 0 0 1-3-3V2"/><path d="M15 2v10a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2V2"/><path d="M9 2v4a2 2 0 0 0 2 2 2 2 0 0 0 2-2V2"/><path d="M12 14v8"/>',
+  apple: '<path d="M12 20.5c-4.2 0-7-4.4-7-8.1C5 9.5 7.3 7 10.1 7c.9 0 1.8.4 2.4.4S14 7 15 7c2.8 0 5 2.2 5 5.4 0 3.7-2.8 8.1-7 8.1Z"/><path d="M12.5 6C12.2 4.2 13.3 2.8 15 2"/>',
+  pizzaSlice: '<path d="M4 20 8.6 6.2c.35-1.05 1.7-1.4 2.5-.6l8.3 8.3c.8.8.45 2.15-.6 2.5L4 20Z"/><path d="M9.2 8.4a8.9 8.9 0 0 1 7.7 7.7"/><circle cx="10.2" cy="14.9" r="1"/><circle cx="13.8" cy="11.9" r="1"/><circle cx="16.5" cy="15.2" r="1"/>',
   bowlFood: '<path d="M4 10h16"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M7 15h10"/><path d="M8 5c0 1.5 1 2 1 3"/><path d="M12 3c0 1.5 1 2 1 3"/><path d="M16 5c0 1.5 1 2 1 3"/>',
   forkKnife: '<path fill="currentColor" stroke="none" d="M4 3h2v7h1V3h2v7h1V3h2v7c0 2.2-1.3 3.8-3 4.3V21H7v-6.7c-1.7-.5-3-2.1-3-4.3V3Z"/><path fill="currentColor" stroke="none" d="M17 3c3 1 4 3.8 4 6v12h-2V13h-4V8c0-2.3.7-4.1 2-5Z"/>',
   shoppingBag: '<path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4Z"/><path d="M3 6h18"/><path d="M16 10a4 4 0 0 1-8 0"/>',
@@ -137,7 +139,7 @@ export function getIconSvg(name, className = 'w-5 h-5') {
 export function getCategoryIconSvg(category, className = 'w-5 h-5') {
   switch (category) {
     case 'Alimentación':
-      return `<span class="text-amber-600">${getIconSvg('forkKnife', className)}</span>`;
+      return `<span class="text-amber-600">${getIconSvg('pizzaSlice', className)}</span>`;
     case 'Transporte':
       return `<span class="text-emerald-600">${getIconSvg('car', className)}</span>`;
     case 'Compras':
