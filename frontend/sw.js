@@ -1,10 +1,10 @@
-const CACHE_NAME = 'miplata-static-v2';
+const CACHE_NAME = 'miplata-static-v3';
 const APP_SHELL = [
-  '/css/tailwind.generated.css?v=20261019-performance',
-  '/css/style.min.css?v=20261019-performance',
-  '/css/quick-add.css?v=20261019-performance',
-  '/js/app.bundle.min.js?v=20261019-performance',
-  '/assets/Logo.png',
+  '/css/tailwind.generated.css?v=20261019-mobile-v1',
+  '/css/style.min.css?v=20261019-mobile-v1',
+  '/css/quick-add.css?v=20261019-mobile-v1',
+  '/js/app.bundle.min.js?v=20261019-mobile-v1',
+  '/assets/optimized/Logo.png',
 ];
 
 self.addEventListener('install', (event) => {

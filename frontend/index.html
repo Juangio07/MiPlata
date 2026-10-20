@@ -8,14 +8,16 @@
     <meta property="og:title" content="MiPlata" />
     <meta property="og:description" content="Tu dinero claro, tus metas cerca. Administra ingresos, gastos ocasionales, pagos fijos mensuales y metas de ahorro en pesos colombianos (COP)." />
     <meta property="og:type" content="website" />
-    <link rel="icon" type="image/png" href="assets/Logo.png" />
-    <link rel="apple-touch-icon" href="assets/Logo.png" />
+    <link rel="icon" type="image/png" href="assets/optimized/Logo.png" />
+    <link rel="apple-touch-icon" href="assets/optimized/Logo.png" />
+    <link rel="preload" as="image" href="assets/optimized/Logo.png" type="image/png" fetchpriority="high" />
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="css/tailwind.generated.css?v=20261019-performance" />
-    <link rel="stylesheet" href="css/style.min.css?v=20261019-performance" />
-    <link rel="stylesheet" href="css/quick-add.css?v=20261019-performance" />
+    <link rel="preload" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" as="style" onload="this.onload=null;this.rel='stylesheet'">
+    <noscript><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet"></noscript>
+    <link rel="stylesheet" href="css/tailwind.generated.css?v=20261019-mobile-v1" />
+    <link rel="stylesheet" href="css/style.min.css?v=20261019-mobile-v1" />
+    <link rel="stylesheet" href="css/quick-add.css?v=20261019-mobile-v1" />
   </head>
   <body class="bg-[#f8f9ff] text-[#0b1c30] antialiased selection:bg-[#d8e2ff] selection:text-[#001a41]">
     <!-- App Root Wrapper -->
@@ -171,7 +173,8 @@
     </div>
 
     <!-- Application Script Entrypoint -->
-    <script type="module" src="js/app.bundle.min.js?v=20261019-performance"></script>
+    <link rel="modulepreload" href="js/app.bundle.min.js?v=20261019-mobile-v1" />
+    <script type="module" src="js/app.bundle.min.js?v=20261019-mobile-v1"></script>
     <script>
       if ('serviceWorker' in navigator && location.protocol !== 'file:') {
         window.addEventListener('load', () => {

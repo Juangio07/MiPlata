@@ -3960,7 +3960,7 @@ function renderQuickAddModalContent() {
     <div class="quick-add-page w-full max-w-[460px] h-[100dvh] min-h-0 bg-[#f8f9ff] overflow-y-auto no-scrollbar px-3 sm:px-4 pt-3 sm:pt-5 pb-6">
       <div class="flex items-center justify-between mb-4 sm:mb-5">
         <button id="qa-close-btn" aria-label="Volver" class="w-9 h-9 flex items-center justify-center text-[#0058bc] cursor-pointer">${getIconSvg('arrowLeft', 'w-7 h-7')}</button>
-        <div class="flex items-center gap-2"><img src="assets/Logo.png" alt="MiPlata" class="w-10 h-10 rounded-xl" /><h1 class="text-xl font-semibold">Nuevo Registro</h1></div>
+        <div class="flex items-center gap-2"><img src="assets/optimized/Logo.png" alt="MiPlata" width="160" height="160" decoding="async" class="w-10 h-10 rounded-xl" /><h1 class="text-xl font-semibold">Nuevo Registro</h1></div>
         ${renderAvatarHtml(state.currentUser?.name, state.currentUser?.avatarUrl, 'sm')}
       </div>
       <div class="h-1.5 w-12 rounded-full bg-[#dce8ff] mx-auto mb-3 sm:mb-4"></div>
