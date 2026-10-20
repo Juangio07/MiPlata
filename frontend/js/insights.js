@@ -99,6 +99,8 @@ export function getSortedPendingObligations(obligations) {
 export function getFinancialAlerts(data) {
   const alerts = [];
   const {
+    currentUser = null,
+    alert80Percent,
     fixedObligations = [],
     totalIncome = 0,
     totalExpenses = 0,
@@ -109,43 +111,10 @@ export function getFinancialAlerts(data) {
     monthlyBudgetRemaining = 0,
     monthlyBudgetPercent = 0,
   } = data;
+  const budgetAlertEnabled = alert80Percent ?? currentUser?.alert80Percent ?? true;
 
-  // 1. Pending / Overdue Obligations Alerts
-  const sortedPending = getSortedPendingObligations(fixedObligations);
-  if (sortedPending.length > 0) {
-    const mostUrgent = sortedPending[0];
-    if (mostUrgent.status === 'overdue') {
-      alerts.push({
-        id: `alert_overdue_${mostUrgent.obligation.id}`,
-        type: 'danger',
-        title: `Obligación vencida: ${mostUrgent.obligation.name}`,
-        description: `Tenía fecha límite el día ${mostUrgent.obligation.dueDay} (${formatCOP(mostUrgent.obligation.amount, true)}). Mantenla al día para cuidar tu tranquilidad.`,
-        actionLabel: 'Pagar ahora',
-        actionTab: 'obligaciones',
-      });
-    } else if (mostUrgent.status === 'today') {
-      alerts.push({
-        id: `alert_today_${mostUrgent.obligation.id}`,
-        type: 'warning',
-        title: `¡Vence hoy! ${mostUrgent.obligation.name}`,
-        description: `Recuerda realizar el pago de ${formatCOP(mostUrgent.obligation.amount, true)} antes de finalizar la jornada.`,
-        actionLabel: 'Ver detalle',
-        actionTab: 'obligaciones',
-      });
-    } else if (mostUrgent.status === 'upcoming' && mostUrgent.daysDiff <= 3) {
-      alerts.push({
-        id: `alert_soon_${mostUrgent.obligation.id}`,
-        type: 'warning',
-        title: `Próximo vencimiento en ${mostUrgent.daysDiff} ${mostUrgent.daysDiff === 1 ? 'día' : 'días'}`,
-        description: `${mostUrgent.obligation.name} (${formatCOP(mostUrgent.obligation.amount, true)}) vence el día ${mostUrgent.obligation.dueDay}.`,
-        actionLabel: 'Revisar fijos',
-        actionTab: 'obligaciones',
-      });
-    }
-  }
-
-  // 2. Budget Limit Alerts
-  if (monthlyBudgetLimit > 0) {
+  // 1. Budget Limit Alerts
+  if (monthlyBudgetLimit > 0 && budgetAlertEnabled) {
     if (monthlyBudgetSpent > monthlyBudgetLimit) {
       const overAmount = monthlyBudgetSpent - monthlyBudgetLimit;
       alerts.push({
@@ -168,7 +137,7 @@ export function getFinancialAlerts(data) {
     }
   }
 
-  // 3. Cashflow / Deficit Alert
+  // 2. Cashflow / Deficit Alert
   if (totalIncome > 0 && totalExpenses + fixedCommitted > totalIncome) {
     const deficit = totalExpenses + fixedCommitted - totalIncome;
     alerts.push({
@@ -178,6 +147,7 @@ export function getFinancialAlerts(data) {
       description: `Tus gastos acumulados más compromisos fijos (${formatCOP(totalExpenses + fixedCommitted)}) exceden lo recibido por ${formatCOP(deficit, true)}.`,
       actionLabel: 'Ver balance',
       actionTab: 'inicio',
+      actionFocus: 'balance',
     });
   } else if (totalIncome === 0 && totalExpenses > 0) {
     alerts.push({
@@ -192,6 +162,7 @@ export function getFinancialAlerts(data) {
     alerts.push({
       id: 'alert_zero_available',
       type: 'warning',
+      icon: 'wallet',
       title: 'Dinero disponible en $0 COP',
       description: 'Todos tus ingresos del mes están comprometidos en gastos ya pagados o cuotas pendientes.',
       actionLabel: 'Ver compromisos',
@@ -209,6 +180,7 @@ export function getFinancialTips(data) {
     fixedObligations = [],
     savingsGoals = [],
     totalIncome = 0,
+    effectiveMonthlyIncome = 0,
     totalExpenses = 0,
     availableCash = 0,
     fixedTotal = 0,
@@ -216,7 +188,7 @@ export function getFinancialTips(data) {
 
   const rawTips = [];
 
-  const salary = currentUser?.monthlySalary || currentUser?.monthlyBudgetLimit || totalIncome || 0;
+  const salary = effectiveMonthlyIncome || currentUser?.monthlySalary || currentUser?.monthlyBudgetLimit || totalIncome || 0;
   const savingsRulePercent = (currentUser?.budgetRule?.savings || 20) / 100;
   const needsRulePercent = (currentUser?.budgetRule?.needs || 50) / 100;
   const wantsRulePercent = (currentUser?.budgetRule?.wants || 30) / 100;

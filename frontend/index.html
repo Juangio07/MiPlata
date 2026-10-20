@@ -3,41 +3,21 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
-    <title>MiPlata – Control de Finanzas Personales</title>
+    <title>MiPlata</title>
     <meta name="description" content="Tu dinero claro, tus metas cerca. Administra ingresos, gastos ocasionales, pagos fijos mensuales y metas de ahorro en pesos colombianos (COP)." />
-    <meta property="og:title" content="MiPlata – Control de Finanzas Personales" />
+    <meta property="og:title" content="MiPlata" />
     <meta property="og:description" content="Tu dinero claro, tus metas cerca. Administra ingresos, gastos ocasionales, pagos fijos mensuales y metas de ahorro en pesos colombianos (COP)." />
     <meta property="og:type" content="website" />
-    <link rel="icon" type="image/png" href="assets/Logo.png" />
-    <link rel="apple-touch-icon" href="assets/Logo.png" />
+    <link rel="icon" type="image/png" href="assets/optimized/Logo.png" />
+    <link rel="apple-touch-icon" href="assets/optimized/Logo.png" />
+    <link rel="preload" as="image" href="assets/optimized/Logo.png" type="image/png" fetchpriority="high" />
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
-    <!-- Tailwind CSS CDN to reproduce exact utility classes and appearance -->
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script>
-      tailwind.config = {
-        theme: {
-          extend: {
-            colors: {
-              brand: {
-                blue: '#0058bc',
-                dark: '#0b1c30',
-                green: '#006c49',
-                mint: '#6cf8bb',
-                light: '#f8f9ff',
-                soft: '#d8e2ff',
-                card: '#eff4ff',
-              }
-            },
-            fontFamily: {
-              sans: ['Inter', '-apple-system', 'BlinkMacSystemFont', 'sans-serif'],
-            }
-          }
-        }
-      }
-    </script>
-    <link rel="stylesheet" href="css/style.css" />
+    <link rel="preload" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" as="style" onload="this.onload=null;this.rel='stylesheet'">
+    <noscript><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet"></noscript>
+    <link rel="stylesheet" href="css/tailwind.generated.css?v=20261019-mobile-v1" />
+    <link rel="stylesheet" href="css/style.min.css?v=20261019-mobile-v1" />
+    <link rel="stylesheet" href="css/quick-add.css?v=20261019-mobile-v1" />
   </head>
   <body class="bg-[#f8f9ff] text-[#0b1c30] antialiased selection:bg-[#d8e2ff] selection:text-[#001a41]">
     <!-- App Root Wrapper -->
@@ -133,6 +113,8 @@
             </div>
             <button
               id="search-close-btn"
+              type="button"
+              aria-label="Cerrar búsqueda"
               class="w-7 h-7 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 hover:text-slate-800 cursor-pointer"
             >
               <!-- X icon rendered by JS -->
@@ -144,11 +126,6 @@
             </p>
           </div>
         </div>
-      </div>
-
-      <!-- Modal: Detalle y Ajuste de Dinero Disponible -->
-      <div id="modal-cash-detail" class="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 hidden">
-        <!-- Rendered by JS -->
       </div>
 
       <!-- Modal: Add / Edit Fixed Obligation -->
@@ -166,7 +143,7 @@
         <!-- Rendered by JS -->
       </div>
 
-      <!-- Modal: Edit / Delete Transaction Action Sheet -->
+      <!-- Modal: Edit Transaction -->
       <div id="modal-edit-transaction" class="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 hidden">
         <!-- Rendered by JS -->
       </div>
@@ -196,6 +173,16 @@
     </div>
 
     <!-- Application Script Entrypoint -->
-    <script type="module" src="js/app.js"></script>
+    <link rel="modulepreload" href="js/app.bundle.min.js?v=20261019-mobile-v1" />
+    <script type="module" src="js/app.bundle.min.js?v=20261019-mobile-v1"></script>
+    <script>
+      if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('/sw.js', { updateViaCache: 'none' }).catch(() => {
+            // La aplicación sigue funcionando aunque el caché offline no esté disponible.
+          });
+        });
+      }
+    </script>
   </body>
 </html>

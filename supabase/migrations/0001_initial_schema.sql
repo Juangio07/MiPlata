@@ -15,7 +15,7 @@ create table public.profiles (
   budget_wants numeric(5, 2) not null default 30,
   budget_savings numeric(5, 2) not null default 20,
   alert_80_percent boolean not null default true,
-  auto_adjust_variable boolean not null default false,
+  auto_adjust_variable boolean not null default true,
   currency text not null default 'COP',
   reset_day integer not null default 1,
   smart_categorization boolean not null default true,

@@ -44,6 +44,8 @@ const state = {
   savingsGoals: [],
   goalContributions: [],
   categoryBudgets: [],
+  availableMonths: [],
+  monthlyReports: {},
 
   // View specific filters
   filterRecordsType: 'all', // 'all' | 'gasto' | 'ingreso'
@@ -59,6 +61,8 @@ const state = {
     type: 'gasto', // 'gasto' | 'ingreso'
     rawValue: '0',
     category: 'Alimentación',
+    categoryManuallySelected: false,
+    smartSuggestion: '',
     description: '',
     date: getTodayISODate(),
   },
@@ -66,6 +70,9 @@ const state = {
   // Carousel & UI states
   activeTipIndex: 0,
 };
+
+let lastLoadedMonthKey = getCurrentMonthKey();
+let monthlyRolloverTimer = null;
 
 // Initial DOM Selectors
 const DOM = {
@@ -96,7 +103,6 @@ const DOM = {
   searchInputIcon: document.getElementById('search-input-icon'),
   searchCloseBtn: document.getElementById('search-close-btn'),
   searchResultsList: document.getElementById('search-results-list'),
-  modalCashDetail: document.getElementById('modal-cash-detail'),
   modalFixedObligation: document.getElementById('modal-fixed-obligation'),
   modalSavingsGoal: document.getElementById('modal-savings-goal'),
   modalAporteGoal: document.getElementById('modal-aporte-goal'),
@@ -194,6 +200,18 @@ const FIXED_OBLIGATION_CATEGORIES = [
   'Otros',
 ];
 
+const FIXED_OBLIGATION_CATEGORY_OPTIONS = [
+  { name: 'Vivienda', label: 'Vivienda', icon: 'home' },
+  { name: 'Servicios públicos', label: 'Servicios', icon: 'droplet' },
+  { name: 'Internet y telefonía', label: 'Internet', icon: 'wifi' },
+  { name: 'Transporte', label: 'Transporte', icon: 'car' },
+  { name: 'Deudas y créditos', label: 'Créditos', icon: 'creditCard' },
+  { name: 'Salud y seguros', label: 'Salud', icon: 'heartPulse' },
+  { name: 'Suscripciones y membresías', label: 'Suscripciones', icon: 'tv' },
+  { name: 'Educación y familia', label: 'Educación', icon: 'graduationCap' },
+  { name: 'Otros', label: 'Otros', icon: 'banknote' },
+];
+
 function normalizeFixedObligationCategory(category) {
   const aliases = {
     Servicios: 'Servicios públicos',
@@ -254,11 +272,165 @@ function getObligationContextIcon(name, category = '') {
 }
 
 // Computed Financial Metrics
+function normalizeRecordTimestamp(value) {
+  if (value === null || value === undefined || value === '') return 0;
+  const numeric = Number(value);
+  if (Number.isFinite(numeric) && numeric > 0) {
+    return numeric < 100000000000 ? numeric * 1000 : numeric;
+  }
+  const parsed = Date.parse(String(value));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function getRecordSortParts(record) {
+  const date = String(record.date || '').slice(0, 10);
+  const time = String(record.time || '').slice(0, 8);
+  const dayTimestamp = /^\d{4}-\d{2}-\d{2}$/.test(date)
+    ? Date.parse(`${date}T00:00:00`)
+    : 0;
+  const hasTime = /^\d{2}:\d{2}/.test(time);
+  const explicitTimestamp = hasTime && dayTimestamp
+    ? Date.parse(`${date}T${time}`)
+    : 0;
+  const createdAt = normalizeRecordTimestamp(record.createdAt);
+  const createdAtDate = createdAt ? new Date(createdAt).toISOString().slice(0, 10) : '';
+  const executionTimestamp = explicitTimestamp || (createdAt && createdAtDate === date ? createdAt : dayTimestamp) || createdAt;
+
+  return {
+    dayTimestamp: dayTimestamp || executionTimestamp,
+    executionTimestamp,
+    createdAt,
+  };
+}
+
+function getRecordIcon(tx, className = 'w-5 h-5') {
+  if (tx.isGoalContribution) {
+    return `<span class="text-[#0058bc]">${getIconSvg('flag', className)}</span>`;
+  }
+  if (tx.fixedObligationId) {
+    return `<span class="text-[#0058bc]">${getIconSvg('calendarCheck', className)}</span>`;
+  }
+  if (tx.type === 'ingreso') {
+    return `<span class="text-[#006c49]">${getIconSvg('arrowUpRight', className)}</span>`;
+  }
+  return getCategoryIconSvg(tx.category, className);
+}
+
+function getGoalContributionRecords(monthKey = null, contributions = state.goalContributions) {
+  return contributions
+    .filter((contribution) => !monthKey || String(contribution.date || '').startsWith(monthKey))
+    .map((contribution) => {
+      const createdAt = normalizeRecordTimestamp(contribution.timestamp);
+      const timestampDate = createdAt ? new Date(createdAt) : null;
+      const fallbackDate = timestampDate ? timestampDate.toISOString().slice(0, 10) : '';
+      const fallbackTime = timestampDate
+        ? timestampDate.toTimeString().slice(0, 8)
+        : '';
+
+      return {
+        id: `goal-contribution-${contribution.id}`,
+        type: 'gasto',
+        amount: Number(contribution.amount) || 0,
+        category: 'Ahorro / Metas',
+        description: `Aporte a meta: ${contribution.goalName || 'Meta de ahorro'}`,
+        date: contribution.date || fallbackDate,
+        time: contribution.time || fallbackTime,
+        createdAt,
+        accountMethod: 'Meta de ahorro',
+        isRecurring: false,
+        fixedObligationId: null,
+        isGoalContribution: true,
+        goalId: contribution.goalId || null,
+      };
+    });
+}
+
+function getMonthlyRecords(monthKey) {
+  const report = state.monthlyReports[monthKey];
+  const transactions = report
+    ? (report.transactions || [])
+    : state.transactions.filter((transaction) => transaction.date && transaction.date.startsWith(monthKey));
+  const contributions = report ? (report.goalContributions || []) : state.goalContributions;
+  return [
+    ...transactions,
+    ...getGoalContributionRecords(monthKey, contributions),
+  ].sort((a, b) => {
+    const left = getRecordSortParts(a);
+    const right = getRecordSortParts(b);
+    return right.dayTimestamp - left.dayTimestamp
+      || right.executionTimestamp - left.executionTimestamp
+      || right.createdAt - left.createdAt;
+  });
+}
+
+function getConfiguredMonthlyIncome(user = state.currentUser) {
+  return Number(user?.monthlySalary) || Number(user?.monthlyBudgetLimit) || 0;
+}
+
+function getConfiguredMonthlyBudget(user = state.currentUser) {
+  return Number(user?.monthlyBudgetLimit) || Number(user?.monthlySalary) || 0;
+}
+
+function getMonthlyIncomeTotal(monthKey) {
+  return getMonthlyRecords(monthKey)
+    .filter((transaction) => transaction.type === 'ingreso')
+    .reduce((sum, transaction) => sum + (Number(transaction.amount) || 0), 0);
+}
+
+function getBudgetAdjustment(monthKey = state.selectedMonth, user = state.currentUser) {
+  const configuredIncome = getConfiguredMonthlyIncome(user);
+  const configuredBudget = getConfiguredMonthlyBudget(user);
+  const recordedIncome = getMonthlyIncomeTotal(monthKey);
+
+  if (!user?.autoAdjustVariable || recordedIncome <= 0) {
+    return {
+      configuredIncome,
+      recordedIncome,
+      effectiveIncome: configuredIncome,
+      monthlyBudgetLimit: configuredBudget,
+      categoryScale: 1,
+      isAdjusted: false,
+    };
+  }
+
+  // Keep the user's chosen budget share. For example, a $4M budget on a
+  // $5M configured income becomes $4.8M when the month receives $6M.
+  if (configuredIncome <= 0) {
+    return {
+      configuredIncome,
+      recordedIncome,
+      effectiveIncome: recordedIncome,
+      monthlyBudgetLimit: recordedIncome,
+      categoryScale: 1,
+      isAdjusted: true,
+    };
+  }
+
+  const categoryScale = recordedIncome / configuredIncome;
+  return {
+    configuredIncome,
+    recordedIncome,
+    effectiveIncome: recordedIncome,
+    monthlyBudgetLimit: Math.max(0, Math.round(configuredBudget * categoryScale)),
+    categoryScale,
+    isAdjusted: Math.round(recordedIncome) !== Math.round(configuredIncome),
+  };
+}
+
+function getEffectiveCategoryBudgets(monthKey = state.selectedMonth) {
+  const adjustment = getBudgetAdjustment(monthKey);
+  return state.categoryBudgets.map((budget) => ({
+    ...budget,
+    limit: Math.max(0, Math.round((Number(budget.limit) || 0) * adjustment.categoryScale)),
+  }));
+}
+
 function computeMetrics() {
   const { transactions, fixedObligations, savingsGoals, currentUser, selectedMonth } = state;
 
-  // Filter transactions for the selected month
-  const monthTransactions = transactions.filter((t) => t.date && t.date.startsWith(selectedMonth));
+  // Contributions are virtual expense records: they appear in egresos and
+  // history, but remain separate from transactions to avoid duplicate data.
+  const monthTransactions = getMonthlyRecords(selectedMonth);
 
   const totalIncome = monthTransactions
     .filter((t) => t.type === 'ingreso')
@@ -281,13 +453,19 @@ function computeMetrics() {
 
   const totalSavings = savingsGoals.reduce((sum, g) => sum + g.currentAmount, 0);
   const totalSavingsTarget = savingsGoals.reduce((sum, g) => sum + g.targetAmount, 0);
+  const totalGoalContributions = monthTransactions
+    .filter((transaction) => transaction.isGoalContribution)
+    .reduce((sum, transaction) => sum + transaction.amount, 0);
 
   const baseBalance = currentUser?.initialBalance || 0;
-  const availableCash = Math.max(0, baseBalance + totalIncome - totalExpenses - fixedCommitted);
+  // Pending fixed obligations remain visible as "Por Pagar" and do not reduce
+  // this balance until they are actually paid and recorded as an expense.
+  // Goal contributions are virtual expense records in monthTransactions, so
+  // subtracting the accumulated goal balance here would count them twice.
+  const availableCash = Math.max(0, baseBalance + totalIncome - totalExpenses);
 
-  // The budget limit is an explicit planning value. It must not silently fall
-  // back to the salary when the user has configured a different limit.
-  const monthlyBudgetLimit = currentUser ? (currentUser.monthlyBudgetLimit || currentUser.monthlySalary || 0) : 0;
+  const budgetAdjustment = getBudgetAdjustment(selectedMonth, currentUser);
+  const monthlyBudgetLimit = budgetAdjustment.monthlyBudgetLimit;
   const monthlyBudgetSpent = totalExpenses;
   const monthlyBudgetRemaining = Math.max(0, monthlyBudgetLimit - monthlyBudgetSpent);
   const monthlyBudgetPercent = monthlyBudgetLimit > 0 ? Math.min(100, Math.round((monthlyBudgetSpent / monthlyBudgetLimit) * 100)) : 0;
@@ -302,21 +480,25 @@ function computeMetrics() {
     fixedPendingCount,
     totalSavings,
     totalSavingsTarget,
+    totalGoalContributions,
     availableCash,
     monthlyBudgetLimit,
     monthlyBudgetSpent,
     monthlyBudgetRemaining,
     monthlyBudgetPercent,
+    effectiveMonthlyIncome: budgetAdjustment.effectiveIncome,
+    budgetAdjustment,
     monthTransactions,
   };
 }
 
 function getRecordMonthsList() {
-  const monthKeys = new Set(
-    state.transactions
-      .map((transaction) => String(transaction.date || '').slice(0, 7))
-      .filter((monthKey) => /^\d{4}-\d{2}$/.test(monthKey))
-  );
+  const monthKeys = new Set([
+    ...state.availableMonths,
+    ...state.transactions.map((transaction) => String(transaction.date || '').slice(0, 7)),
+    ...state.goalContributions.map((contribution) => String(contribution.date || '').slice(0, 7)),
+  ].filter((monthKey) => /^\d{4}-\d{2}$/.test(monthKey)));
+  monthKeys.add(getCurrentMonthKey());
 
   return [...monthKeys]
     .sort((a, b) => b.localeCompare(a))
@@ -344,28 +526,107 @@ function switchTab(tabId) {
   renderHeader();
   renderBottomNav();
   renderActiveView();
-  window.scrollTo({ top: 0, behavior: 'smooth' });
+  window.scrollTo({ top: 0, behavior: 'auto' });
+}
+
+function handleInsightAlertAction(button) {
+  const targetTab = button.dataset.tab || 'gastos';
+  const focusTarget = button.dataset.focus;
+
+  if (focusTarget === 'balance') {
+    const focusBalance = () => {
+      document.getElementById('dashboard-balance-card')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    };
+
+    if (state.activeTab !== 'inicio') {
+      switchTab(targetTab);
+      requestAnimationFrame(focusBalance);
+    } else {
+      focusBalance();
+    }
+    return;
+  }
+
+  switchTab(targetTab);
+}
+
+function restoreCachedState() {
+  try {
+    const cached = JSON.parse(localStorage.getItem('miplata_bootstrap_cache') || 'null');
+    const cachedUser = cached?.user;
+    const sessionUser = JSON.parse(localStorage.getItem('miplata_user_cache') || 'null');
+    if (!cachedUser?.id || cachedUser.id !== sessionUser?.id) return false;
+    state.currentUser = cachedUser;
+    state.transactions = cached.transactions || [];
+    state.fixedObligations = cached.fixedObligations || [];
+    state.goalContributions = cached.goalContributions || [];
+    state.savingsGoals = cached.savingsGoals || [];
+    state.categoryBudgets = cached.categoryBudgets || [];
+    state.availableMonths = cached.availableMonths || [];
+    state.monthlyReports = {};
+    return true;
+  } catch (_error) {
+    localStorage.removeItem('miplata_bootstrap_cache');
+    return false;
+  }
 }
 
 // Data Fetcher from Python Flask Backend
+function applyBootstrapData(data) {
+  if (!data?.user) return false;
+  state.currentUser = data.user;
+  state.transactions = data.transactions || [];
+  state.fixedObligations = data.fixedObligations || [];
+  state.goalContributions = data.goalContributions || [];
+  // Goal progress is cumulative and is already synchronized by the backend;
+  // this bootstrap intentionally contains only current-month contributions.
+  state.savingsGoals = data.savingsGoals || [];
+  state.categoryBudgets = data.categoryBudgets || [];
+  state.availableMonths = data.availableMonths || [];
+  state.monthlyReports = {};
+  state.selectedMonth = getCurrentMonthKey();
+  return true;
+}
+
+function syncGoalAmountsWithContributions(goals, contributions) {
+  const totals = new Map();
+  contributions.forEach((contribution) => {
+    const goalId = String(contribution?.goalId || '');
+    if (!goalId) return;
+    totals.set(goalId, (totals.get(goalId) || 0) + (Number(contribution.amount) || 0));
+  });
+
+  return goals.map((goal) => ({
+    ...goal,
+    currentAmount: totals.get(String(goal.id)) || 0,
+  }));
+}
+
 async function refreshAllData() {
-  if (!state.currentUser) return;
   try {
-    const [txs, fixed, goals, contribs, budgets] = await Promise.all([
-      api.getTransactions(),
-      api.getFixedObligations(),
-      api.getSavingsGoals(),
-      api.getGoalContributions(),
-      api.getCategoryBudgets(),
-    ]);
-    state.transactions = txs || [];
-    state.fixedObligations = fixed || [];
-    state.savingsGoals = goals || [];
-    state.goalContributions = contribs || [];
-    state.categoryBudgets = budgets || [];
+    const data = await api.getBootstrap();
+    if (!data?.user) {
+      state.currentUser = null;
+      return false;
+    }
+    lastLoadedMonthKey = getCurrentMonthKey();
+    return applyBootstrapData(data);
   } catch (err) {
     console.error('Error fetching data from backend', err);
+    return false;
   }
+}
+
+function setupMonthlyRolloverWatcher() {
+  if (monthlyRolloverTimer) return;
+  monthlyRolloverTimer = window.setInterval(async () => {
+    if (!state.currentUser) return;
+    const currentMonth = getCurrentMonthKey();
+    if (currentMonth === lastLoadedMonthKey) return;
+    state.selectedMonth = currentMonth;
+    const refreshed = await refreshAllData();
+    if (refreshed) renderApp();
+  }, 60000);
 }
 
 // --- RENDER APP & VIEWS ---
@@ -476,6 +737,36 @@ function renderActiveView() {
 // -------------------------------------------------------------
 // VIEW 1: DASHBOARD (INICIO) & PAST MONTH SUMMARY VIEW
 // -------------------------------------------------------------
+function renderSystemAlertCard(alert) {
+  const alertIcon = alert.icon || (alert.type === 'danger' ? 'alertTriangle' : alert.type === 'warning' ? 'alertCircle' : 'info');
+  const iconTone = alert.type === 'danger'
+    ? 'bg-[#ffe1e7] text-[#f3194d]'
+    : alert.type === 'warning'
+    ? 'bg-[#fff0d7] text-[#b45309]'
+    : 'bg-[#dce8ff] text-[#0058bc]';
+  const messageTone = alert.type === 'danger'
+    ? 'text-[#f3194d]'
+    : alert.type === 'warning'
+    ? 'text-[#b45309]'
+    : 'text-[#0058bc]';
+  const description = alert.description || alert.message || '';
+
+  return `
+    <div class="mockup-card rounded-[28px] bg-[#eef4ff] p-4 shadow-sm border border-[#dce8ff] flex items-center justify-between gap-3">
+      <div class="flex items-center gap-3 min-w-0">
+        <div class="w-12 h-12 rounded-full ${iconTone} flex items-center justify-center shrink-0">${getIconSvg(alertIcon, 'w-5 h-5')}</div>
+        <div class="min-w-0">
+          <p class="text-sm font-semibold text-[#0b1c30]">${alert.title}</p>
+          <p class="text-[11px] font-semibold ${messageTone}">${description}</p>
+        </div>
+      </div>
+      <button data-tab="${alert.actionTab || 'gastos'}" data-focus="${alert.actionFocus || ''}" class="insight-alert-action rounded-full bg-white px-4 py-2 text-sm font-semibold text-[#0058bc] border border-slate-200 shadow-sm cursor-pointer hover:bg-[#eef3ff] whitespace-nowrap">
+        ${alert.actionLabel || 'Ver'}
+      </button>
+    </div>
+  `;
+}
+
 function renderDashboardLegacy() {
   const isPastMonth = state.selectedMonth !== getCurrentMonthKey();
 
@@ -535,7 +826,7 @@ function renderDashboardLegacy() {
         </div>
 
       <!-- Main Available Balance Hero Card (Apple Wallet aesthetic) -->
-      <div class="hero-card-dark">
+      <div id="dashboard-balance-card" class="hero-card-dark">
         <div class="hero-glow-1"></div>
         <div class="hero-glow-2"></div>
 
@@ -553,18 +844,11 @@ function renderDashboardLegacy() {
               <span class="text-[11px] text-slate-400">Libre para gastar hoy</span>
             </div>
 
-            <button
-              id="btn-open-cash-modal"
-              class="px-2.5 py-1 rounded-full bg-white/10 hover:bg-white/20 text-white text-[11px] font-semibold border border-white/15 transition-all active:scale-95 flex items-center gap-1 cursor-pointer"
-            >
-              <span>Ver cálculo</span>
-              ${getIconSvg('chevronRight', 'w-3 h-3')}
-            </button>
           </div>
 
           <!-- Main Amount Display -->
-          <div id="hero-cash-display" class="flex items-baseline gap-2 cursor-pointer group">
-            <span class="text-3xl sm:text-4xl font-extrabold tracking-tight text-[#6cf8bb] tabular-nums group-hover:scale-[1.01] transition-transform">
+          <div class="flex items-baseline gap-2">
+            <span class="text-3xl sm:text-4xl font-extrabold tracking-tight text-[#6cf8bb] tabular-nums">
               ${state.hideBalance ? '••••••••' : formatCOP(metrics.availableCash)}
             </span>
             <span class="text-xs font-bold text-slate-300 uppercase">COP</span>
@@ -628,30 +912,7 @@ function renderDashboardLegacy() {
       </div>
 
       <!-- Financial Alerts & Tips Feed -->
-      ${alerts
-        .map(
-          (alert) => `
-        <div class="rounded-2xl p-3 border flex items-center justify-between ${
-          alert.type === 'danger'
-            ? 'bg-rose-50 border-rose-200 text-rose-900'
-            : alert.type === 'warning'
-            ? 'bg-amber-50 border-amber-200 text-amber-950'
-            : 'bg-emerald-50 border-emerald-200 text-emerald-950'
-        }">
-          <div class="flex items-center gap-2.5 min-w-0">
-            <div class="shrink-0">${getIconSvg(alert.icon, 'w-4 h-4')}</div>
-            <div class="flex flex-col min-w-0">
-              <span class="text-xs font-bold truncate">${alert.title}</span>
-              <span class="text-[11px] opacity-80 truncate">${alert.message}</span>
-            </div>
-          </div>
-          <button data-tab="${alert.actionTab || 'gastos'}" class="insight-alert-action shrink-0 px-2.5 py-1 rounded-full bg-white text-xs font-semibold shadow-xs hover:opacity-90 active:scale-95 transition-all cursor-pointer">
-            ${alert.actionLabel || 'Ver'}
-          </button>
-        </div>
-      `
-        )
-        .join('')}
+      ${alerts.map((alert) => renderSystemAlertCard(alert)).join('')}
 
       <!-- Dynamic Financial Tip Carousel -->
       ${
@@ -805,14 +1066,14 @@ function renderDashboardLegacy() {
               .slice(0, 5)
               .map(
                 (tx) => `
-              <div data-tx-id="${tx.id}" class="dash-tx-row flex items-center justify-between p-3.5 hover:bg-slate-50 transition-colors cursor-pointer">
+              <div data-tx-id="${tx.isGoalContribution ? '' : tx.id}" data-goal-contribution="${tx.isGoalContribution ? 'true' : 'false'}" class="dash-tx-row flex items-center justify-between p-3.5 hover:bg-slate-50 transition-colors ${tx.isGoalContribution ? 'cursor-default' : 'cursor-pointer'}">
                 <div class="flex items-center gap-3 min-w-0">
                   <div class="w-10 h-10 rounded-2xl bg-slate-100 flex items-center justify-center shrink-0">
-                    ${tx.type === 'ingreso' ? `<span class="text-[#006c49]">${getIconSvg('arrowUpRight', 'w-5 h-5')}</span>` : getCategoryIconSvg(tx.category)}
+                    ${getRecordIcon(tx, 'w-5 h-5')}
                   </div>
                   <div class="flex flex-col min-w-0">
                     <p class="text-xs font-semibold text-[#0b1c30] truncate">${tx.description}</p>
-                    <p class="text-[11px] text-slate-500 truncate">${tx.date} • ${tx.accountMethod || tx.category}</p>
+                    <p class="text-[11px] text-slate-500 truncate">${tx.date} • ${tx.category}</p>
                   </div>
                 </div>
                 <div class="flex flex-col items-end shrink-0 pl-2">
@@ -859,11 +1120,6 @@ function renderDashboardLegacy() {
     };
   }
 
-  const btnCashModal = document.getElementById('btn-open-cash-modal');
-  const heroCash = document.getElementById('hero-cash-display');
-  if (btnCashModal) btnCashModal.onclick = openCashDetailModal;
-  if (heroCash) heroCash.onclick = openCashDetailModal;
-
   const pillIngresos = document.getElementById('dash-pill-ingresos');
   const pillGastado = document.getElementById('dash-pill-gastado');
   const pillFijos = document.getElementById('dash-pill-fijos');
@@ -904,7 +1160,7 @@ function renderDashboardLegacy() {
   });
 
   document.querySelectorAll('.insight-alert-action').forEach((btn) => {
-    btn.onclick = () => switchTab(btn.dataset.tab);
+    btn.onclick = () => handleInsightAlertAction(btn);
   });
 
   const tipPrev = document.getElementById('tip-prev-btn');
@@ -942,6 +1198,7 @@ function renderDashboard() {
   const budgetPercent = budgetLimit > 0 ? Math.min(100, Math.round((metrics.monthlyBudgetSpent / budgetLimit) * 100)) : 0;
   const goals = state.savingsGoals.slice(0, 2);
   const recent = metrics.monthTransactions.slice(0, 5);
+  const financialAlerts = getFinancialAlerts({ ...state, ...metrics, alert80Percent: user.alert80Percent !== false });
   const tips = getFinancialTips({ ...state, ...metrics });
   const tipIndex = tips.length ? state.activeTipIndex % tips.length : 0;
   const activeTip = tips[tipIndex] || null;
@@ -966,7 +1223,7 @@ function renderDashboard() {
         </div>
       </div>
 
-      <div class="hero-card-dark mockup-home-hero p-5">
+      <div id="dashboard-balance-card" class="hero-card-dark mockup-home-hero p-5">
         <div class="hero-glow-1"></div><div class="hero-glow-2"></div>
         <div class="relative z-10 flex flex-col gap-4">
           <div class="flex items-center justify-between">
@@ -977,7 +1234,7 @@ function renderDashboard() {
               ${getIconSvg(state.hideBalance ? 'eyeOff' : 'eye', 'w-4 h-4')}
             </button>
           </div>
-          <div id="hero-cash-display" class="flex items-baseline gap-2 cursor-pointer">
+          <div class="flex items-baseline gap-2">
             <span class="text-[38px] leading-none font-extrabold tracking-tight text-white tabular-nums">${state.hideBalance ? '••••••••' : formatCOP(metrics.availableCash)}</span>
             <span class="text-xs font-semibold text-slate-300">COP</span>
           </div>
@@ -990,10 +1247,10 @@ function renderDashboard() {
       </div>
 
       <div class="grid grid-cols-4 gap-2">
-        <button id="btn-quick-gasto" class="mockup-quick-action active flex flex-col items-center justify-center gap-1.5 rounded-2xl bg-[#0058bc] text-white py-3 cursor-pointer">${getIconSvg('plusCircle', 'w-5 h-5')}<span class="text-[11px] font-semibold">Gasto</span></button>
+        <button id="btn-quick-gasto" class="mockup-quick-action flex flex-col items-center justify-center gap-1.5 rounded-2xl bg-white text-rose-600 py-3 border border-slate-100 cursor-pointer">${getIconSvg('plusCircle', 'w-5 h-5')}<span class="text-[11px] font-semibold">Gasto</span></button>
         <button id="btn-quick-ingreso" class="mockup-quick-action flex flex-col items-center justify-center gap-1.5 rounded-2xl bg-white text-[#006c49] py-3 border border-slate-100 cursor-pointer">${getIconSvg('arrowDownCircle', 'w-5 h-5')}<span class="text-[11px] font-semibold">Ingreso</span></button>
         <button id="btn-quick-obligaciones" class="mockup-quick-action flex flex-col items-center justify-center gap-1.5 rounded-2xl bg-white text-[#0058bc] py-3 border border-slate-100 cursor-pointer">${getIconSvg('calendar', 'w-5 h-5')}<span class="text-[11px] font-semibold">Pagar Fijo</span></button>
-        <button id="btn-quick-metas" class="mockup-quick-action flex flex-col items-center justify-center gap-1.5 rounded-2xl bg-white text-rose-600 py-3 border border-slate-100 cursor-pointer">${getIconSvg('flag', 'w-5 h-5')}<span class="text-[11px] font-semibold">Nueva Meta</span></button>
+        <button id="btn-quick-metas" class="mockup-quick-action flex flex-col items-center justify-center gap-1.5 rounded-2xl bg-white text-amber-600 py-3 border border-slate-100 cursor-pointer">${getIconSvg('flag', 'w-5 h-5')}<span class="text-[11px] font-semibold">Nueva Meta</span></button>
       </div>
 
       <div class="mockup-card bg-white rounded-[28px] p-4 shadow-sm border border-slate-100">
@@ -1007,6 +1264,12 @@ function renderDashboard() {
         <div class="mt-4 h-2.5 rounded-full bg-[#edf2f8] overflow-hidden"><div class="h-full rounded-full bg-[#0058bc] transition-all duration-500" style="width:${budgetPercent}%"></div></div>
         <div class="flex items-center justify-between gap-3 mt-3 text-sm"><span class="text-slate-600">Egresos: <strong class="text-[#0b1c30]">${formatCOP(metrics.monthlyBudgetSpent)} COP</strong></span><span class="text-right text-[#006c49]">Restante: <strong>${formatCOP(metrics.monthlyBudgetRemaining)} COP</strong></span></div>
       </div>
+
+      ${financialAlerts.length ? `
+        <div class="flex flex-col gap-2">
+          ${financialAlerts.map((alert) => renderSystemAlertCard(alert)).join('')}
+        </div>
+      ` : ''}
 
       ${pending.length ? `
         <div class="mockup-card rounded-[28px] bg-[#eef4ff] p-4 shadow-sm border border-[#dce8ff] flex items-center justify-between gap-3">
@@ -1023,7 +1286,7 @@ function renderDashboard() {
         <div class="mockup-card bg-white rounded-[28px] p-4 shadow-sm border border-slate-100 flex items-center justify-between gap-3">
           <div class="flex items-center gap-2.5 min-w-0">
             <div class="w-10 h-10 rounded-full bg-[#dce8ff] text-[#0058bc] flex items-center justify-center shrink-0">${getIconSvg('calendarCheck', 'w-5 h-5')}</div>
-            <div class="min-w-0"><p class="text-sm font-semibold text-[#0b1c30]">Gastos fijos del mes</p><p class="text-xs text-slate-500">¡Todo al día este mes!</p></div>
+            <div class="min-w-0"><p class="text-sm font-semibold text-[#0b1c30]">Gastos fijos del mes</p><p class="text-xs text-slate-500">${state.fixedObligations.length ? '¡Todo al día este mes!' : 'No tienes gastos fijos registrados'}</p></div>
           </div>
           <button id="dash-ver-fijos-btn" class="rounded-full bg-white px-4 py-2 text-sm font-semibold text-[#0058bc] border border-slate-200 shadow-sm cursor-pointer hover:bg-[#eef3ff] whitespace-nowrap">Ver obligaciones</button>
         </div>
@@ -1032,7 +1295,7 @@ function renderDashboard() {
       <div>
         <div class="flex items-center justify-between mb-2"><h2 class="text-lg font-bold">Metas Activas <span class="ml-1 rounded-full bg-[#dce8ff] px-2 py-0.5 text-xs">${state.savingsGoals.length}</span></h2><button id="dash-ver-metas-btn" class="text-xs font-semibold text-[#0058bc] cursor-pointer">Explorar ${getIconSvg('chevronRight', 'w-3 h-3 inline')}</button></div>
         <div class="grid grid-cols-2 gap-2.5">
-          ${goals.map((goal) => { const percent = goal.targetAmount > 0 ? Math.min(100, Math.round((goal.currentAmount / goal.targetAmount) * 100)) : 0; return `<div data-goal="${goal.id}" class="dash-goal-card rounded-3xl bg-white p-3.5 shadow-sm border border-slate-100 cursor-pointer"><div class="flex items-center justify-between"><div class="w-9 h-9 rounded-full flex items-center justify-center" style="background-color:${goal.color}25;color:${goal.color}">${getIconSvg(goal.icon === 'laptop' ? 'laptop' : goal.icon === 'plane' ? 'plane' : 'shield', 'w-4 h-4')}</div><span class="text-xs font-bold" style="color:${goal.color}">${percent}%</span></div><p class="mt-2 text-xs font-semibold truncate">${goal.name}</p><p class="text-[11px] text-slate-600 tabular-nums">${formatCompactCOP(goal.currentAmount)} / ${formatCompactCOP(goal.targetAmount)}</p><div class="mt-2 h-1.5 bg-slate-100 rounded-full overflow-hidden"><div class="h-full rounded-full" style="width:${percent}%;background:${goal.color}"></div></div></div>`; }).join('')}
+          ${goals.map((goal) => { const percent = goal.targetAmount > 0 ? Math.min(100, Math.round((goal.currentAmount / goal.targetAmount) * 100)) : 0; const mediaClass = goal.imageUrl ? 'w-9 h-9 flex items-center justify-center overflow-hidden' : 'w-9 h-9 rounded-full flex items-center justify-center'; return `<div data-goal="${goal.id}" class="dash-goal-card rounded-3xl bg-white p-3.5 shadow-sm border border-slate-100 cursor-pointer"><div class="flex items-center justify-between"><div class="${mediaClass}" style="${goal.imageUrl ? '' : `background-color:${goal.color}25;color:${goal.color}`}" >${renderGoalMedia(goal, 'w-full h-full object-contain', 'w-4 h-4')}</div><span class="text-xs font-bold" style="color:${goal.color}">${percent}%</span></div><p class="mt-2 text-xs font-semibold truncate">${goal.name}</p><p class="text-[11px] text-slate-600 tabular-nums">${formatCompactCOP(goal.currentAmount)} / ${formatCompactCOP(goal.targetAmount)}</p><div class="mt-2 h-1.5 bg-slate-100 rounded-full overflow-hidden"><div class="h-full rounded-full" style="width:${percent}%;background:${goal.color}"></div></div></div>`; }).join('')}
         </div>
       </div>
 
@@ -1084,7 +1347,7 @@ function renderDashboard() {
       <div>
         <div class="flex items-center justify-between mb-2"><h2 class="text-lg font-bold">Movimientos Recientes</h2><button id="dash-ver-historial-btn" class="text-xs font-semibold text-[#0058bc] cursor-pointer">Ver historial</button></div>
         <div class="rounded-3xl bg-white px-4 shadow-sm border border-slate-100 divide-y divide-slate-100 overflow-hidden">
-          ${recent.map((tx) => `<div data-tx-id="${tx.id}" class="dash-tx-row flex items-center justify-between py-3 cursor-pointer"><div class="flex items-center gap-3 min-w-0"><div class="w-10 h-10 rounded-full bg-[#dce8ff] flex items-center justify-center shrink-0">${tx.type === 'ingreso' ? getIconSvg('trendingUp', 'w-4 h-4 text-[#006c49]') : getCategoryIconSvg(tx.category, 'w-4 h-4')}</div><div class="min-w-0"><p class="text-xs font-semibold truncate">${tx.description}</p><p class="text-[11px] text-slate-500 truncate">${tx.date} • ${tx.time || tx.accountMethod || tx.category}</p></div></div><div class="text-right shrink-0"><strong class="text-sm tabular-nums ${tx.type === 'ingreso' ? 'text-[#006c49]' : 'text-[#0b1c30]'}">${tx.type === 'ingreso' ? '+' : '-'}${formatCOP(tx.amount)}</strong><span class="block text-[10px] ${tx.type === 'ingreso' ? 'text-[#006c49]' : 'text-slate-500'}">${tx.type === 'ingreso' ? 'Ingreso' : tx.accountMethod || 'COP'}</span></div></div>`).join('')}
+      ${recent.map((tx) => `<div data-tx-id="${tx.isGoalContribution ? '' : tx.id}" data-goal-contribution="${tx.isGoalContribution ? 'true' : 'false'}" class="dash-tx-row flex items-center justify-between py-3 ${tx.isGoalContribution ? 'cursor-default' : 'cursor-pointer'}"><div class="flex items-center gap-3 min-w-0"><div class="w-10 h-10 rounded-2xl ${tx.type === 'ingreso' ? 'bg-emerald-50 text-[#006c49]' : 'bg-slate-100 text-slate-600'} flex items-center justify-center shrink-0">${getRecordIcon(tx, 'w-5 h-5')}</div><div class="min-w-0"><p class="text-xs font-semibold truncate">${tx.description}</p><p class="text-[11px] text-slate-500 truncate">${tx.date} • ${tx.category}</p></div></div><div class="text-right shrink-0"><strong class="text-sm tabular-nums ${tx.type === 'ingreso' ? 'text-[#006c49]' : 'text-[#0b1c30]'}">${tx.type === 'ingreso' ? '+' : '-'}${formatCOP(tx.amount)}</strong><span class="block text-[10px] ${tx.type === 'ingreso' ? 'text-[#006c49]' : 'text-slate-500'}">${tx.type === 'ingreso' ? 'Ingreso' : 'Egreso'}</span></div></div>`).join('')}
         </div>
       </div>
     </div>
@@ -1131,16 +1394,11 @@ function renderDashboard() {
     tipScroller.querySelectorAll('[data-tip-action]').forEach((button) => {
       button.onclick = () => switchTab(button.dataset.tipTab || 'inicio');
     });
-    tipScroller.addEventListener('scroll', () => {
-      const width = Math.max(1, tipScroller.clientWidth);
-      state.activeTipIndex = Math.max(0, Math.min(tips.length - 1, Math.round(tipScroller.scrollLeft / width)));
-    }, { passive: true });
     requestAnimationFrame(() => {
       tipScroller.scrollLeft = tipIndex * tipScroller.clientWidth;
     });
   }
   document.getElementById('btn-toggle-hide-balance')?.addEventListener('click', () => { state.hideBalance = !state.hideBalance; renderDashboard(); });
-  document.getElementById('hero-cash-display')?.addEventListener('click', openCashDetailModal);
   document.getElementById('dash-pill-ingresos')?.addEventListener('click', () => switchTab('gastos'));
   document.getElementById('dash-pill-gastado')?.addEventListener('click', () => switchTab('gastos'));
   document.getElementById('dash-pill-fijos')?.addEventListener('click', () => switchTab('obligaciones'));
@@ -1151,18 +1409,63 @@ function renderDashboard() {
   document.getElementById('dash-ver-fijos-btn')?.addEventListener('click', () => switchTab('obligaciones'));
   document.getElementById('dash-ver-metas-btn')?.addEventListener('click', () => switchTab('metas'));
   document.getElementById('dash-ver-historial-btn')?.addEventListener('click', () => switchTab('gastos'));
+  document.querySelectorAll('.insight-alert-action').forEach((button) => {
+    button.onclick = () => handleInsightAlertAction(button);
+  });
   DOM.tabInicio.querySelectorAll('.dash-goal-card').forEach((card) => { card.onclick = () => switchTab('metas'); });
-  DOM.tabInicio.querySelectorAll('.dash-tx-row').forEach((row) => { row.onclick = () => { const tx = state.transactions.find((item) => item.id === row.dataset.txId); if (tx) openEditTransactionModal(tx); }; });
+  DOM.tabInicio.querySelectorAll('.dash-tx-row').forEach((row) => { row.onclick = () => { if (row.dataset.goalContribution === 'true') return; const tx = state.transactions.find((item) => item.id === row.dataset.txId); if (tx) openEditTransactionModal(tx); }; });
 }
 
 // -------------------------------------------------------------
 // PAST MONTH SUMMARY VIEW (Mes Cerrado / Histórico Consolidado)
 // -------------------------------------------------------------
+function escapeReportHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+function formatReportDate(value) {
+  const raw = String(value ?? '').trim();
+  const datePart = raw.slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(datePart)) return raw || 'Sin fecha';
+
+  const [year, month, day] = datePart.split('-');
+  return `${day}/${month}/${year}`;
+}
+
 function renderPastMonthSummaryView(monthKey) {
+  if (!state.monthlyReports[monthKey]) {
+    DOM.tabInicio.innerHTML = `
+      <div class="flex flex-col items-center justify-center min-h-[50vh] gap-3 px-6 text-center">
+        <div class="w-10 h-10 rounded-full border-4 border-blue-100 border-t-[#0058bc] animate-spin"></div>
+        <p class="text-sm font-semibold text-slate-600">Cargando reporte de ${formatMonthKeyToLabel(monthKey)}…</p>
+      </div>
+    `;
+    api.getMonthlyReport(monthKey)
+      .then((report) => {
+        state.monthlyReports[monthKey] = report;
+        if (state.selectedMonth === monthKey) renderPastMonthSummaryView(monthKey);
+      })
+      .catch((error) => {
+        console.error('Error loading monthly report', error);
+        DOM.tabInicio.innerHTML = `
+          <div class="flex flex-col items-center justify-center min-h-[50vh] gap-3 px-6 text-center">
+            <p class="text-sm font-semibold text-rose-600">No se pudo cargar este reporte.</p>
+            <button id="retry-month-report" type="button" class="px-4 py-2 rounded-full bg-[#0058bc] text-white text-xs font-semibold cursor-pointer">Reintentar</button>
+          </div>
+        `;
+        document.getElementById('retry-month-report')?.addEventListener('click', () => renderPastMonthSummaryView(monthKey));
+      });
+    return;
+  }
   const monthLabel = formatMonthKeyToLabel(monthKey);
   const currentMonthLabel = formatMonthKeyToLabel(getCurrentMonthKey());
 
-  const monthTransactions = state.transactions.filter((t) => t.date && t.date.startsWith(monthKey));
+  const monthTransactions = getMonthlyRecords(monthKey);
 
   const totalIncome = monthTransactions
     .filter((t) => t.type === 'ingreso')
@@ -1175,9 +1478,10 @@ function renderPastMonthSummaryView(monthKey) {
   const netSavings = totalIncome - totalExpenses;
   const savingsRate = totalIncome > 0 ? (netSavings / totalIncome) * 100 : 0;
 
-  const monthlySalary = state.currentUser?.monthlySalary || state.currentUser?.monthlyBudgetLimit || totalIncome || 0;
-  const budgetConsumedPercent = monthlySalary > 0
-    ? Math.min(100, Math.round((totalExpenses / monthlySalary) * 100))
+  const budgetAdjustment = getBudgetAdjustment(monthKey);
+  const monthlyBudgetLimit = budgetAdjustment.monthlyBudgetLimit || totalIncome || 0;
+  const budgetConsumedPercent = monthlyBudgetLimit > 0
+    ? Math.min(100, Math.round((totalExpenses / monthlyBudgetLimit) * 100))
     : 0;
 
   // Category breakdown for expenses
@@ -1221,15 +1525,17 @@ function renderPastMonthSummaryView(monthKey) {
   // Filtered transactions for the table
   const displayedTransactions = monthTransactions.filter((tx) => {
     const matchesType = state.pastMonthFilterType === 'all' || tx.type === state.pastMonthFilterType;
+    const description = String(tx.description || '');
+    const category = String(tx.category || '');
     const matchesSearch =
       !state.pastMonthSearchQuery.trim() ||
-      tx.description.toLowerCase().includes(state.pastMonthSearchQuery.toLowerCase()) ||
-      tx.category.toLowerCase().includes(state.pastMonthSearchQuery.toLowerCase());
+      description.toLowerCase().includes(state.pastMonthSearchQuery.toLowerCase()) ||
+      category.toLowerCase().includes(state.pastMonthSearchQuery.toLowerCase());
     return matchesType && matchesSearch;
   });
 
   DOM.tabInicio.innerHTML = `
-    <div class="flex flex-col w-full px-4 pt-2 pb-24 max-w-xl mx-auto gap-4 animate-in fade-in duration-200">
+    <div id="past-month-report" class="flex flex-col w-full px-4 pt-2 pb-24 max-w-xl mx-auto gap-4 animate-in fade-in duration-200">
       <!-- Return to Current Month Notice Bar -->
       <div class="flex items-center justify-between p-3 rounded-2xl bg-gradient-to-r from-blue-50 to-indigo-50/70 border border-blue-200/70 text-slate-800 shadow-sm">
         <div class="flex items-center gap-2.5 min-w-0">
@@ -1244,7 +1550,7 @@ function renderPastMonthSummaryView(monthKey) {
 
         <button
           id="btn-back-current-month"
-          class="flex items-center gap-1 px-3 py-1.5 rounded-xl bg-white hover:bg-blue-100/50 text-[#0058bc] text-xs font-semibold border border-blue-200 shadow-sm transition-all active:scale-95 shrink-0 cursor-pointer"
+          class="no-print flex items-center gap-1 px-3 py-1.5 rounded-xl bg-white hover:bg-blue-100/50 text-[#0058bc] text-xs font-semibold border border-blue-200 shadow-sm transition-all active:scale-95 shrink-0 cursor-pointer"
         >
           ${getIconSvg('arrowLeft', 'w-3.5 h-3.5')}
           <span>Volver a ${currentMonthLabel}</span>
@@ -1287,7 +1593,7 @@ function renderPastMonthSummaryView(monthKey) {
 
             <div class="p-3 rounded-2xl bg-white/5 border border-white/10 flex flex-col justify-between">
               <div class="flex items-center justify-between text-slate-300">
-                <span class="text-[11px] font-medium">Gastos Totales</span>
+                <span class="text-[11px] font-medium">Egresos Totales</span>
                 <span class="text-rose-400">${getIconSvg('trendingDown', 'w-3.5 h-3.5')}</span>
               </div>
               <div class="mt-2">
@@ -1356,7 +1662,7 @@ function renderPastMonthSummaryView(monthKey) {
           <span class="text-[11px] font-semibold text-[#0058bc]">Mes anterior</span>
         </div>
         <div class="mt-3">
-          <button id="btn-past-print-pdf" class="w-full h-10 rounded-2xl bg-[#eef3ff] text-[#0058bc] text-xs font-semibold flex items-center justify-center gap-1 cursor-pointer hover:bg-[#dce8ff] transition-colors">
+          <button id="btn-past-print-pdf" type="button" aria-label="Descargar reporte mensual en PDF" class="no-print w-full h-10 rounded-2xl bg-[#eef3ff] text-[#0058bc] text-xs font-semibold flex items-center justify-center gap-1 cursor-pointer hover:bg-[#dce8ff] transition-colors">
             ${getIconSvg('printer', 'w-3.5 h-3.5')}
             <span>Descargar PDF</span>
           </button>
@@ -1378,7 +1684,7 @@ function renderPastMonthSummaryView(monthKey) {
                 <div class="flex items-center justify-between text-xs">
                   <div class="flex items-center gap-2">
                     <span class="w-2.5 h-2.5 rounded-full bg-[#0058bc]"></span>
-                    <span class="font-semibold text-slate-800">${item.category}</span>
+                    <span class="font-semibold text-slate-800">${escapeReportHtml(item.category)}</span>
                     <span class="text-[11px] text-slate-400">(${item.count})</span>
                   </div>
                   <div class="flex items-center gap-2">
@@ -1413,7 +1719,7 @@ function renderPastMonthSummaryView(monthKey) {
                 <div class="flex items-center justify-between text-xs">
                   <div class="flex items-center gap-2">
                     <span class="w-2.5 h-2.5 rounded-full bg-[#006c49]"></span>
-                    <span class="font-semibold text-slate-800">${item.category}</span>
+                    <span class="font-semibold text-slate-800">${escapeReportHtml(item.category)}</span>
                     <span class="text-[11px] text-slate-400">(${item.count})</span>
                   </div>
                   <div class="flex items-center gap-2">
@@ -1434,14 +1740,14 @@ function renderPastMonthSummaryView(monthKey) {
       </div>
 
       <!-- Transaction Log for the Past Month with Search & Filter -->
-      <div class="bg-white rounded-3xl p-5 shadow-sm border border-slate-200/60 flex flex-col gap-3">
+      <div class="past-month-report__transactions-card bg-white rounded-3xl p-5 shadow-sm border border-slate-200/60 flex flex-col gap-3">
         <div class="flex items-center justify-between">
           <h3 class="font-bold text-sm text-[#0b1c30]">Movimientos Registrados</h3>
           <span class="text-xs text-slate-400">${displayedTransactions.length} de ${monthTransactions.length}</span>
         </div>
 
         <!-- Filter Segmented Control & Search -->
-        <div class="flex flex-col sm:flex-row gap-2">
+        <div class="past-month-report__filters flex flex-col sm:flex-row gap-2 no-print">
           <div class="bg-slate-100 p-1 rounded-full flex items-center shrink-0">
             <button id="filter-pm-all" class="px-3 py-1 rounded-full text-xs font-semibold cursor-pointer ${state.pastMonthFilterType === 'all' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500'}">Todos</button>
             <button id="filter-pm-gasto" class="px-3 py-1 rounded-full text-xs font-semibold cursor-pointer ${state.pastMonthFilterType === 'gasto' ? 'bg-white text-rose-600 shadow-sm' : 'text-slate-500'}">Gastos</button>
@@ -1460,21 +1766,21 @@ function renderPastMonthSummaryView(monthKey) {
         </div>
 
         <!-- List -->
-        <div class="divide-y divide-slate-100 max-h-80 overflow-y-auto no-scrollbar">
+        <div class="past-month-report__transaction-list divide-y divide-slate-100 max-h-80 overflow-y-auto no-scrollbar">
           ${
             displayedTransactions.length === 0
               ? '<p class="text-xs text-slate-400 py-4 text-center">No hay movimientos que coincidan con la búsqueda.</p>'
               : displayedTransactions
                   .map(
                     (tx) => `
-                <div data-tx-id="${tx.id}" class="py-2.5 flex items-center justify-between text-xs hover:bg-slate-50 transition-colors cursor-pointer rounded-xl px-2">
+                <div data-tx-id="${escapeReportHtml(tx.id)}" class="py-2.5 flex items-center justify-between text-xs hover:bg-slate-50 transition-colors cursor-pointer rounded-xl px-2">
                   <div class="flex items-center gap-2.5 min-w-0">
                     <div class="w-8 h-8 rounded-xl bg-slate-100 flex items-center justify-center shrink-0">
-                      ${tx.type === 'ingreso' ? `<span class="text-[#006c49]">${getIconSvg('arrowUpRight', 'w-4 h-4')}</span>` : getCategoryIconSvg(tx.category, 'w-4 h-4')}
+                      ${getRecordIcon(tx, 'w-4 h-4')}
                     </div>
                     <div class="flex flex-col min-w-0">
-                      <span class="font-semibold text-slate-800 truncate">${tx.description}</span>
-                      <span class="text-[10px] text-slate-400">${tx.date} • ${tx.category}</span>
+                      <span class="font-semibold text-slate-800 truncate">${escapeReportHtml(tx.description || 'Sin descripción')}</span>
+                      <span class="text-[10px] text-slate-400">${formatReportDate(tx.date)} • ${escapeReportHtml(tx.category || 'Sin categoría')}</span>
                     </div>
                   </div>
                   <span class="font-bold tabular-nums ${tx.type === 'ingreso' ? 'text-[#006c49]' : 'text-slate-800'}">
@@ -1497,7 +1803,18 @@ function renderPastMonthSummaryView(monthKey) {
   };
 
   document.getElementById('btn-past-print-pdf').onclick = () => {
+    const previousTitle = document.title;
+    let restored = false;
+    const restoreTitle = () => {
+      if (restored) return;
+      restored = true;
+      document.title = previousTitle;
+    };
+
+    document.title = `MiPlata - Reporte ${monthLabel}`;
+    window.addEventListener('afterprint', restoreTitle, { once: true });
     window.print();
+    window.setTimeout(restoreTitle, 15000);
   };
 
   document.getElementById('filter-pm-all').onclick = () => {
@@ -1687,7 +2004,7 @@ function renderIncomes() {
                   </div>
                   <div class="flex flex-col min-w-0">
                     <p class="text-xs font-semibold text-[#0b1c30] truncate">${tx.description}</p>
-                    <p class="text-[11px] text-slate-500 truncate">${tx.date} • ${tx.category} • ${tx.accountMethod || 'Bancolombia'}</p>
+                    <p class="text-[11px] text-slate-500 truncate">${tx.date} • ${tx.category}</p>
                   </div>
                 </div>
                 <div class="flex items-center gap-2 shrink-0">
@@ -1733,11 +2050,13 @@ function renderIncomes() {
 function renderExpenses() {
   // Expenses and incomes share one monthly history. Fixed recurring expenses
   // remain isolated in the Fijos module.
-  const monthlyTxs = state.transactions.filter((t) => t.date?.startsWith(state.selectedMonth));
+  const monthlyTxs = getMonthlyRecords(state.selectedMonth);
   const expenseTxs = monthlyTxs.filter((t) => t.type === 'gasto');
   const incomeTxs = monthlyTxs.filter((t) => t.type === 'ingreso');
   const totalExpenses = expenseTxs.reduce((sum, t) => sum + t.amount, 0);
   const totalIncome = incomeTxs.reduce((sum, t) => sum + t.amount, 0);
+  const metrics = computeMetrics();
+  const effectiveCategoryBudgets = getEffectiveCategoryBudgets(state.selectedMonth);
 
   // Compute category spent map
   const categorySpentMap = {};
@@ -1757,7 +2076,7 @@ function renderExpenses() {
   const topPercent = totalExpenses > 0 ? Math.round((topAmount / totalExpenses) * 100) : 0;
 
   // Categories exceeding limit
-  const exceededCategories = state.categoryBudgets.filter(
+  const exceededCategories = effectiveCategoryBudgets.filter(
     (b) => b.limit > 0 && (categorySpentMap[b.category] || 0) > b.limit
   );
 
@@ -1784,7 +2103,7 @@ function renderExpenses() {
     groupedTxs[label].push(tx);
   });
 
-  const expenseCategoriesList = ['Alimentación', 'Transporte', 'Compras', 'Servicios', 'Salud', 'Entretenimiento', 'Educación', 'Otros'];
+  const expenseCategoriesList = ['Alimentación', 'Transporte', 'Compras', 'Servicios', 'Salud', 'Entretenimiento', 'Educación', 'Ahorro / Metas', 'Otros'];
   const incomeCategoriesList = ['Nómina', 'Honorarios', 'Negocio', 'Inversión', 'Otros'];
   const categoriesList = [
     'Todos',
@@ -1794,8 +2113,6 @@ function renderExpenses() {
       ? incomeCategoriesList
       : [...new Set([...expenseCategoriesList, ...incomeCategoriesList])]),
   ];
-
-  const metrics = computeMetrics();
 
   DOM.tabGastos.innerHTML = `
     <div class="flex flex-col w-full px-4 pt-2 pb-24 max-w-xl mx-auto gap-4 animate-in fade-in duration-200">
@@ -1838,7 +2155,7 @@ function renderExpenses() {
           <span class="text-xs text-slate-500 font-medium">Resumen del mes</span>
           <div class="grid grid-cols-2 gap-2">
             <div class="rounded-2xl bg-rose-50 px-3 py-2.5">
-              <span class="block text-[11px] font-semibold text-rose-600">Gastos</span>
+              <span class="block text-[11px] font-semibold text-rose-600">Egresos</span>
               <span class="block text-lg font-bold text-[#0b1c30] tabular-nums">-${formatCOP(totalExpenses, true)}</span>
             </div>
             <div class="rounded-2xl bg-emerald-50 px-3 py-2.5">
@@ -1883,12 +2200,12 @@ function renderExpenses() {
         <div class="flex items-center justify-between px-1">
           <div>
             <h2 class="font-semibold text-sm text-[#0b1c30]">Presupuestos por Categoría</h2>
-            <p class="text-[11px] text-slate-500">Límites activos en seguimiento</p>
+             <p class="text-[11px] text-slate-500">${metrics.budgetAdjustment.isAdjusted ? 'Límites ajustados al ingreso del mes' : 'Límites activos en seguimiento'}</p>
           </div>
         </div>
 
         <div class="grid grid-cols-1 gap-2">
-          ${state.categoryBudgets
+          ${effectiveCategoryBudgets
             .slice(0, 4)
             .map((catBudget) => {
               const spent = categorySpentMap[catBudget.category] || 0;
@@ -2030,21 +2347,21 @@ function renderExpenses() {
                     ${items
                       .map(
                         (tx) => `
-                      <div data-tx-id="${tx.id}" class="record-row-item flex items-center justify-between p-3.5 hover:bg-slate-50 transition-colors cursor-pointer">
+                          <div data-tx-id="${tx.isGoalContribution ? '' : tx.id}" data-goal-contribution="${tx.isGoalContribution ? 'true' : 'false'}" class="record-row-item flex items-center justify-between p-3.5 hover:bg-slate-50 transition-colors ${tx.isGoalContribution ? 'cursor-default' : 'cursor-pointer'}">
                         <div class="flex items-center gap-3 min-w-0">
                           <div class="w-10 h-10 rounded-2xl ${tx.type === 'ingreso' ? 'bg-emerald-50 text-[#006c49]' : 'bg-slate-100 text-slate-600'} flex items-center justify-center shrink-0">
-                            ${getCategoryIconSvg(tx.category)}
+                            ${getRecordIcon(tx, 'w-5 h-5')}
                           </div>
                           <div class="flex flex-col min-w-0">
                             <p class="text-xs font-semibold text-[#0b1c30] truncate">${tx.description}</p>
-                            <p class="text-[11px] text-slate-500 truncate">${tx.date} • ${tx.category} • ${tx.accountMethod || 'Efectivo'}</p>
+                            <p class="text-[11px] text-slate-500 truncate">${tx.date} • ${tx.category}</p>
                           </div>
                         </div>
                         <div class="flex items-center gap-2 shrink-0">
                           <span class="text-xs sm:text-sm font-bold ${tx.type === 'ingreso' ? 'text-[#006c49]' : 'text-[#0b1c30]'} tabular-nums">
                             ${tx.type === 'ingreso' ? '+' : '-'}${formatCOP(tx.amount)}
                           </span>
-                          ${getIconSvg('chevronRight', 'w-4 h-4 text-slate-300')}
+                          ${tx.isGoalContribution ? '' : getIconSvg('chevronRight', 'w-4 h-4 text-slate-300')}
                         </div>
                       </div>
                     `
@@ -2085,6 +2402,7 @@ function renderExpenses() {
 
   DOM.tabGastos.querySelectorAll('.record-row-item').forEach((row) => {
     row.onclick = () => {
+      if (row.dataset.goalContribution === 'true') return;
       const tx = state.transactions.find((t) => t.id === row.dataset.txId);
       if (tx) openEditTransactionModal(tx);
     };
@@ -2100,7 +2418,7 @@ function renderObligations() {
   const urgent = sorted.length > 0 ? sorted[0] : null;
 
   const percentSettled = metrics.fixedTotal > 0 ? Math.round((metrics.fixedPaid / metrics.fixedTotal) * 100) : 0;
-  const baseIncome = metrics.totalIncome > 0 ? metrics.totalIncome : metrics.monthlyBudgetLimit;
+  const baseIncome = metrics.effectiveMonthlyIncome || metrics.monthlyBudgetLimit || metrics.totalIncome;
   const fixedRatio = baseIncome > 0 ? Math.round((metrics.fixedTotal / baseIncome) * 100) : 0;
 
   const filteredObligations = state.fixedObligations.filter((o) => {
@@ -2295,9 +2613,6 @@ function renderObligations() {
                 Registra tus compromisos que se repiten cada mes (arriendo, internet, celular, servicios) para controlarlos con tranquilidad.
               </p>
             </div>
-            <button id="btn-add-obligation-empty" class="px-4 py-2 rounded-full bg-[#0058bc] text-white text-xs font-semibold shadow-sm hover:bg-[#004bb0] active:scale-95 transition-all cursor-pointer">
-              Registrar primer gasto fijo
-            </button>
           </div>
         `
             : `
@@ -2348,10 +2663,8 @@ function renderObligations() {
   `;
 
   const btnAdd = document.getElementById('btn-add-obligation');
-  const btnEmptyAdd = document.getElementById('btn-add-obligation-empty');
   const btnBottomAdd = document.getElementById('btn-add-obligation-bottom');
   if (btnAdd) btnAdd.onclick = () => openAddOrEditObligationModal(null);
-  if (btnEmptyAdd) btnEmptyAdd.onclick = () => openAddOrEditObligationModal(null);
   if (btnBottomAdd) btnBottomAdd.onclick = () => openAddOrEditObligationModal(null);
 
   DOM.tabObligaciones.querySelectorAll('.ob-status-tab').forEach((btn) => {
@@ -2404,7 +2717,7 @@ function renderGoalsLegacy() {
       };
     }
     const remaining = activeIncompleteGoal.targetAmount - activeIncompleteGoal.currentAmount;
-    const salary = state.currentUser?.monthlySalary || state.currentUser?.monthlyBudgetLimit || metrics.totalIncome || 0;
+    const salary = metrics.effectiveMonthlyIncome || state.currentUser?.monthlySalary || state.currentUser?.monthlyBudgetLimit || metrics.totalIncome || 0;
     const savingsRulePercent = (state.currentUser?.budgetRule?.savings || 20) / 100;
     const realisticMonthlySavings = salary > 0 ? Math.round(salary * savingsRulePercent) : Math.max(50000, Math.round(metrics.availableCash * 0.2));
     const realisticQuincenalCap = Math.max(50000, Math.round(realisticMonthlySavings / 2 / 10000) * 10000);
@@ -2518,7 +2831,7 @@ function renderGoalsLegacy() {
                 <div class="rounded-3xl bg-white p-4 shadow-sm border border-slate-200/60 flex flex-col justify-between gap-3 relative overflow-hidden">
                   ${
                     goal.imageUrl
-                      ? `<div class="h-24 -mx-4 -mt-4 mb-1 overflow-hidden relative"><img src="${goal.imageUrl}" alt="${goal.name}" class="w-full h-full object-cover" /></div>`
+                      ? `<div class="h-24 -mx-4 -mt-4 mb-1 overflow-hidden relative"><img src="${goal.imageUrl}" alt="${goal.name}" loading="lazy" decoding="async" class="w-full h-full object-cover" /></div>`
                       : ''
                   }
 
@@ -2626,7 +2939,7 @@ function renderGoalMedia(goal, imageClass = 'w-full h-full object-cover', fallba
   }
 
   const safeUrl = imageUrl.replace(/"/g, '&quot;');
-  return `<img src="${safeUrl}" alt="${String(goal?.name || 'Imagen de meta').replace(/"/g, '&quot;')}" class="${imageClass}" onerror="this.classList.add('hidden'); this.nextElementSibling.classList.remove('hidden');" /><span class="hidden w-full h-full items-center justify-center">${fallbackIcon}</span>`;
+  return `<img src="${safeUrl}" alt="${String(goal?.name || 'Imagen de meta').replace(/"/g, '&quot;')}" loading="lazy" decoding="async" class="${imageClass}" onerror="this.classList.add('hidden'); this.nextElementSibling.classList.remove('hidden');" /><span class="hidden w-full h-full items-center justify-center">${fallbackIcon}</span>`;
 }
 
 function renderGoals() {
@@ -2689,7 +3002,8 @@ function renderProfile() {
   const user = state.currentUser;
   if (!user) return;
 
-  const salary = user.monthlyBudgetLimit || user.monthlySalary || 5800000;
+  const budgetAdjustment = getBudgetAdjustment(getCurrentMonthKey(), user);
+  const salary = budgetAdjustment.monthlyBudgetLimit || user.monthlyBudgetLimit || user.monthlySalary || 5800000;
   const needs = Math.round(salary * ((user.budgetRule?.needs || 50) / 100));
   const wants = Math.round(salary * ((user.budgetRule?.wants || 30) / 100));
   const savings = Math.round(salary * ((user.budgetRule?.savings || 20) / 100));
@@ -2766,7 +3080,7 @@ function renderProfile() {
               <span class="text-xs font-bold text-slate-500">COP</span>
             </div>
             <p class="text-[11px] text-slate-600 mt-0.5">
-               Distribuido bajo la regla inteligente MiPlata 50/30/20:
+               ${budgetAdjustment.isAdjusted ? `Ajustado al ingreso registrado de ${formatCOP(budgetAdjustment.effectiveIncome)} bajo la regla 50/30/20:` : 'Distribuido bajo la regla inteligente MiPlata 50/30/20:'}
             </p>
           </div>
 
@@ -2858,43 +3172,51 @@ function renderProfile() {
       </div>
 
       <!-- Preferencias del Sistema -->
-      <div class="flex flex-col gap-2">
-        <span class="text-[11px] font-bold text-slate-500 uppercase tracking-wider px-1">Preferencias del Sistema</span>
-        <div class="bg-white rounded-3xl p-4 shadow-sm border border-slate-200/60 flex flex-col divide-y divide-slate-100">
-          <div class="flex items-center justify-between py-2.5">
-            <div class="flex items-center gap-2.5">
-              <div class="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-slate-600">
+      <div class="rounded-3xl bg-white p-5 shadow-sm border border-slate-200/60 flex flex-col gap-3.5">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <div class="w-7 h-7 rounded-full bg-blue-100 flex items-center justify-center text-[#0058bc]">
+              ${getIconSvg('sliders', 'w-4 h-4')}
+            </div>
+            <span class="text-[11px] font-bold text-slate-600 uppercase tracking-wider">Preferencias del Sistema</span>
+          </div>
+        </div>
+
+        <div class="flex flex-col gap-2 pt-1">
+          <div class="flex items-center justify-between gap-3 p-3 rounded-2xl bg-slate-50 border border-slate-200/60">
+            <div class="flex items-center gap-2.5 min-w-0">
+              <div class="w-8 h-8 rounded-full bg-white flex items-center justify-center text-slate-600 shrink-0">
                 ${getIconSvg('coins', 'w-4 h-4')}
               </div>
-              <div>
+              <div class="min-w-0">
                 <p class="text-xs font-semibold text-slate-800">Moneda Principal</p>
                 <p class="text-[11px] text-slate-500">Formato estándar de visualización</p>
               </div>
             </div>
-            <span class="text-xs font-bold text-slate-800 bg-slate-100 px-2.5 py-1 rounded-full">COP ($)</span>
+            <span class="text-xs font-bold text-slate-800 bg-white border border-slate-200 px-2.5 py-1 rounded-full shrink-0">COP ($)</span>
           </div>
 
-          <div class="flex items-center justify-between py-2.5">
-            <div class="flex items-center gap-2.5">
-              <div class="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-[#0058bc]">${getIconSvg('calendar', 'w-4 h-4')}</div>
-              <div><p class="text-xs font-semibold text-slate-800">Reinicio mensual</p><p class="text-[11px] text-slate-500">Corte y balance periódico</p></div>
+          <div class="flex items-center justify-between gap-3 p-3 rounded-2xl bg-slate-50 border border-slate-200/60">
+            <div class="flex items-center gap-2.5 min-w-0">
+              <div class="w-8 h-8 rounded-full bg-white flex items-center justify-center text-[#0058bc] shrink-0">${getIconSvg('calendar', 'w-4 h-4')}</div>
+              <div class="min-w-0"><p class="text-xs font-semibold text-slate-800">Reinicio mensual</p><p class="text-[11px] text-slate-500">Corte y balance periódico</p></div>
             </div>
-            <span class="text-xs font-semibold text-slate-700">Día ${user.resetDay || 1} de cada mes</span>
+            <span class="text-xs font-semibold text-slate-700 text-right shrink-0">Día ${user.resetDay || 1} de cada mes</span>
           </div>
 
-          <div class="flex items-center justify-between py-2.5">
-            <div class="flex items-center gap-2.5">
-              <div class="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-slate-600">
+          <div class="flex items-center justify-between gap-3 p-3 rounded-2xl bg-slate-50 border border-slate-200/60">
+            <div class="flex items-center gap-2.5 min-w-0">
+              <div class="w-8 h-8 rounded-full bg-white flex items-center justify-center text-slate-600 shrink-0">
                 ${getIconSvg('sparkles', 'w-4 h-4')}
               </div>
-              <div>
+              <div class="min-w-0">
                 <p class="text-xs font-semibold text-slate-800">Categorización inteligente</p>
                 <p class="text-[11px] text-slate-500">Sugerir según conceptos habituales</p>
               </div>
             </div>
             <button
               id="toggle-smart-cat"
-              class="w-11 h-6 rounded-full transition-colors duration-200 p-0.5 relative cursor-pointer ${
+              class="w-11 h-6 rounded-full transition-colors duration-200 p-0.5 relative cursor-pointer shrink-0 ${
                 user.smartCategorization ? 'bg-[#0058bc]' : 'bg-slate-300'
               }"
             >
@@ -2918,9 +3240,6 @@ function renderProfile() {
           <span>Eliminar cuenta y datos locales</span>
         </button>
 
-        <button id="btn-reset-data" class="text-center text-[11px] text-slate-400 hover:text-slate-600 transition-colors py-1 underline cursor-pointer">
-          Restaurar datos demo originales
-        </button>
       </div>
 
       <!-- App Branding Footer -->
@@ -2956,15 +3275,6 @@ function renderProfile() {
     state.currentUser = res.user;
     renderProfile();
     showToast('Preferencia actualizada');
-  };
-
-  document.getElementById('btn-reset-data').onclick = async () => {
-    if (confirm('¿Restablecer todos los datos al estado de demostración?')) {
-      await api.resetUserData();
-      await refreshAllData();
-      renderProfile();
-      showToast('Datos de prueba restablecidos');
-    }
   };
 
   document.getElementById('btn-logout').onclick = async () => {
@@ -3007,8 +3317,205 @@ function renderProfile() {
 // -------------------------------------------------------------
 let isRegisterMode = true;
 let registerAvatarUrl = '';
+let authRecoveryMode = null;
+let recoveryAccessToken = '';
+let recoveryNotice = '';
+let recoveryError = '';
+
+function recoveryRedirectUrl() {
+  const url = new URL(window.location.origin);
+  url.searchParams.set('password_reset', '1');
+  return url.toString();
+}
+
+function readRecoveryAccessToken() {
+  const hash = window.location.hash.startsWith('#') ? window.location.hash.slice(1) : window.location.hash;
+  if (!hash) return '';
+  const params = new URLSearchParams(hash);
+  const type = params.get('type');
+  return type === 'recovery' ? params.get('access_token') || '' : '';
+}
+
+function readRecoveryError() {
+  const hash = window.location.hash.startsWith('#') ? window.location.hash.slice(1) : window.location.hash;
+  if (!hash) return '';
+  const params = new URLSearchParams(hash);
+  const errorCode = params.get('error_code') || '';
+  const description = (params.get('error_description') || '').toLowerCase();
+  if (!params.get('error') && !errorCode) return '';
+  if (errorCode === 'otp_expired' || description.includes('expired')) {
+    return 'El enlace de recuperación expiró o ya fue utilizado. Solicita uno nuevo.';
+  }
+  return 'No se pudo validar el enlace de recuperación. Solicita uno nuevo.';
+}
+
+function prepareRecoveryFromUrl() {
+  const accessToken = readRecoveryAccessToken();
+  if (accessToken) {
+    recoveryAccessToken = accessToken;
+    authRecoveryMode = 'update';
+    return true;
+  }
+  const urlError = readRecoveryError();
+  if (urlError) {
+    recoveryError = urlError;
+    authRecoveryMode = 'request';
+    const cleanUrl = new URL(window.location.href);
+    cleanUrl.hash = '';
+    window.history.replaceState({}, document.title, `${cleanUrl.pathname}${cleanUrl.search}`);
+    return true;
+  }
+  if (new URLSearchParams(window.location.search).get('password_reset') === '1') {
+    authRecoveryMode = 'request';
+    return true;
+  }
+  return false;
+}
+
+function renderPasswordRecovery() {
+  const isUpdate = authRecoveryMode === 'update';
+  const isRequest = authRecoveryMode === 'request';
+  const title = isUpdate ? 'Crear nueva contraseña' : 'Recuperar contraseña';
+  const description = isUpdate
+    ? 'Escribe una nueva contraseña para volver a entrar a tu cuenta.'
+    : 'Te enviaremos un enlace seguro al correo asociado a tu cuenta.';
+
+  DOM.viewAuth.innerHTML = `
+    <div class="max-w-md w-full flex flex-col gap-5 animate-in fade-in duration-300">
+      <div class="flex flex-col items-center text-center gap-2">
+        <div class="px-5 py-2.5 rounded-3xl bg-white border border-[#dce8ff] shadow-[0_8px_24px_rgba(0,88,188,0.12)]">
+          ${getImagotipoHorizontal('h-11 sm:h-12 w-auto object-contain drop-shadow-sm')}
+        </div>
+        <p class="text-sm font-semibold text-[#0058bc] tracking-wide mt-1">Tu dinero claro, tus metas cerca.</p>
+      </div>
+
+      <div class="bg-white rounded-3xl p-6 shadow-sm border border-slate-200/60 flex flex-col gap-4">
+        <div>
+          <h2 class="text-lg font-extrabold text-[#0b1c30]">${title}</h2>
+          <p class="text-xs text-slate-500 mt-1 leading-relaxed">${description}</p>
+        </div>
+
+        ${isRequest ? `
+          <form id="form-password-reset-request" class="flex flex-col gap-3.5">
+            <div>
+              <label class="text-xs font-bold text-[#0b1c30]">Correo electrónico</label>
+              <input id="reset-email" type="email" autocomplete="email" required placeholder="camila.restrepo@email.com" class="w-full mt-1 px-3.5 py-2.5 rounded-2xl border border-slate-200 bg-slate-50 text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#0058bc]" />
+            </div>
+            <button id="reset-request-submit" type="submit" class="w-full py-3 rounded-2xl bg-[#0058bc] text-white font-bold text-xs shadow-md shadow-[#0058bc]/25 hover:bg-[#004bb0] active:scale-95 transition-all cursor-pointer">Enviar enlace de recuperación</button>
+          </form>
+          ${recoveryError ? `<div class="rounded-2xl bg-rose-50 border border-rose-200 px-3 py-2.5 text-xs font-semibold text-rose-700">${recoveryError}</div>` : ''}
+          ${recoveryNotice ? `<div class="rounded-2xl bg-emerald-50 border border-emerald-200 px-3 py-2.5 text-xs font-semibold text-[#006c49]">${recoveryNotice}</div>` : ''}
+        ` : `
+          <form id="form-password-reset-update" class="flex flex-col gap-3.5">
+            <div>
+              <label class="text-xs font-bold text-[#0b1c30]">Nueva contraseña</label>
+              <div class="relative mt-1">
+                <input id="reset-new-password" type="password" autocomplete="new-password" minlength="6" required placeholder="Mínimo 6 caracteres" class="w-full px-3.5 pr-10 py-2.5 rounded-2xl border border-slate-200 bg-slate-50 text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#0058bc]" />
+                <button id="toggle-reset-password" type="button" aria-label="Mostrar contraseña" title="Mostrar contraseña" class="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-[#0058bc] cursor-pointer transition-colors">${getIconSvg('eye', 'w-4 h-4')}</button>
+              </div>
+            </div>
+            <div>
+              <label class="text-xs font-bold text-[#0b1c30]">Confirmar contraseña</label>
+              <div class="relative mt-1">
+                <input id="reset-confirm-password" type="password" autocomplete="new-password" minlength="6" required placeholder="Repite la contraseña" class="w-full px-3.5 pr-10 py-2.5 rounded-2xl border border-slate-200 bg-slate-50 text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#0058bc]" />
+                <button id="toggle-reset-confirm-password" type="button" aria-label="Mostrar confirmación de contraseña" title="Mostrar confirmación de contraseña" class="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-[#0058bc] cursor-pointer transition-colors">${getIconSvg('eye', 'w-4 h-4')}</button>
+              </div>
+            </div>
+            <button id="reset-update-submit" type="submit" class="w-full py-3 rounded-2xl bg-[#0058bc] text-white font-bold text-xs shadow-md shadow-[#0058bc]/25 hover:bg-[#004bb0] active:scale-95 transition-all cursor-pointer">Guardar nueva contraseña</button>
+          </form>
+        `}
+
+        <button id="back-to-login" type="button" class="text-xs font-semibold text-[#0058bc] hover:underline cursor-pointer">Volver a iniciar sesión</button>
+      </div>
+      <div class="flex items-center justify-center gap-1.5 pt-1 pb-2 text-[11px] text-slate-400 font-medium"><span>By</span>${getFixelarImagotipo('h-5 w-auto opacity-80')}</div>
+    </div>
+  `;
+
+  document.getElementById('back-to-login').onclick = () => {
+    authRecoveryMode = null;
+    recoveryAccessToken = '';
+    recoveryNotice = '';
+    recoveryError = '';
+    isRegisterMode = false;
+    renderAuth();
+  };
+
+  if (isRequest) {
+    const form = document.getElementById('form-password-reset-request');
+    form.onsubmit = async (event) => {
+      event.preventDefault();
+      const emailInput = document.getElementById('reset-email');
+      const email = emailInput.value.trim().toLowerCase();
+      if (!emailInput.checkValidity()) {
+        showToast('Ingresa un correo electrónico válido', 'error');
+        emailInput.focus();
+        return;
+      }
+      try {
+        recoveryError = '';
+        const result = await api.requestPasswordReset(email, recoveryRedirectUrl());
+        recoveryNotice = result.message;
+        renderPasswordRecovery();
+      } catch (error) {
+        showToast(error.message, 'error');
+      }
+    };
+    return;
+  }
+
+  const newPassword = document.getElementById('reset-new-password');
+  const confirmPassword = document.getElementById('reset-confirm-password');
+  const togglePassword = document.getElementById('toggle-reset-password');
+  const toggleConfirmPassword = document.getElementById('toggle-reset-confirm-password');
+  const bindPasswordToggle = (input, button, label) => {
+    button.onclick = () => {
+      const showing = input.type === 'password';
+      input.type = showing ? 'text' : 'password';
+      const action = showing ? 'Ocultar' : 'Mostrar';
+      button.innerHTML = getIconSvg(showing ? 'eyeOff' : 'eye', 'w-4 h-4');
+      button.setAttribute('aria-label', `${action} ${label}`);
+      button.setAttribute('title', `${action} ${label}`);
+    };
+  };
+  bindPasswordToggle(newPassword, togglePassword, 'contraseña');
+  bindPasswordToggle(confirmPassword, toggleConfirmPassword, 'confirmación de contraseña');
+  document.getElementById('form-password-reset-update').onsubmit = async (event) => {
+    event.preventDefault();
+    const password = newPassword.value;
+    if (password.length < 6) {
+      showToast('La contraseña debe tener al menos 6 caracteres', 'error');
+      newPassword.focus();
+      return;
+    }
+    if (password !== confirmPassword.value) {
+      showToast('Las contraseñas no coinciden', 'error');
+      confirmPassword.focus();
+      return;
+    }
+    try {
+      await api.confirmPasswordReset(recoveryAccessToken, password);
+      const cleanUrl = new URL(window.location.href);
+      cleanUrl.searchParams.delete('password_reset');
+      cleanUrl.hash = '';
+      window.history.replaceState({}, document.title, `${cleanUrl.pathname}${cleanUrl.search}`);
+      authRecoveryMode = null;
+      recoveryAccessToken = '';
+      recoveryNotice = '';
+      recoveryError = '';
+      isRegisterMode = false;
+      renderAuth();
+      showToast('Contraseña actualizada. Ya puedes iniciar sesión');
+    } catch (error) {
+      showToast(error.message, 'error');
+    }
+  };
+}
 
 function renderAuth() {
+  if (authRecoveryMode) {
+    renderPasswordRecovery();
+    return;
+  }
   DOM.viewAuth.innerHTML = `
     <div class="max-w-md w-full flex flex-col gap-5 animate-in fade-in duration-300">
       <!-- Brand Header with Official Logo & Imagotipo -->
@@ -3048,8 +3555,7 @@ function renderAuth() {
           </button>
         </div>
 
-        ${
-          isRegisterMode
+        ${isRegisterMode
             ? `
           <!-- Registration Form -->
           <form id="form-register" class="flex flex-col gap-3.5">
@@ -3076,12 +3582,37 @@ function renderAuth() {
 
             <div>
               <label class="text-xs font-bold text-[#0b1c30]">Correo electrónico</label>
-              <input id="reg-email" type="email" placeholder="ej. camila@email.com" class="w-full mt-1 px-3.5 py-2.5 rounded-2xl border border-slate-200 bg-slate-50 text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#0058bc]" />
+              <input id="reg-email" type="email" autocomplete="email" required placeholder="ej. camila@email.com" class="w-full mt-1 px-3.5 py-2.5 rounded-2xl border border-slate-200 bg-slate-50 text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#0058bc]" />
             </div>
 
             <div>
-              <label class="text-xs font-bold text-[#0b1c30]">Salario o ingreso mensual estimado (COP)</label>
-              <input id="reg-salary" type="text" placeholder="ej. 5.800.000" class="w-full mt-1 px-3.5 py-2.5 rounded-2xl border border-slate-200 bg-slate-50 text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#0058bc] tabular-nums" />
+              <label class="text-xs font-bold text-[#0b1c30]">Contraseña</label>
+              <div class="relative mt-1">
+                <input id="reg-pass" type="password" autocomplete="new-password" required minlength="6" placeholder="Mínimo 6 caracteres" class="w-full px-3.5 pr-10 py-2.5 rounded-2xl border border-slate-200 bg-slate-50 text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#0058bc]" />
+                <button id="toggle-reg-pass" type="button" aria-label="Mostrar contraseña" title="Mostrar contraseña" class="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-[#0058bc] cursor-pointer transition-colors">
+                  ${getIconSvg('eye', 'w-4 h-4')}
+                </button>
+              </div>
+            </div>
+
+            <div>
+              <div class="flex items-center justify-between gap-3">
+                <label class="text-xs font-bold text-[#0b1c30]">Salario o ingreso mensual estimado (COP)</label>
+                <span class="text-[10px] font-semibold text-slate-400">Opcional</span>
+              </div>
+              <input id="reg-salary" type="text" inputmode="decimal" autocomplete="off" placeholder="ej. 5.800.000" class="w-full mt-1 px-3.5 py-2.5 rounded-2xl border border-slate-200 bg-slate-50 text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#0058bc] tabular-nums" />
+              <div class="mt-2">
+                <p class="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Valores frecuentes</p>
+                <div class="flex flex-wrap gap-2 mt-2" role="group" aria-label="Valores de ingreso frecuentes">
+                  <button type="button" data-salary-value="1300000" aria-pressed="false" class="reg-salary-option flex-1 min-w-[78px] px-2 py-1.5 rounded-lg border border-slate-200 bg-white text-[10px] font-bold text-slate-600 hover:border-[#0058bc]/50 hover:bg-[#f5f9ff] transition-colors cursor-pointer">$1.300.000</button>
+                  <button type="button" data-salary-value="2000000" aria-pressed="false" class="reg-salary-option flex-1 min-w-[78px] px-2 py-1.5 rounded-lg border border-slate-200 bg-white text-[10px] font-bold text-slate-600 hover:border-[#0058bc]/50 hover:bg-[#f5f9ff] transition-colors cursor-pointer">$2.000.000</button>
+                  <button type="button" data-salary-value="3000000" aria-pressed="false" class="reg-salary-option flex-1 min-w-[78px] px-2 py-1.5 rounded-lg border border-slate-200 bg-white text-[10px] font-bold text-slate-600 hover:border-[#0058bc]/50 hover:bg-[#f5f9ff] transition-colors cursor-pointer">$3.000.000</button>
+                  <button type="button" data-salary-value="5000000" aria-pressed="false" class="reg-salary-option flex-1 min-w-[78px] px-2 py-1.5 rounded-lg border border-slate-200 bg-white text-[10px] font-bold text-slate-600 hover:border-[#0058bc]/50 hover:bg-[#f5f9ff] transition-colors cursor-pointer">$5.000.000</button>
+                  <button type="button" data-salary-value="8000000" aria-pressed="false" class="reg-salary-option flex-1 min-w-[78px] px-2 py-1.5 rounded-lg border border-slate-200 bg-white text-[10px] font-bold text-slate-600 hover:border-[#0058bc]/50 hover:bg-[#f5f9ff] transition-colors cursor-pointer">$8.000.000</button>
+                  <button type="button" data-salary-value="10000000" aria-pressed="false" class="reg-salary-option flex-1 min-w-[78px] px-2 py-1.5 rounded-lg border border-slate-200 bg-white text-[10px] font-bold text-slate-600 hover:border-[#0058bc]/50 hover:bg-[#f5f9ff] transition-colors cursor-pointer">$10.000.000</button>
+                </div>
+              </div>
+              <p class="mt-1 text-[10px] text-slate-400">También puedes escribir un valor diferente.</p>
             </div>
 
             <button type="submit" class="w-full py-3 mt-2 rounded-2xl bg-[#0058bc] text-white font-bold text-xs shadow-md shadow-[#0058bc]/25 hover:bg-[#004bb0] active:scale-95 transition-all cursor-pointer">
@@ -3099,16 +3630,23 @@ function renderAuth() {
 
             <div>
               <label class="text-xs font-bold text-[#0b1c30]">Contraseña</label>
-              <input id="login-pass" type="password" placeholder="demo" class="w-full mt-1 px-3.5 py-2.5 rounded-2xl border border-slate-200 bg-slate-50 text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#0058bc]" />
+              <div class="relative mt-1">
+                <input id="login-pass" type="password" autocomplete="current-password" placeholder="demo" class="w-full px-3.5 pr-10 py-2.5 rounded-2xl border border-slate-200 bg-slate-50 text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#0058bc]" />
+                <button id="toggle-login-pass" type="button" aria-label="Mostrar contraseña" title="Mostrar contraseña" class="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-[#0058bc] cursor-pointer transition-colors">
+                  ${getIconSvg('eye', 'w-4 h-4')}
+                </button>
+              </div>
             </div>
 
             <button type="submit" class="w-full py-3 mt-2 rounded-2xl bg-[#0058bc] text-white font-bold text-xs shadow-md shadow-[#0058bc]/25 hover:bg-[#004bb0] active:scale-95 transition-all cursor-pointer">
               Iniciar Sesión
             </button>
+            <button id="auth-forgot-password" type="button" class="text-xs font-semibold text-[#0058bc] hover:underline cursor-pointer">¿Olvidaste tu contraseña?</button>
           </form>
         `
         }
 
+        ${`
         <!-- Demo Account Instant Shortcut -->
         <div class="pt-3 border-t border-slate-100 flex flex-col items-center gap-2">
           <span class="text-[11px] text-slate-400 font-medium">¿Quieres probar la app de inmediato?</span>
@@ -3121,6 +3659,7 @@ function renderAuth() {
             <span>Entrar con cuenta de demostración</span>
           </button>
         </div>
+        `}
       </div>
       <div class="flex items-center justify-center gap-1.5 pt-1 pb-2 text-[11px] text-slate-400 font-medium">
         <span>By</span>
@@ -3144,8 +3683,17 @@ function renderAuth() {
     btnDemo.onclick = async () => {
       try {
         const res = await api.loginDemo();
-        state.currentUser = res.user;
-        await refreshAllData();
+        const hasBootstrap = applyBootstrapData(res.bootstrap);
+        if (hasBootstrap) {
+          try {
+            localStorage.setItem('miplata_bootstrap_cache', JSON.stringify(res.bootstrap));
+          } catch (_error) {
+            // Keep the authenticated session working when browser storage is full.
+          }
+        } else {
+          state.currentUser = res.user;
+          await refreshAllData();
+        }
         renderApp();
         showToast(res.message);
       } catch (err) {
@@ -3157,19 +3705,59 @@ function renderAuth() {
   const formReg = document.getElementById('form-register');
   if (formReg) {
     const regName = document.getElementById('reg-name');
+    const regEmail = document.getElementById('reg-email');
+    const regPass = document.getElementById('reg-pass');
+    const toggleRegPass = document.getElementById('toggle-reg-pass');
     const regSalary = document.getElementById('reg-salary');
+    const regSalaryOptions = Array.from(formReg.querySelectorAll('[data-salary-value]'));
     const avatarInput = document.getElementById('input-avatar-file');
     const previewName = document.getElementById('auth-preview-name');
     const avatarPreview = document.getElementById('auth-avatar-preview');
+
+    // Use the app's Spanish feedback instead of inconsistent browser-native
+    // validation messages on different phones and browsers.
+    formReg.noValidate = true;
+
+    toggleRegPass.onclick = () => {
+      const showing = regPass.type === 'password';
+      regPass.type = showing ? 'text' : 'password';
+      toggleRegPass.innerHTML = getIconSvg(showing ? 'eyeOff' : 'eye', 'w-4 h-4');
+      toggleRegPass.setAttribute('aria-label', showing ? 'Ocultar contraseña' : 'Mostrar contraseña');
+      toggleRegPass.setAttribute('title', showing ? 'Ocultar contraseña' : 'Mostrar contraseña');
+    };
 
     regName.oninput = () => {
       previewName.textContent = regName.value.trim() || 'Tu perfil';
       avatarPreview.innerHTML = renderAvatarHtml(regName.value || 'Tu', registerAvatarUrl, 'lg');
     };
 
+    const syncSalaryOptionState = () => {
+      const currentValue = parseInt(regSalary.value.replace(/\D/g, ''), 10) || 0;
+      regSalaryOptions.forEach((option) => {
+        const selected = Number(option.dataset.salaryValue) === currentValue;
+        option.setAttribute('aria-pressed', String(selected));
+        option.classList.toggle('bg-[#0058bc]', selected);
+        option.classList.toggle('border-[#0058bc]', selected);
+        option.classList.toggle('text-white', selected);
+        option.classList.toggle('shadow-sm', selected);
+        option.classList.toggle('bg-white', !selected);
+        option.classList.toggle('border-slate-200', !selected);
+        option.classList.toggle('text-slate-600', !selected);
+      });
+    };
+
+    regSalaryOptions.forEach((option) => {
+      option.onclick = () => {
+        const selectedSalary = Number(option.dataset.salaryValue);
+        regSalary.value = selectedSalary.toLocaleString('es-CO');
+        syncSalaryOptionState();
+      };
+    });
+
     regSalary.oninput = () => {
       const num = parseInt(regSalary.value.replace(/\D/g, ''), 10);
       regSalary.value = isNaN(num) ? '' : num.toLocaleString('es-CO');
+      syncSalaryOptionState();
     };
 
     avatarInput.onchange = (e) => {
@@ -3186,11 +3774,38 @@ function renderAuth() {
     formReg.onsubmit = async (e) => {
       e.preventDefault();
       const name = regName.value.trim();
-      const email = document.getElementById('reg-email').value.trim() || `${name.toLowerCase().replace(/\s+/g, '.')}@miplata.local`;
+      const email = regEmail.value.trim().toLowerCase();
+      const password = regPass.value;
       const salary = parseInt(regSalary.value.replace(/\D/g, ''), 10) || 0;
 
+      if (!name) {
+        showToast('Escribe tu nombre completo para continuar', 'error');
+        regName.focus();
+        return;
+      }
+      if (!email) {
+        showToast('Escribe un correo electrónico para crear la cuenta', 'error');
+        regEmail.focus();
+        return;
+      }
+      if (!regEmail.checkValidity()) {
+        showToast('Ingresa un correo electrónico válido', 'error');
+        regEmail.focus();
+        return;
+      }
+      if (!password) {
+        showToast('Escribe una contraseña para crear la cuenta', 'error');
+        regPass.focus();
+        return;
+      }
+      if (password.length < 6) {
+        showToast('La contraseña debe tener al menos 6 caracteres', 'error');
+        regPass.focus();
+        return;
+      }
+
       try {
-        const res = await api.register(name, email, '123456', salary, registerAvatarUrl);
+        const res = await api.register(name, email, password, salary, registerAvatarUrl);
         state.currentUser = res.user;
         await refreshAllData();
         renderApp();
@@ -3203,10 +3818,30 @@ function renderAuth() {
 
   const formLog = document.getElementById('form-login');
   if (formLog) {
+    const loginPass = document.getElementById('login-pass');
+    const toggleLoginPass = document.getElementById('toggle-login-pass');
+    const forgotPassword = document.getElementById('auth-forgot-password');
+
+    if (forgotPassword) {
+      forgotPassword.onclick = () => {
+        authRecoveryMode = 'request';
+        recoveryNotice = '';
+        renderAuth();
+      };
+    }
+
+    toggleLoginPass.onclick = () => {
+      const showing = loginPass.type === 'password';
+      loginPass.type = showing ? 'text' : 'password';
+      toggleLoginPass.innerHTML = getIconSvg(showing ? 'eyeOff' : 'eye', 'w-4 h-4');
+      toggleLoginPass.setAttribute('aria-label', showing ? 'Ocultar contraseña' : 'Mostrar contraseña');
+      toggleLoginPass.setAttribute('title', showing ? 'Ocultar contraseña' : 'Mostrar contraseña');
+    };
+
     formLog.onsubmit = async (e) => {
       e.preventDefault();
       const email = document.getElementById('login-email').value.trim();
-      const pass = document.getElementById('login-pass').value;
+      const pass = loginPass.value;
 
       try {
         const res = await api.login(email, pass);
@@ -3226,6 +3861,50 @@ function renderAuth() {
 // -------------------------------------------------------------
 
 // Quick Add Transaction Modal (<10s Keypad)
+const SMART_CATEGORY_RULES = {
+  gasto: [
+    { category: 'Alimentación', keywords: ['almuerzo', 'desayuno', 'cena', 'comida', 'restaurante', 'supermercado', 'mercado', 'carulla', 'exito', 'd1', 'fruta', 'pan', 'cafe', 'empanada', 'domicilio', 'rappi', 'comida rapida'] },
+    { category: 'Transporte', keywords: ['uber', 'taxi', 'bus', 'transmilenio', 'metro', 'gasolina', 'combustible', 'parqueadero', 'peaje', 'soat', 'pasaje', 'moto', 'bicicleta'] },
+    { category: 'Compras', keywords: ['compra', 'ropa', 'zapatos', 'electronica', 'amazon', 'mercado libre', 'falabella', 'regalo', 'hogar'] },
+    { category: 'Servicios', keywords: ['arriendo', 'alquiler', 'luz', 'agua', 'energia', 'gas', 'internet', 'telefono', 'celular', 'factura', 'servicio'] },
+    { category: 'Salud', keywords: ['salud', 'medico', 'medicina', 'medicamento', 'medicamentos', 'farmacia', 'drogueria', 'consulta', 'hospital', 'laboratorio', 'examen', 'urgencias', 'odontologo', 'dentista', 'terapia', 'psicologo', 'vitamina', 'vitaminas', 'eps', 'seguro'] },
+    { category: 'Entretenimiento', keywords: ['cine', 'concierto', 'netflix', 'spotify', 'juego', 'videojuego', 'gimnasio', 'bar', 'fiesta', 'ocio'] },
+    { category: 'Educación', keywords: ['colegio', 'universidad', 'curso', 'clase', 'libro', 'matricula', 'educacion', 'papeleria'] },
+  ],
+  ingreso: [
+    { category: 'Nómina', keywords: ['salario', 'sueldo', 'nomina', 'nomina', 'quincena', 'pago laboral', 'empresa'] },
+    { category: 'Honorarios', keywords: ['honorario', 'freelance', 'consultoria', 'asesoria', 'servicio profesional', 'cliente'] },
+    { category: 'Negocio', keywords: ['venta', 'negocio', 'cliente', 'pedido', 'emprendimiento', 'producto'] },
+    { category: 'Inversión', keywords: ['inversion', 'dividendos', 'intereses', 'rendimiento', 'interes', 'fondo'] },
+  ],
+};
+
+function normalizeSmartCategoryText(value) {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+}
+
+function suggestCategoryFromDescription(type, description) {
+  if (!state.currentUser?.smartCategorization) return '';
+  const text = normalizeSmartCategoryText(description);
+  if (text.length < 3) return '';
+
+  const rules = SMART_CATEGORY_RULES[type] || [];
+  let bestMatch = { category: '', score: 0 };
+  rules.forEach((rule) => {
+    const score = rule.keywords.reduce((total, keyword) => {
+      const normalizedKeyword = normalizeSmartCategoryText(keyword);
+      return total + (text.includes(normalizedKeyword) ? normalizedKeyword.length : 0);
+    }, 0);
+    if (score > bestMatch.score) bestMatch = { category: rule.category, score };
+  });
+
+  return bestMatch.category;
+}
+
 function formatQuickAddDateLabel(dateISO) {
   const selectedDate = dateISO || getTodayISODate();
   const [, month, day] = selectedDate.split('-').map(Number);
@@ -3243,6 +3922,8 @@ function openQuickAddModal(type = 'gasto') {
   state.quickAdd.type = type;
   state.quickAdd.rawValue = '0';
   state.quickAdd.category = type === 'ingreso' ? 'Nómina' : 'Alimentación';
+  state.quickAdd.categoryManuallySelected = false;
+  state.quickAdd.smartSuggestion = '';
   state.quickAdd.description = '';
   state.quickAdd.date = getTodayISODate();
 
@@ -3251,7 +3932,7 @@ function openQuickAddModal(type = 'gasto') {
 }
 
 function renderQuickAddModalContent() {
-  const { type, rawValue, category, description, date } = state.quickAdd;
+  const { type, rawValue, category, description, date, smartSuggestion } = state.quickAdd;
   const numVal = parseInt(rawValue, 10) || 0;
 
   const expenseCategories = [
@@ -3279,7 +3960,7 @@ function renderQuickAddModalContent() {
     <div class="quick-add-page w-full max-w-[460px] h-[100dvh] min-h-0 bg-[#f8f9ff] overflow-y-auto no-scrollbar px-3 sm:px-4 pt-3 sm:pt-5 pb-6">
       <div class="flex items-center justify-between mb-4 sm:mb-5">
         <button id="qa-close-btn" aria-label="Volver" class="w-9 h-9 flex items-center justify-center text-[#0058bc] cursor-pointer">${getIconSvg('arrowLeft', 'w-7 h-7')}</button>
-        <div class="flex items-center gap-2"><img src="assets/Logo.png" alt="MiPlata" class="w-10 h-10 rounded-xl" /><h1 class="text-xl font-semibold">Nuevo Registro</h1></div>
+        <div class="flex items-center gap-2"><img src="assets/optimized/Logo.png" alt="MiPlata" width="160" height="160" decoding="async" class="w-10 h-10 rounded-xl" /><h1 class="text-xl font-semibold">Nuevo Registro</h1></div>
         ${renderAvatarHtml(state.currentUser?.name, state.currentUser?.avatarUrl, 'sm')}
       </div>
       <div class="h-1.5 w-12 rounded-full bg-[#dce8ff] mx-auto mb-3 sm:mb-4"></div>
@@ -3291,13 +3972,14 @@ function renderQuickAddModalContent() {
 
       <div class="text-center mb-4 sm:mb-5"><div class="flex items-baseline justify-center gap-1"><span class="text-4xl sm:text-5xl font-extrabold text-[#0b1c30] tabular-nums"><span class="text-slate-300">$</span>${formatCOP(numVal).replace('$', '')}</span><span class="text-base sm:text-xl font-medium text-slate-500">COP</span></div><p class="mt-2 text-xs sm:text-sm font-semibold text-[#0058bc]"><span class="inline-block w-3 h-3 rounded-full bg-[#006c49] mr-1"></span>${type === 'ingreso' ? 'Registrando ingreso inmediato' : 'Registrando egreso inmediato'}</p></div>
 
-      <div class="flex items-center justify-between mb-2.5 sm:mb-3"><h2 class="text-base sm:text-lg font-semibold uppercase tracking-wide text-slate-600">Categoría</h2><span class="text-base sm:text-lg font-semibold text-[#0058bc]">${category}</span></div>
+      <div class="flex items-center justify-between mb-2.5 sm:mb-3"><h2 class="text-base sm:text-lg font-semibold uppercase tracking-wide text-slate-600">Categoría</h2><span id="qa-selected-category" class="text-base sm:text-lg font-semibold text-[#0058bc]">${category}</span></div>
       <div id="qa-categories-scroll" class="qa-categories-scroll flex gap-2.5 sm:gap-3 overflow-x-auto no-scrollbar pb-1.5 sm:pb-2 mb-4 sm:mb-5" role="listbox" aria-label="Categorías de ${type === 'ingreso' ? 'ingreso' : 'gasto'}">
         ${categories.map((c) => `<button type="button" data-cat="${c.name}" role="option" aria-selected="${category === c.name}" class="qa-cat-btn shrink-0 w-[68px] sm:w-[76px] flex flex-col items-center gap-1.5 sm:gap-2 cursor-pointer"><span class="w-[60px] h-[60px] sm:w-[68px] sm:h-[68px] rounded-3xl flex items-center justify-center ${category === c.name ? 'bg-[#0058bc] text-white shadow-md' : 'bg-[#dce8ff] text-slate-600'}">${getIconSvg(c.icon, 'w-6 h-6 sm:w-7 sm:h-7')}</span><span class="text-[11px] sm:text-sm whitespace-nowrap ${category === c.name ? 'text-[#0058bc] font-semibold' : 'text-slate-700'}">${c.label}</span></button>`).join('')}
       </div>
+      <p id="qa-smart-category-hint" aria-live="polite" class="text-[11px] text-[#0058bc] font-medium text-center -mt-3 mb-3 ${smartSuggestion ? '' : 'invisible'}">${smartSuggestion ? `Sugerencia automática: ${smartSuggestion}` : 'Sugerencia automática'}</p>
 
       <div class="rounded-3xl bg-white p-3.5 sm:p-4 shadow-sm border border-slate-100 mb-4 sm:mb-6">
-        <div class="flex items-center gap-3"><span class="w-10 h-10 rounded-full bg-[#dce8ff] text-slate-600 flex items-center justify-center">${getIconSvg('fileText', 'w-5 h-5')}</span><input id="qa-description-input" type="text" placeholder="${type === 'ingreso' ? 'Concepto del ingreso' : 'Café y empanada Juan Valdez'}" value="${description}" class="flex-1 text-lg bg-transparent focus:outline-none" /></div>
+        <div class="flex items-center gap-3"><span class="w-10 h-10 rounded-full bg-[#dce8ff] text-slate-600 flex items-center justify-center">${getIconSvg('fileText', 'w-5 h-5')}</span><input id="qa-description-input" type="text" placeholder="${type === 'ingreso' ? 'Concepto del ingreso' : 'Café y empanada Juan Valdez'}" value="${description}" class="qa-description-input flex-1 min-w-0 text-lg bg-transparent focus:outline-none focus:ring-0" /></div>
         <div class="flex items-center justify-between mt-5 pt-4 border-t border-slate-100"><div class="flex items-center gap-3"><span class="w-10 h-10 rounded-full bg-[#dce8ff] text-slate-600 flex items-center justify-center">${getIconSvg('calendar', 'w-5 h-5')}</span><div><p class="text-sm font-semibold text-slate-500">Fecha</p><p class="text-base font-semibold">${formatQuickAddDateLabel(date)}</p></div></div><div class="relative"><button id="qa-change-date-btn" type="button" class="rounded-full bg-[#dce8ff] px-3 py-2 text-sm font-semibold text-[#0058bc] cursor-pointer">Cambiar</button><input id="qa-date-input" type="date" value="${date}" aria-label="Cambiar fecha del registro" class="absolute inset-0 h-full w-full opacity-0 pointer-events-none" /></div></div>
       </div>
 
@@ -3307,7 +3989,7 @@ function renderQuickAddModalContent() {
         <button data-key="7" class="keypad-btn bg-white border-0 shadow-sm h-16 sm:h-[72px] rounded-full">7</button><button data-key="8" class="keypad-btn bg-white border-0 shadow-sm h-16 sm:h-[72px] rounded-full">8</button><button data-key="9" class="keypad-btn bg-white border-0 shadow-sm h-16 sm:h-[72px] rounded-full">9</button>
         <button data-key="000" class="keypad-btn bg-[#eef3ff] border-0 text-[#0058bc] h-16 sm:h-[72px] rounded-full">+000</button><button data-key="0" class="keypad-btn bg-white border-0 shadow-sm h-16 sm:h-[72px] rounded-full">0</button><button data-key="backspace" class="keypad-btn bg-[#eef3ff] border-0 h-16 sm:h-[72px] rounded-full">${getIconSvg('deleteKey', 'w-7 h-7')}</button>
       </div>
-      <button id="qa-submit-btn" class="w-full h-14 sm:h-16 rounded-full ${numVal > 0 ? (type === 'ingreso' ? 'bg-[#006c49]' : 'bg-[#0058bc]') : 'bg-slate-300 pointer-events-none'} text-white font-bold text-lg sm:text-xl shadow-md cursor-pointer flex items-center justify-center gap-2">${getIconSvg('checkCircle2', 'w-6 h-6 sm:w-7 sm:h-7')}<span>Guardar ${type === 'ingreso' ? 'Ingreso' : 'Gasto'}</span></button>
+      <button id="qa-submit-btn" class="w-full h-14 sm:h-16 rounded-full ${numVal > 0 ? 'bg-[#0058bc]' : 'bg-slate-300 pointer-events-none'} text-white font-bold text-lg sm:text-xl shadow-md cursor-pointer flex items-center justify-center gap-2">${getIconSvg('checkCircle2', 'w-6 h-6 sm:w-7 sm:h-7')}<span>Guardar ${type === 'ingreso' ? 'Ingreso' : 'Gasto'}</span></button>
     </div>
   `;
 
@@ -3315,11 +3997,15 @@ function renderQuickAddModalContent() {
   document.getElementById('qa-type-gasto').onclick = () => {
     state.quickAdd.type = 'gasto';
     state.quickAdd.category = 'Alimentación';
+    state.quickAdd.categoryManuallySelected = false;
+    state.quickAdd.smartSuggestion = '';
     renderQuickAddModalContent();
   };
   document.getElementById('qa-type-ingreso').onclick = () => {
     state.quickAdd.type = 'ingreso';
     state.quickAdd.category = 'Nómina';
+    state.quickAdd.categoryManuallySelected = false;
+    state.quickAdd.smartSuggestion = '';
     renderQuickAddModalContent();
   };
   document.getElementById('qa-close-btn').onclick = () => {
@@ -3332,14 +4018,40 @@ function renderQuickAddModalContent() {
   DOM.modalQuickAdd.querySelectorAll('.qa-cat-btn').forEach((btn) => {
     btn.onclick = () => {
       state.quickAdd.category = btn.dataset.cat;
+      state.quickAdd.categoryManuallySelected = true;
+      state.quickAdd.smartSuggestion = '';
       renderQuickAddModalContent();
     };
   });
+
+  const refreshCategorySelection = (selectedCategory) => {
+    state.quickAdd.category = selectedCategory;
+    const selectedLabel = document.getElementById('qa-selected-category');
+    if (selectedLabel) selectedLabel.textContent = selectedCategory;
+    DOM.modalQuickAdd.querySelectorAll('.qa-cat-btn').forEach((button) => {
+      const isSelected = button.dataset.cat === selectedCategory;
+      button.setAttribute('aria-selected', String(isSelected));
+      const icon = button.querySelector('span:first-child');
+      const label = button.querySelector('span:last-child');
+      if (icon) icon.className = `w-[60px] h-[60px] sm:w-[68px] sm:h-[68px] rounded-3xl flex items-center justify-center ${isSelected ? 'bg-[#0058bc] text-white shadow-md' : 'bg-[#dce8ff] text-slate-600'}`;
+      if (label) label.className = `text-[11px] sm:text-sm whitespace-nowrap ${isSelected ? 'text-[#0058bc] font-semibold' : 'text-slate-700'}`;
+    });
+  };
 
   const descInput = document.getElementById('qa-description-input');
   if (descInput) {
     descInput.oninput = (e) => {
       state.quickAdd.description = e.target.value;
+      if (!state.quickAdd.categoryManuallySelected) {
+        const suggestedCategory = suggestCategoryFromDescription(state.quickAdd.type, state.quickAdd.description);
+        state.quickAdd.smartSuggestion = suggestedCategory;
+        if (suggestedCategory) refreshCategorySelection(suggestedCategory);
+        const suggestionHint = document.getElementById('qa-smart-category-hint');
+        if (suggestionHint) {
+          suggestionHint.textContent = suggestedCategory ? `Sugerencia automática: ${suggestedCategory}` : 'Sugerencia automática';
+          suggestionHint.classList.toggle('invisible', !suggestedCategory);
+        }
+      }
     };
   }
 
@@ -3402,7 +4114,6 @@ function renderQuickAddModalContent() {
         description: desc,
         date: state.quickAdd.date,
         time: getCurrentTimeString(),
-        accountMethod: state.quickAdd.type === 'ingreso' ? 'Bancolombia' : 'Bancolombia Débito',
         isRecurring: false,
       };
 
@@ -3419,21 +4130,16 @@ function renderQuickAddModalContent() {
   }
 }
 
-// Edit / Delete Transaction Modal
+// Edit Transaction Modal
 function openEditTransactionModal(tx) {
   if (!tx) return;
-
-  const categories =
-    tx.type === 'ingreso'
-      ? ['Nómina', 'Honorarios', 'Negocio', 'Inversión', 'Otros']
-      : ['Alimentación', 'Transporte', 'Compras', 'Servicios', 'Salud', 'Entretenimiento', 'Educación', 'Otros'];
 
   DOM.modalEditTransaction.classList.remove('hidden');
   DOM.modalEditTransaction.innerHTML = `
     <div class="bg-white rounded-3xl p-5 sm:p-6 max-w-sm w-full shadow-2xl flex flex-col gap-3.5 border border-slate-100">
       <div class="flex items-center justify-between pb-1 border-b border-slate-100">
-        <h3 class="font-bold text-sm text-[#0b1c30]">Modificar Movimiento</h3>
-        <button id="edit-tx-close" class="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 cursor-pointer">
+        <h3 class="font-bold text-sm text-[#0b1c30]">Editar nombre del movimiento</h3>
+        <button id="edit-tx-close" type="button" aria-label="Cerrar edición del movimiento" class="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 cursor-pointer">
           ${getIconSvg('x', 'w-4 h-4')}
         </button>
       </div>
@@ -3444,183 +4150,63 @@ function openEditTransactionModal(tx) {
           <input id="edit-tx-desc" type="text" value="${tx.description}" required class="w-full mt-1 px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#0058bc]" />
         </div>
 
-        <div>
-          <label class="text-xs font-bold text-[#0b1c30]">Monto (COP)</label>
-          <input id="edit-tx-amount" type="text" value="${tx.amount.toLocaleString('es-CO')}" required class="w-full mt-1 px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-xs font-bold text-slate-800 tabular-nums focus:outline-none focus:ring-2 focus:ring-[#0058bc]" />
+        <div class="grid grid-cols-2 gap-2">
+          <div>
+            <label class="text-xs font-bold text-[#0b1c30]">Tipo</label>
+            <input type="text" value="${tx.type === 'ingreso' ? 'Ingreso' : 'Gasto / Egreso'}" disabled class="w-full mt-1 px-3 py-2 rounded-xl border border-slate-200 bg-slate-100 text-xs font-semibold text-slate-500 cursor-not-allowed" />
+          </div>
+
+          <div>
+            <label class="text-xs font-bold text-[#0b1c30]">Monto (COP)</label>
+            <input type="text" value="${tx.amount.toLocaleString('es-CO')}" disabled class="w-full mt-1 px-3 py-2 rounded-xl border border-slate-200 bg-slate-100 text-xs font-bold text-slate-500 tabular-nums cursor-not-allowed" />
+          </div>
         </div>
 
         <div class="grid grid-cols-2 gap-2">
           <div>
             <label class="text-xs font-bold text-[#0b1c30]">Categoría</label>
-            <select id="edit-tx-category" class="w-full mt-1 px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#0058bc]">
-              ${categories
-                .map((c) => `<option value="${c}" ${tx.category === c ? 'selected' : ''}>${c}</option>`)
-                .join('')}
-            </select>
+            <input type="text" value="${tx.category || 'Otros'}" disabled class="w-full mt-1 px-3 py-2 rounded-xl border border-slate-200 bg-slate-100 text-xs font-semibold text-slate-500 cursor-not-allowed" />
           </div>
 
           <div>
             <label class="text-xs font-bold text-[#0b1c30]">Fecha</label>
-            <input id="edit-tx-date" type="date" value="${tx.date}" required class="w-full mt-1 px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#0058bc]" />
+            <input type="text" value="${tx.date || 'Sin fecha'}" disabled class="w-full mt-1 px-3 py-2 rounded-xl border border-slate-200 bg-slate-100 text-xs font-semibold text-slate-500 cursor-not-allowed" />
           </div>
         </div>
 
+        <p class="text-[11px] text-slate-400">Solo puedes cambiar el nombre. Los demás datos permanecen protegidos.</p>
+
         <button type="submit" class="w-full py-2.5 mt-2 rounded-xl bg-[#0058bc] text-white font-bold text-xs shadow-md hover:bg-[#004bb0] active:scale-95 transition-all cursor-pointer">
-          Guardar Cambios
+          Guardar nombre
         </button>
 
-        <button type="button" id="btn-delete-tx" class="w-full py-2 rounded-xl text-rose-600 bg-rose-50 hover:bg-rose-100 font-semibold text-xs transition-colors cursor-pointer flex items-center justify-center gap-1.5">
-          ${getIconSvg('trash2', 'w-4 h-4')}
-          <span>Eliminar este movimiento</span>
-        </button>
       </form>
     </div>
   `;
 
   document.getElementById('edit-tx-close').onclick = () => DOM.modalEditTransaction.classList.add('hidden');
 
-  const amountInput = document.getElementById('edit-tx-amount');
-  amountInput.oninput = () => {
-    const num = parseInt(amountInput.value.replace(/\D/g, ''), 10);
-    amountInput.value = isNaN(num) ? '' : num.toLocaleString('es-CO');
-  };
-
   document.getElementById('form-edit-tx').onsubmit = async (e) => {
     e.preventDefault();
     const desc = document.getElementById('edit-tx-desc').value.trim();
-    const amt = parseInt(amountInput.value.replace(/\D/g, ''), 10) || 0;
-    const cat = document.getElementById('edit-tx-category').value;
-    const date = document.getElementById('edit-tx-date').value;
 
-    if (!desc || amt <= 0) return;
+    if (!desc) {
+      showToast('Escribe un concepto para el movimiento', 'error');
+      return;
+    }
 
-    await api.updateTransaction(tx.id, {
-      description: desc,
-      amount: amt,
-      category: cat,
-      date,
-    });
+    try {
+      await api.updateTransaction(tx.id, { description: desc });
 
-    await refreshAllData();
-    DOM.modalEditTransaction.classList.add('hidden');
-    renderActiveView();
-    showToast('Movimiento actualizado');
-  };
-
-  document.getElementById('btn-delete-tx').onclick = async () => {
-    if (confirm('¿Deseas eliminar este movimiento permanentemente?')) {
-      await api.deleteTransaction(tx.id);
       await refreshAllData();
       DOM.modalEditTransaction.classList.add('hidden');
       renderActiveView();
-      showToast('Movimiento eliminado');
+      showToast('Movimiento actualizado');
+    } catch (err) {
+      showToast(err.message || 'No se pudo actualizar el movimiento', 'error');
     }
   };
-}
 
-// Cash Detail & Adjust Balance Modal
-function openCashDetailModal() {
-  const metrics = computeMetrics();
-  DOM.modalCashDetail.classList.remove('hidden');
-
-  DOM.modalCashDetail.innerHTML = `
-    <div class="bg-white rounded-3xl p-5 sm:p-6 max-w-md w-full shadow-2xl flex flex-col gap-4 border border-slate-100">
-      <div class="flex items-center justify-between pb-1 border-b border-slate-100">
-        <div class="flex items-center gap-2">
-          <div class="w-9 h-9 rounded-2xl bg-[#eff4ff] text-[#0058bc] flex items-center justify-center font-bold">
-            ${getIconSvg('shieldCheck', 'w-5 h-5 text-[#0058bc]')}
-          </div>
-          <div>
-            <h3 class="font-bold text-sm text-[#0b1c30]">Dinero Disponible</h3>
-            <p class="text-[11px] text-slate-500">Cálculo real y gestión de saldo</p>
-          </div>
-        </div>
-        <button id="cash-modal-close" class="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-slate-500 cursor-pointer">
-          ${getIconSvg('x', 'w-4 h-4')}
-        </button>
-      </div>
-
-      <div class="p-4 rounded-2xl bg-gradient-to-br from-[#0b1c30] to-[#182739] text-white flex flex-col gap-1 shadow-inner">
-        <span class="text-[11px] text-slate-300 font-medium">Disponible para gastar hoy con tranquilidad:</span>
-        <div class="flex items-baseline gap-2">
-          <span class="text-3xl font-extrabold tracking-tight text-[#6cf8bb] tabular-nums">
-            ${formatCOP(metrics.availableCash)}
-          </span>
-          <span class="text-xs font-semibold text-slate-400">COP</span>
-        </div>
-      </div>
-
-      <!-- Real-time formula breakdown -->
-      <div class="rounded-2xl border border-slate-200 bg-slate-50/70 p-3 divide-y divide-slate-200/70 text-xs flex flex-col gap-2">
-        <div class="flex items-center justify-between pt-1">
-          <span class="text-slate-600 flex items-center gap-1.5">
-            <span class="w-2 h-2 rounded-full bg-[#006c49]"></span>
-            Ingresos recibidos:
-          </span>
-          <span class="font-bold text-[#006c49] tabular-nums">+${formatCOP(metrics.totalIncome)}</span>
-        </div>
-
-        <div class="flex items-center justify-between pt-2">
-          <span class="text-slate-600 flex items-center gap-1.5">
-            <span class="w-2 h-2 rounded-full bg-slate-700"></span>
-            Gastos ejecutados del mes:
-          </span>
-          <span class="font-bold text-slate-800 tabular-nums">-${formatCOP(metrics.totalExpenses)}</span>
-        </div>
-
-        <div class="flex items-center justify-between pt-2">
-          <span class="text-slate-600 flex items-center gap-1.5">
-            <span class="w-2 h-2 rounded-full bg-rose-500"></span>
-            Gastos fijos comprometidos (pendientes):
-          </span>
-          <span class="font-bold text-rose-600 tabular-nums">-${formatCOP(metrics.fixedCommitted)}</span>
-        </div>
-
-        <div class="flex items-center justify-between pt-2 font-bold text-[#0058bc]">
-          <span>Total Disponible:</span>
-          <span class="tabular-nums">${formatCOP(metrics.availableCash)} COP</span>
-        </div>
-      </div>
-
-      <!-- Adjust Initial Balance -->
-      <div class="flex flex-col gap-2 pt-1 border-t border-slate-100">
-        <label class="text-xs font-bold text-[#0b1c30]">Ajustar saldo base en cuenta</label>
-        <p class="text-[11px] text-slate-500 leading-snug">Si tienes dinero adicional inicial en tu cuenta, puedes ajustarlo aquí:</p>
-        <div class="flex items-center gap-2 mt-0.5">
-          <div class="relative flex-1">
-            <span class="absolute left-3 top-2.5 text-xs font-bold text-slate-400">$</span>
-            <input
-              id="cash-adjust-input"
-              type="text"
-              placeholder="0"
-              value="${state.currentUser?.initialBalance ? state.currentUser.initialBalance.toLocaleString('es-CO') : ''}"
-              class="w-full pl-7 pr-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#0058bc] tabular-nums"
-            />
-          </div>
-          <button id="cash-adjust-save-btn" class="px-3.5 py-2 rounded-xl bg-[#0058bc] text-white text-xs font-semibold hover:bg-[#004bb0] active:scale-95 transition-all cursor-pointer">
-            Guardar
-          </button>
-        </div>
-      </div>
-    </div>
-  `;
-
-  document.getElementById('cash-modal-close').onclick = () => DOM.modalCashDetail.classList.add('hidden');
-
-  const adjustInput = document.getElementById('cash-adjust-input');
-  adjustInput.oninput = () => {
-    const num = parseInt(adjustInput.value.replace(/\D/g, ''), 10);
-    adjustInput.value = isNaN(num) ? '' : num.toLocaleString('es-CO');
-  };
-
-  document.getElementById('cash-adjust-save-btn').onclick = async () => {
-    const parsed = parseInt(adjustInput.value.replace(/\D/g, ''), 10) || 0;
-    await api.updateInitialBalance(parsed);
-    await refreshAllData();
-    DOM.modalCashDetail.classList.add('hidden');
-    renderActiveView();
-    showToast('Saldo disponible base actualizado');
-  };
 }
 
 // Add or Edit Fixed Obligation Modal
@@ -3637,7 +4223,7 @@ function openAddOrEditObligationModal(obligation = null) {
       <div class="w-12 h-1 rounded-full bg-[#c7d6e8] mx-auto mb-4 sm:hidden"></div>
       <div class="flex items-center justify-between mb-5">
         <h3 class="font-extrabold text-lg text-[#0b1c30]">${title}</h3>
-        <button id="ob-modal-close" class="w-9 h-9 rounded-full bg-[#f1f5fa] flex items-center justify-center text-[#607797] cursor-pointer">
+        <button id="ob-modal-close" type="button" aria-label="Cerrar gasto fijo" class="w-9 h-9 rounded-full bg-[#f1f5fa] flex items-center justify-center text-[#607797] cursor-pointer">
           ${getIconSvg('x', 'w-4 h-4')}
         </button>
       </div>
@@ -3665,9 +4251,15 @@ function openAddOrEditObligationModal(obligation = null) {
 
         <div>
           <label class="text-sm font-medium text-[#607797]">Categoría</label>
-          <select id="ob-input-category" class="w-full mt-1.5 h-12 px-4 rounded-2xl border-2 border-[#0058bc] bg-[#f7f9fc] text-sm font-semibold text-[#25364d] focus:outline-none focus:ring-2 focus:ring-[#dce8ff]">
-            ${FIXED_OBLIGATION_CATEGORIES.map((category) => `<option value="${category}" ${selectedCategory === category ? 'selected' : ''}>${category}</option>`).join('')}
-          </select>
+          <input id="ob-input-category" type="hidden" value="${selectedCategory}" />
+          <div id="ob-categories-scroll" class="qa-categories-scroll flex gap-2.5 sm:gap-3 overflow-x-auto no-scrollbar pb-1.5 sm:pb-2 mt-1.5" role="listbox" aria-label="Categorías de gasto fijo">
+            ${FIXED_OBLIGATION_CATEGORY_OPTIONS.map((option) => `
+              <button type="button" data-category="${option.name}" role="option" aria-selected="${selectedCategory === option.name}" class="ob-category-btn shrink-0 w-[68px] sm:w-[76px] flex flex-col items-center gap-1.5 sm:gap-2 cursor-pointer">
+                <span class="ob-category-icon w-[60px] h-[60px] sm:w-[68px] sm:h-[68px] rounded-3xl flex items-center justify-center ${selectedCategory === option.name ? 'bg-[#0058bc] text-white shadow-md' : 'bg-[#dce8ff] text-slate-600'}">${getIconSvg(option.icon, 'w-6 h-6 sm:w-7 sm:h-7')}</span>
+                <span class="ob-category-label text-[11px] sm:text-sm whitespace-nowrap ${selectedCategory === option.name ? 'text-[#0058bc] font-semibold' : 'text-slate-700'}">${option.label}</span>
+              </button>
+            `).join('')}
+          </div>
         </div>
 
         <div class="flex items-center justify-between h-14 px-4 rounded-2xl border border-[#dce5ef] bg-[#f7f9fc]">
@@ -3702,6 +4294,21 @@ function openAddOrEditObligationModal(obligation = null) {
     const num = parseInt(amountInput.value.replace(/\D/g, ''), 10);
     amountInput.value = isNaN(num) ? '' : num.toLocaleString('es-CO');
   };
+
+  const categoryInput = document.getElementById('ob-input-category');
+  DOM.modalFixedObligation.querySelectorAll('.ob-category-btn').forEach((button) => {
+    button.onclick = () => {
+      categoryInput.value = button.dataset.category;
+      DOM.modalFixedObligation.querySelectorAll('.ob-category-btn').forEach((optionButton) => {
+        const isSelected = optionButton === button;
+        optionButton.setAttribute('aria-selected', String(isSelected));
+        const icon = optionButton.querySelector('.ob-category-icon');
+        const label = optionButton.querySelector('.ob-category-label');
+        if (icon) icon.className = `ob-category-icon w-[60px] h-[60px] sm:w-[68px] sm:h-[68px] rounded-3xl flex items-center justify-center ${isSelected ? 'bg-[#0058bc] text-white shadow-md' : 'bg-[#dce8ff] text-slate-600'}`;
+        if (label) label.className = `ob-category-label text-[11px] sm:text-sm whitespace-nowrap ${isSelected ? 'text-[#0058bc] font-semibold' : 'text-slate-700'}`;
+      });
+    };
+  });
 
   const reminderToggle = document.getElementById('ob-reminder-toggle');
   if (reminderToggle) {
@@ -3799,6 +4406,11 @@ function formatGoalDeadline(value) {
   return year && month ? `${SPANISH_MONTHS[Number(month) - 1] || month} ${year}` : String(value || '');
 }
 
+function isGoalDeadlineBeforeCurrentMonth(year, month) {
+  const selectedMonthKey = `${Number(year)}-${String(Number(month)).padStart(2, '0')}`;
+  return selectedMonthKey < getCurrentMonthKey();
+}
+
 function openAddOrEditGoalModal(goal = null) {
   DOM.modalSavingsGoal.classList.remove('hidden');
 
@@ -3809,7 +4421,7 @@ function openAddOrEditGoalModal(goal = null) {
   const currentDeadlineMonth = normalizedCurrentDeadline.slice(5, 7);
   const currentDeadlineYear = normalizedCurrentDeadline.slice(0, 4);
   const currentYear = new Date().getFullYear();
-  const firstDeadlineYear = Math.min(currentYear - 1, Number(currentDeadlineYear) || currentYear);
+  const firstDeadlineYear = Math.min(currentYear, Number(currentDeadlineYear) || currentYear);
   const lastDeadlineYear = Math.max(currentYear + 10, Number(currentDeadlineYear) || currentYear);
   const goalIconOptions = [
     { value: 'security', icon: 'shield' },
@@ -3828,14 +4440,19 @@ function openAddOrEditGoalModal(goal = null) {
     <option value="${String(index + 1).padStart(2, '0')}" ${currentDeadlineMonth === String(index + 1).padStart(2, '0') ? 'selected' : ''}>${month}</option>
   `).join('');
   const goalDeadlineYearOptions = Array.from({ length: lastDeadlineYear - firstDeadlineYear + 1 }, (_, index) => firstDeadlineYear + index)
-    .map((year) => `<option value="${year}" ${currentDeadlineYear === String(year) ? 'selected' : ''}>${year}</option>`)
+    .map((year) => {
+      const isExpiredYear = year < currentYear;
+      const isCurrentDeadlineYear = currentDeadlineYear === String(year);
+      const label = isExpiredYear && isCurrentDeadlineYear ? `${year} (fecha anterior)` : year;
+      return `<option value="${year}" ${isCurrentDeadlineYear ? 'selected' : ''} ${isExpiredYear ? 'disabled' : ''}>${label}</option>`;
+    })
     .join('');
 
   DOM.modalSavingsGoal.innerHTML = `
     <div class="bg-white rounded-[26px] p-6 max-w-md w-full min-w-0 max-h-[calc(100vh-24px)] overflow-y-auto overflow-x-hidden no-scrollbar shadow-2xl border border-slate-100">
       <div class="flex items-center justify-between mb-4">
         <h3 class="font-bold text-[18px] text-[#0b1c30]">${isEdit ? 'Editar Meta de Ahorro' : 'Nueva Meta de Ahorro'}</h3>
-        <button id="goal-modal-close" class="w-9 h-9 rounded-full bg-[#f0f4f9] flex items-center justify-center text-[#6b7d98] cursor-pointer">
+        <button id="goal-modal-close" type="button" aria-label="Cerrar meta de ahorro" class="w-9 h-9 rounded-full bg-[#f0f4f9] flex items-center justify-center text-[#6b7d98] cursor-pointer">
           ${getIconSvg('x', 'w-4 h-4')}
         </button>
       </div>
@@ -3864,7 +4481,7 @@ function openAddOrEditGoalModal(goal = null) {
             </select>
           </div>
           <button type="button" id="goal-clear-deadline" class="text-xs text-[#0058bc] font-semibold mt-1.5 cursor-pointer">Quitar fecha límite</button>
-          <p class="text-xs text-slate-400 mt-1">Selecciona el mes y el año en que quieres cumplirla.</p>
+          <p class="text-xs text-slate-400 mt-1">Solo puedes elegir el mes actual o una fecha futura.</p>
         </div>
 
         <div>
@@ -3943,9 +4560,21 @@ function openAddOrEditGoalModal(goal = null) {
 
   const deadlineMonthInput = document.getElementById('goal-input-deadline-month');
   const deadlineYearInput = document.getElementById('goal-input-deadline-year');
+  const syncGoalDeadlineMonthOptions = () => {
+    const selectedYear = Number(deadlineYearInput.value) || currentYear;
+    Array.from(deadlineMonthInput.options).forEach((option) => {
+      if (!option.value) return;
+      const isPast = isGoalDeadlineBeforeCurrentMonth(selectedYear, option.value);
+      option.disabled = isPast;
+      if (isPast && option.selected) deadlineMonthInput.value = '';
+    });
+  };
+  deadlineYearInput.onchange = syncGoalDeadlineMonthOptions;
+  syncGoalDeadlineMonthOptions();
   document.getElementById('goal-clear-deadline').onclick = () => {
     deadlineMonthInput.value = '';
     deadlineYearInput.value = '';
+    syncGoalDeadlineMonthOptions();
   };
 
   DOM.modalSavingsGoal.querySelectorAll('.goal-icon-choice').forEach((button) => {
@@ -3980,6 +4609,10 @@ function openAddOrEditGoalModal(goal = null) {
     }
     if (deadlineText && !deadline) {
       showToast('La fecha límite seleccionada no es válida', 'error');
+      return;
+    }
+    if (deadline && isGoalDeadlineBeforeCurrentMonth(selectedDeadlineYear, selectedDeadlineMonth)) {
+      showToast('La fecha límite debe ser el mes actual o un mes futuro', 'error');
       return;
     }
 
@@ -4053,7 +4686,7 @@ function openAporteModal(goalId) {
           </div>
           <h3 class="font-bold text-[18px] text-[#0b1c30] truncate">Aportar a ${goal.name}</h3>
         </div>
-        <button id="aporte-modal-close" class="w-9 h-9 rounded-full bg-[#f0f4f9] flex items-center justify-center text-[#6b7d98] cursor-pointer shrink-0">
+        <button id="aporte-modal-close" type="button" aria-label="Cerrar aporte a la meta" class="w-9 h-9 rounded-full bg-[#f0f4f9] flex items-center justify-center text-[#6b7d98] cursor-pointer shrink-0">
           ${getIconSvg('x', 'w-4 h-4')}
         </button>
       </div>
@@ -4100,6 +4733,12 @@ function openAporteModal(goalId) {
   document.getElementById('aporte-submit-btn').onclick = async () => {
     const amt = parseRawNumber(aporteInput.value);
     if (amt <= 0) return;
+
+    const availableCash = computeMetrics().availableCash;
+    if (amt > availableCash) {
+      showToast(`No tienes suficiente dinero disponible. Te quedan ${formatCOP(availableCash, true)}.`, 'error');
+      return;
+    }
 
     await api.contributeToGoal(goalId, amt, 'Manual');
     await refreshAllData();
@@ -4216,7 +4855,7 @@ function openCategoryBudgetModal(categoryBudget) {
           <h3 class="font-bold text-sm text-[#0b1c30]">Límite de ${categoryBudget.category}</h3>
           <p class="text-[11px] text-slate-500 mt-0.5">Presupuesto mensual de la categoría</p>
         </div>
-        <button id="edit-category-budget-close" type="button" class="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 cursor-pointer">
+        <button id="edit-category-budget-close" type="button" aria-label="Cerrar presupuesto de categoría" class="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 cursor-pointer">
           ${getIconSvg('x', 'w-4 h-4')}
         </button>
       </div>
@@ -4268,7 +4907,7 @@ function openEditBudgetModal() {
     <div class="bg-white rounded-3xl p-5 sm:p-6 max-w-sm w-full shadow-2xl flex flex-col gap-3.5 border border-slate-100">
       <div class="flex items-center justify-between pb-1 border-b border-slate-100">
         <h3 class="font-bold text-sm text-[#0b1c30]">Ajustar Salario Mensual</h3>
-        <button id="edit-budget-close" class="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 cursor-pointer">
+        <button id="edit-budget-close" type="button" aria-label="Cerrar ajuste de salario" class="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 cursor-pointer">
           ${getIconSvg('x', 'w-4 h-4')}
         </button>
       </div>
@@ -4307,19 +4946,25 @@ function openEditBudgetModal() {
 }
 
 // Global Search Overlay Handlers
+function setSearchOverlayOpen(isOpen) {
+  DOM.modalSearch.classList.toggle('hidden', !isOpen);
+  document.documentElement.classList.toggle('search-open', isOpen);
+  document.body.classList.toggle('search-open', isOpen);
+}
+
 function setupSearchOverlay() {
   DOM.searchInputIcon.innerHTML = getIconSvg('search', 'w-4 h-4 text-slate-400');
   DOM.searchCloseBtn.innerHTML = getIconSvg('x', 'w-4 h-4');
 
   DOM.headerSearchBtn.onclick = () => {
-    DOM.modalSearch.classList.remove('hidden');
+    setSearchOverlayOpen(true);
     DOM.searchInput.value = '';
     DOM.searchInput.focus();
     renderSearchResults('');
   };
 
   DOM.searchCloseBtn.onclick = () => {
-    DOM.modalSearch.classList.add('hidden');
+    setSearchOverlayOpen(false);
   };
 
   DOM.searchInput.oninput = (e) => {
@@ -4376,7 +5021,7 @@ function renderSearchResults(query) {
 
   DOM.searchResultsList.querySelectorAll('.search-item-row').forEach((row) => {
     row.onclick = () => {
-      DOM.modalSearch.classList.add('hidden');
+      setSearchOverlayOpen(false);
       const tx = state.transactions.find((t) => t.id === row.dataset.searchTx);
       if (tx) openEditTransactionModal(tx);
     };
@@ -4439,19 +5084,32 @@ async function init() {
 
   setupSearchOverlay();
   setupKeyboardListeners();
+  setupMonthlyRolloverWatcher();
 
-  // Load initial user session
+  const hasRecoveryContext = prepareRecoveryFromUrl();
+  if (hasRecoveryContext) {
+    state.currentUser = null;
+    renderApp();
+    return;
+  }
+
+  // Paint the last verified state immediately, then synchronize in the
+  // background so returning users never see a blank screen while Supabase
+  // responds.
+  const restoredCachedState = restoreCachedState();
+  const cachedBootstrapSnapshot = localStorage.getItem('miplata_bootstrap_cache');
+  renderApp();
+
+  // Load the session and all initial data in one request.
   try {
-    const user = await api.getCurrentUser();
-    state.currentUser = user;
-    if (user) {
-      await refreshAllData();
+    const refreshed = await refreshAllData();
+    const freshBootstrapSnapshot = localStorage.getItem('miplata_bootstrap_cache');
+    if (refreshed && (!restoredCachedState || cachedBootstrapSnapshot !== freshBootstrapSnapshot)) {
+      renderApp();
     }
   } catch (e) {
     console.warn('Initial session check error', e);
   }
-
-  renderApp();
 }
 
 // Run when DOM is ready

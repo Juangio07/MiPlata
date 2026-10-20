@@ -8,6 +8,7 @@ different id.
 
 import time
 from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor
 
 import supabase_client as sb
 
@@ -50,6 +51,16 @@ def set_current_user_id(_user_id):
 def get_current_month_key():
     now = datetime.now()
     return f"{now.year}-{now.month:02d}"
+
+
+def _month_bounds(month_key):
+    """Return inclusive/exclusive ISO dates for a YYYY-MM report period."""
+    year, month = (int(part) for part in str(month_key).split("-", 1))
+    if month == 12:
+        next_year, next_month = year + 1, 1
+    else:
+        next_year, next_month = year, month + 1
+    return f"{year:04d}-{month:02d}-01", f"{next_year:04d}-{next_month:02d}-01"
 
 
 def get_relative_month_key(offset_months):
@@ -158,6 +169,7 @@ def get_user_by_id(user_id):
     rows = sb.rest_request(
         "profiles",
         params={"id": f"eq.{user_id}", "limit": 1},
+        select="id,name,email,avatar_url,plan,member_since,monthly_salary,initial_balance,monthly_budget_limit,budget_needs,budget_wants,budget_savings,alert_80_percent,auto_adjust_variable,currency,reset_day,smart_categorization",
     ) or []
     return _profile_to_dict(rows[0]) if rows else None
 
@@ -170,7 +182,7 @@ def get_user_by_email(email):
     return _profile_to_dict(rows[0]) if rows else None
 
 
-def ensure_user_defaults(user_id, name=None, email=None, monthly_salary=0, avatar_url=""):
+def ensure_user_defaults(user_id, name=None, email=None, monthly_salary=0, avatar_url="", apply_default_preferences=False):
     """Complete the profile created by the auth trigger and seed its budgets."""
     current_rows = sb.rest_request("profiles", params={"id": f"eq.{user_id}", "limit": 1}) or []
     if not current_rows:
@@ -186,6 +198,9 @@ def ensure_user_defaults(user_id, name=None, email=None, monthly_salary=0, avata
                 "avatar_url": avatar_url or None,
                 "monthly_salary": monthly_salary or 0,
                 "monthly_budget_limit": monthly_salary or 0,
+                "alert_80_percent": True,
+                "auto_adjust_variable": True,
+                "smart_categorization": True,
             },
             returning=True,
         )
@@ -201,6 +216,12 @@ def ensure_user_defaults(user_id, name=None, email=None, monthly_salary=0, avata
             patch["monthly_salary"] = monthly_salary or 0
             if not current_rows[0].get("monthly_budget_limit"):
                 patch["monthly_budget_limit"] = monthly_salary or 0
+        if apply_default_preferences:
+            patch.update({
+                "alert_80_percent": True,
+                "auto_adjust_variable": True,
+                "smart_categorization": True,
+            })
         if patch:
             sb.rest_request("profiles", method="PATCH", params={"id": f"eq.{user_id}"}, body=patch)
 
@@ -220,8 +241,8 @@ def ensure_user_defaults(user_id, name=None, email=None, monthly_salary=0, avata
     return get_user_by_id(user_id)
 
 
-def initialize_registered_user(user_id, name, email, monthly_salary=0, avatar_url=""):
-    user = ensure_user_defaults(user_id, name, email, monthly_salary, avatar_url)
+def initialize_registered_user(user_id, name, email, monthly_salary=0, avatar_url="", apply_default_preferences=True):
+    user = ensure_user_defaults(user_id, name, email, monthly_salary, avatar_url, apply_default_preferences)
     if monthly_salary and monthly_salary > 0:
         existing = sb.rest_request(
             "transactions",
@@ -250,347 +271,83 @@ def initialize_registered_user(user_id, name, email, monthly_salary=0, avatar_ur
 
 
 def ensure_demo_data(user_id):
-    """Seed a small, realistic dataset for the demo account without duplicates."""
-    existing_transactions = sb.rest_request("transactions", params={"user_id": f"eq.{user_id}"}) or []
-    existing_fixed = sb.rest_request("fixed_obligations", params={"user_id": f"eq.{user_id}", "limit": 1}) or []
-    existing_goals = sb.rest_request("savings_goals", params={"user_id": f"eq.{user_id}", "limit": 1}) or []
-    existing_transaction_ids = {row.get("id") for row in existing_transactions}
-
+    """Reset the demo account to a coherent COP 2,000,000 example dataset."""
     now = datetime.now()
-    month = now.strftime("%Y-%m")
-    day = now.day
-    day_value = lambda offset: max(1, min(28, day - offset))
+    current_month = now.strftime("%Y-%m")
+    day = max(1, min(28, now.day))
+    date_from_today = lambda offset: f"{current_month}-{max(1, day - offset):02d}"
+    month_date = lambda offset, month_day: f"{get_relative_month_key(offset)}-{month_day:02d}"
+    timestamp_now = int(time.time() * 1000)
 
     transactions = [
-        {
-            "id": "demo_tx_income",
-            "user_id": user_id,
-            "type": "ingreso",
-            "amount": 5800000,
-            "category": "Nómina",
-            "description": "Nómina mensual",
-            "date": f"{month}-{day_value(3):02d}",
-            "time": "08:30:00",
-            "account_method": "Bancolombia",
-            "is_recurring": False,
-        },
-        {
-            "id": "demo_tx_food",
-            "user_id": user_id,
-            "type": "gasto",
-            "amount": 184500,
-            "category": "Alimentación",
-            "description": "Supermercado de la semana",
-            "date": f"{month}-{day_value(1):02d}",
-            "time": "18:15:00",
-            "account_method": "Tarjeta Débito",
-            "is_recurring": False,
-        },
-        {
-            "id": "demo_tx_transport",
-            "user_id": user_id,
-            "type": "gasto",
-            "amount": 65000,
-            "category": "Transporte",
-            "description": "Gasolina y transporte",
-            "date": f"{month}-{day_value(2):02d}",
-            "time": "17:45:00",
-            "account_method": "Nequi QR",
-            "is_recurring": False,
-        },
-        {
-            "id": "demo_tx_entertainment",
-            "user_id": user_id,
-            "type": "gasto",
-            "amount": 52000,
-            "category": "Entretenimiento",
-            "description": "Cine y salida",
-            "date": f"{month}-{day_value(4):02d}",
-            "time": "20:10:00",
-            "account_method": "Tarjeta Crédito",
-            "is_recurring": False,
-        },
+        {"id": "demo_tx_income", "user_id": user_id, "type": "ingreso", "amount": 2000000, "category": "Nómina", "description": "Nómina mensual", "date": date_from_today(3), "time": "08:30:00", "account_method": "Bancolombia", "is_recurring": False, "fixed_obligation_id": None},
+        {"id": "demo_tx_food", "user_id": user_id, "type": "gasto", "amount": 240000, "category": "Alimentación", "description": "Mercado de la semana", "date": date_from_today(1), "time": "18:15:00", "account_method": "Tarjeta Débito", "is_recurring": False, "fixed_obligation_id": None},
+        {"id": "demo_tx_transport", "user_id": user_id, "type": "gasto", "amount": 85000, "category": "Transporte", "description": "Gasolina y transporte", "date": date_from_today(2), "time": "17:45:00", "account_method": "Nequi QR", "is_recurring": False, "fixed_obligation_id": None},
+        {"id": "demo_tx_health", "user_id": user_id, "type": "gasto", "amount": 45000, "category": "Salud", "description": "Medicamentos", "date": date_from_today(4), "time": "11:10:00", "account_method": "Efectivo", "is_recurring": False, "fixed_obligation_id": None},
+        {"id": "demo_tx_internet", "user_id": user_id, "type": "gasto", "amount": 80000, "category": "Servicios", "description": "Pago Internet Fibra", "date": date_from_today(5), "time": "09:00:00", "account_method": "Débito automático", "is_recurring": True, "fixed_obligation_id": "demo_fixed_internet"},
+        {"id": "demo_tx_services", "user_id": user_id, "type": "gasto", "amount": 120000, "category": "Servicios", "description": "Pago servicios públicos", "date": date_from_today(6), "time": "14:00:00", "account_method": "PSE", "is_recurring": False, "fixed_obligation_id": "demo_fixed_services"},
+        {"id": "demo_tx_previous_1_income_salary", "user_id": user_id, "type": "ingreso", "amount": 2000000, "category": "Nómina", "description": "Nómina mensual", "date": month_date(1, 15), "time": "08:30:00", "account_method": "Bancolombia", "is_recurring": False, "fixed_obligation_id": None},
+        {"id": "demo_tx_previous_1_income_extra", "user_id": user_id, "type": "ingreso", "amount": 250000, "category": "Honorarios", "description": "Trabajo freelance", "date": month_date(1, 26), "time": "16:00:00", "account_method": "Nequi", "is_recurring": False, "fixed_obligation_id": None},
+        {"id": "demo_tx_previous_1_rent", "user_id": user_id, "type": "gasto", "amount": 500000, "category": "Vivienda", "description": "Arriendo del apartamento", "date": month_date(1, 5), "time": "10:00:00", "account_method": "Transferencia Bancaria", "is_recurring": False, "fixed_obligation_id": None},
+        {"id": "demo_tx_previous_1_food", "user_id": user_id, "type": "gasto", "amount": 300000, "category": "Alimentación", "description": "Mercado mensual", "date": month_date(1, 8), "time": "17:30:00", "account_method": "Tarjeta Débito", "is_recurring": False, "fixed_obligation_id": None},
+        {"id": "demo_tx_previous_1_services", "user_id": user_id, "type": "gasto", "amount": 150000, "category": "Servicios", "description": "Servicios públicos e internet", "date": month_date(1, 12), "time": "14:15:00", "account_method": "PSE", "is_recurring": False, "fixed_obligation_id": None},
+        {"id": "demo_tx_previous_1_transport", "user_id": user_id, "type": "gasto", "amount": 100000, "category": "Transporte", "description": "Gasolina y transporte", "date": month_date(1, 18), "time": "18:30:00", "account_method": "Bancolombia Débito", "is_recurring": False, "fixed_obligation_id": None},
+        {"id": "demo_tx_previous_1_leisure", "user_id": user_id, "type": "gasto", "amount": 80000, "category": "Entretenimiento", "description": "Cine y salida de fin de semana", "date": month_date(1, 22), "time": "20:45:00", "account_method": "Tarjeta Crédito", "is_recurring": False, "fixed_obligation_id": None},
+        {"id": "demo_tx_previous_2_income_salary", "user_id": user_id, "type": "ingreso", "amount": 2000000, "category": "Nómina", "description": "Nómina mensual", "date": month_date(2, 15), "time": "08:30:00", "account_method": "Bancolombia", "is_recurring": False, "fixed_obligation_id": None},
+        {"id": "demo_tx_previous_2_income_extra", "user_id": user_id, "type": "ingreso", "amount": 180000, "category": "Honorarios", "description": "Asesoría independiente", "date": month_date(2, 26), "time": "16:00:00", "account_method": "Nequi", "is_recurring": False, "fixed_obligation_id": None},
+        {"id": "demo_tx_previous_2_rent", "user_id": user_id, "type": "gasto", "amount": 500000, "category": "Vivienda", "description": "Arriendo del apartamento", "date": month_date(2, 5), "time": "10:00:00", "account_method": "Transferencia Bancaria", "is_recurring": False, "fixed_obligation_id": None},
+        {"id": "demo_tx_previous_2_food", "user_id": user_id, "type": "gasto", "amount": 340000, "category": "Alimentación", "description": "Mercado y alimentos del hogar", "date": month_date(2, 10), "time": "18:00:00", "account_method": "Tarjeta Débito", "is_recurring": False, "fixed_obligation_id": None},
+        {"id": "demo_tx_previous_2_services", "user_id": user_id, "type": "gasto", "amount": 170000, "category": "Servicios", "description": "Servicios públicos e internet", "date": month_date(2, 14), "time": "14:30:00", "account_method": "PSE", "is_recurring": False, "fixed_obligation_id": None},
+        {"id": "demo_tx_previous_2_transport", "user_id": user_id, "type": "gasto", "amount": 110000, "category": "Transporte", "description": "Gasolina y mantenimiento", "date": month_date(2, 19), "time": "17:15:00", "account_method": "Nequi", "is_recurring": False, "fixed_obligation_id": None},
+        {"id": "demo_tx_previous_2_shopping", "user_id": user_id, "type": "gasto", "amount": 160000, "category": "Compras", "description": "Ropa y artículos para el hogar", "date": month_date(2, 22), "time": "16:30:00", "account_method": "Tarjeta Crédito", "is_recurring": False, "fixed_obligation_id": None},
     ]
-    if not existing_transactions:
-        sb.rest_request("transactions", method="POST", body=transactions, returning=True)
-
-    previous_month_1 = get_relative_month_key(1)
-    previous_month_2 = get_relative_month_key(2)
-    historical_transactions = [
-        {
-            "id": "demo_tx_previous_1_income_salary",
-            "user_id": user_id,
-            "type": "ingreso",
-            "amount": 2900000,
-            "category": "Nómina",
-            "description": "Nómina primera quincena",
-            "date": f"{previous_month_1}-15",
-            "time": "08:30:00",
-            "account_method": "Bancolombia",
-            "is_recurring": False,
-        },
-        {
-            "id": "demo_tx_previous_1_income_extra",
-            "user_id": user_id,
-            "type": "ingreso",
-            "amount": 650000,
-            "category": "Honorarios",
-            "description": "Proyecto freelance",
-            "date": f"{previous_month_1}-26",
-            "time": "16:00:00",
-            "account_method": "Nequi",
-            "is_recurring": False,
-        },
-        {
-            "id": "demo_tx_previous_1_rent",
-            "user_id": user_id,
-            "type": "gasto",
-            "amount": 1200000,
-            "category": "Vivienda",
-            "description": "Arriendo del apartamento",
-            "date": f"{previous_month_1}-05",
-            "time": "10:00:00",
-            "account_method": "Transferencia Bancaria",
-            "is_recurring": False,
-        },
-        {
-            "id": "demo_tx_previous_1_food",
-            "user_id": user_id,
-            "type": "gasto",
-            "amount": 460000,
-            "category": "Alimentación",
-            "description": "Mercado mensual",
-            "date": f"{previous_month_1}-08",
-            "time": "17:30:00",
-            "account_method": "Tarjeta Débito",
-            "is_recurring": False,
-        },
-        {
-            "id": "demo_tx_previous_1_services",
-            "user_id": user_id,
-            "type": "gasto",
-            "amount": 263000,
-            "category": "Servicios",
-            "description": "Energía, acueducto e internet",
-            "date": f"{previous_month_1}-12",
-            "time": "14:15:00",
-            "account_method": "PSE Bancolombia",
-            "is_recurring": False,
-        },
-        {
-            "id": "demo_tx_previous_1_transport",
-            "user_id": user_id,
-            "type": "gasto",
-            "amount": 215000,
-            "category": "Transporte",
-            "description": "Gasolina y estacionamiento",
-            "date": f"{previous_month_1}-18",
-            "time": "18:30:00",
-            "account_method": "Bancolombia Débito",
-            "is_recurring": False,
-        },
-        {
-            "id": "demo_tx_previous_1_leisure",
-            "user_id": user_id,
-            "type": "gasto",
-            "amount": 180000,
-            "category": "Entretenimiento",
-            "description": "Cine y salida de fin de semana",
-            "date": f"{previous_month_1}-22",
-            "time": "20:45:00",
-            "account_method": "Tarjeta Crédito",
-            "is_recurring": False,
-        },
-        {
-            "id": "demo_tx_previous_2_income_salary",
-            "user_id": user_id,
-            "type": "ingreso",
-            "amount": 2900000,
-            "category": "Nómina",
-            "description": "Nómina mensual",
-            "date": f"{previous_month_2}-15",
-            "time": "08:30:00",
-            "account_method": "Bancolombia",
-            "is_recurring": False,
-        },
-        {
-            "id": "demo_tx_previous_2_income_extra",
-            "user_id": user_id,
-            "type": "ingreso",
-            "amount": 750000,
-            "category": "Honorarios",
-            "description": "Asesoría independiente",
-            "date": f"{previous_month_2}-26",
-            "time": "16:00:00",
-            "account_method": "Nequi",
-            "is_recurring": False,
-        },
-        {
-            "id": "demo_tx_previous_2_rent",
-            "user_id": user_id,
-            "type": "gasto",
-            "amount": 1200000,
-            "category": "Vivienda",
-            "description": "Arriendo del apartamento",
-            "date": f"{previous_month_2}-05",
-            "time": "10:00:00",
-            "account_method": "Transferencia Bancaria",
-            "is_recurring": False,
-        },
-        {
-            "id": "demo_tx_previous_2_food",
-            "user_id": user_id,
-            "type": "gasto",
-            "amount": 680000,
-            "category": "Alimentación",
-            "description": "Mercado y alimentos del hogar",
-            "date": f"{previous_month_2}-10",
-            "time": "18:00:00",
-            "account_method": "Tarjeta Débito",
-            "is_recurring": False,
-        },
-        {
-            "id": "demo_tx_previous_2_services",
-            "user_id": user_id,
-            "type": "gasto",
-            "amount": 285000,
-            "category": "Servicios",
-            "description": "Servicios públicos e internet",
-            "date": f"{previous_month_2}-14",
-            "time": "14:30:00",
-            "account_method": "PSE",
-            "is_recurring": False,
-        },
-        {
-            "id": "demo_tx_previous_2_transport",
-            "user_id": user_id,
-            "type": "gasto",
-            "amount": 245000,
-            "category": "Transporte",
-            "description": "Gasolina y mantenimiento",
-            "date": f"{previous_month_2}-19",
-            "time": "17:15:00",
-            "account_method": "Nequi",
-            "is_recurring": False,
-        },
-        {
-            "id": "demo_tx_previous_2_shopping",
-            "user_id": user_id,
-            "type": "gasto",
-            "amount": 290000,
-            "category": "Compras",
-            "description": "Ropa y artículos para el hogar",
-            "date": f"{previous_month_2}-22",
-            "time": "16:30:00",
-            "account_method": "Tarjeta Crédito",
-            "is_recurring": False,
-        },
-    ]
-    missing_historical = [
-        transaction for transaction in historical_transactions
-        if transaction["id"] not in existing_transaction_ids
-    ]
-    if missing_historical:
-        sb.rest_request("transactions", method="POST", body=missing_historical, returning=True)
-
     fixed = [
-        {
-            "id": "demo_fixed_rent",
-            "user_id": user_id,
-            "name": "Arriendo",
-            "amount": 800000,
-            "due_day": 5,
-            "category": "Vivienda",
-            "status": "pending",
-            "paid_date": None,
-            "reminder_days_before": 3,
-            "is_automatic": False,
-            "notes": "Pago mensual del apartamento",
-        },
-        {
-            "id": "demo_fixed_internet",
-            "user_id": user_id,
-            "name": "Internet Fibra",
-            "amount": 130000,
-            "due_day": 8,
-            "category": "Servicios",
-            "status": "paid",
-            "paid_date": f"{month}-{day_value(2):02d}",
-            "reminder_days_before": 3,
-            "is_automatic": True,
-            "notes": "Internet del hogar",
-        },
-        {
-            "id": "demo_fixed_services",
-            "user_id": user_id,
-            "name": "Servicios públicos",
-            "amount": 220000,
-            "due_day": 15,
-            "category": "Servicios",
-            "status": "paid",
-            "paid_date": f"{month}-{day_value(1):02d}",
-            "reminder_days_before": 3,
-            "is_automatic": False,
-            "notes": "Luz, agua y gas",
-        },
+        {"id": "demo_fixed_rent", "user_id": user_id, "name": "Arriendo", "amount": 500000, "due_day": 5, "category": "Vivienda", "status": "pending", "paid_date": None, "reminder_days_before": 3, "is_automatic": False, "notes": "Pago mensual del apartamento"},
+        {"id": "demo_fixed_internet", "user_id": user_id, "name": "Internet Fibra", "amount": 80000, "due_day": 8, "category": "Servicios", "status": "paid", "paid_date": date_from_today(5), "reminder_days_before": 3, "is_automatic": True, "notes": "Internet del hogar"},
+        {"id": "demo_fixed_services", "user_id": user_id, "name": "Servicios públicos", "amount": 120000, "due_day": 15, "category": "Servicios", "status": "paid", "paid_date": date_from_today(6), "reminder_days_before": 3, "is_automatic": False, "notes": "Luz, agua y gas"},
     ]
-    if not existing_fixed:
-        sb.rest_request("fixed_obligations", method="POST", body=fixed, returning=True)
-
     goals = [
-        {
-            "id": "demo_goal_emergency",
-            "user_id": user_id,
-            "name": "Fondo de Emergencia",
-            "target_amount": 4000000,
-            "current_amount": 2400000,
-            "deadline": f"{now.year + 1}-01-20",
-            "icon": "shield",
-            "color": "#0058bc",
-            "category": "Seguridad",
-            "image_url": "",
-        },
-        {
-            "id": "demo_goal_laptop",
-            "user_id": user_id,
-            "name": "MacBook M3 Pro",
-            "target_amount": 5000000,
-            "current_amount": 3200000,
-            "deadline": f"{now.year}-12-20",
-            "icon": "laptop",
-            "color": "#0058bc",
-            "category": "Tecnología",
-            "image_url": "",
-        },
+        {"id": "demo_goal_emergency", "user_id": user_id, "name": "Fondo de Emergencia", "target_amount": 3000000, "current_amount": 120000, "deadline": f"{now.year + 1}-06-30", "icon": "shield", "color": "#0058bc", "category": "Seguridad", "image_url": ""},
+        {"id": "demo_goal_trip", "user_id": user_id, "name": "Viaje familiar", "target_amount": 1800000, "current_amount": 80000, "deadline": f"{now.year + 1}-12-15", "icon": "flight", "color": "#00838f", "category": "Viajes", "image_url": ""},
     ]
-    if not existing_goals:
-        sb.rest_request("savings_goals", method="POST", body=goals, returning=True)
-
     contributions = [
-        {
-            "id": "demo_contribution_1",
-            "user_id": user_id,
-            "goal_id": "demo_goal_emergency",
-            "goal_name": "Fondo de Emergencia",
-            "amount": 200000,
-            "date": f"{month}-{day_value(1):02d}",
-            "type": "Automático",
-            "timestamp": int(time.time() * 1000) - 3600000,
-        },
-        {
-            "id": "demo_contribution_2",
-            "user_id": user_id,
-            "goal_id": "demo_goal_laptop",
-            "goal_name": "MacBook M3 Pro",
-            "amount": 150000,
-            "date": f"{month}-{day_value(3):02d}",
-            "type": "Manual",
-            "timestamp": int(time.time() * 1000) - 7200000,
-        },
+        {"id": "demo_contribution_1", "user_id": user_id, "goal_id": "demo_goal_emergency", "goal_name": "Fondo de Emergencia", "amount": 120000, "date": date_from_today(1), "type": "Automático", "timestamp": timestamp_now - 3600000},
+        {"id": "demo_contribution_2", "user_id": user_id, "goal_id": "demo_goal_trip", "goal_name": "Viaje familiar", "amount": 80000, "date": date_from_today(3), "type": "Manual", "timestamp": timestamp_now - 7200000},
     ]
-    existing_contributions = sb.rest_request("goal_contributions", params={"user_id": f"eq.{user_id}", "limit": 1}) or []
-    if not existing_contributions:
-        sb.rest_request("goal_contributions", method="POST", body=contributions, returning=True)
+    category_budgets = [
+        {"id": f"cb_{user_id}_{category}", "user_id": user_id, "category": category, "limit_amount": limit, "icon": icon}
+        for category, limit, icon in [
+            ("Alimentación", 400000, "restaurant"), ("Transporte", 180000, "directions_car"),
+            ("Entretenimiento", 150000, "sports_esports"), ("Salud", 120000, "medical_services"),
+            ("Compras", 150000, "shopping_bag"), ("Servicios", 180000, "bolt"),
+            ("Educación", 100000, "school"), ("Otros", 100000, "more_horiz"),
+        ]
+    ]
+
+    # The demo is intentionally ephemeral: every new demo session starts from
+    # this clean dataset, so interactions never become permanent records.
+    demo_tables = ("goal_contributions", "transactions", "fixed_obligations", "savings_goals", "category_budgets")
+    with ThreadPoolExecutor(max_workers=len(demo_tables)) as pool:
+        list(pool.map(
+            lambda table: sb.rest_request(table, method="DELETE", params={"user_id": f"eq.{user_id}"}),
+            demo_tables,
+        ))
+
+    writes = [
+        lambda: sb.rest_request(
+            "profiles",
+            method="PATCH",
+            params={"id": f"eq.{user_id}"},
+            body={"name": "Fixelar", "monthly_salary": 2000000, "monthly_budget_limit": 2000000, "budget_needs": 50, "budget_wants": 30, "budget_savings": 20, "alert_80_percent": True, "auto_adjust_variable": True, "smart_categorization": True},
+        ),
+        lambda: sb.rest_request("category_budgets", method="POST", body=category_budgets, returning=True),
+        lambda: sb.rest_request("transactions", method="POST", body=transactions, returning=True),
+        lambda: sb.rest_request("fixed_obligations", method="POST", body=fixed, returning=True),
+        lambda: sb.rest_request("savings_goals", method="POST", body=goals, returning=True),
+        lambda: sb.rest_request("goal_contributions", method="POST", body=contributions, returning=True),
+    ]
+    with ThreadPoolExecutor(max_workers=len(writes)) as pool:
+        list(pool.map(lambda write: write(), writes))
 
 
 def update_user(user_id, updates):
@@ -625,10 +382,16 @@ def delete_user(user_id):
         sb.rest_request(table, method="DELETE", params={"user_id" if table != "profiles" else "id": f"eq.{user_id}"})
 
 
-def get_transactions(user_id):
+def get_transactions(user_id, month_key=None):
+    params = {"user_id": f"eq.{user_id}", "order": "date.desc,created_at.desc"}
+    if month_key:
+        start_date, end_date = _month_bounds(month_key)
+        params["date"] = f"gte.{start_date}"
+        params["date.lt"] = end_date
     rows = sb.rest_request(
         "transactions",
-        params={"user_id": f"eq.{user_id}", "order": "date.desc,created_at.desc"},
+        params=params,
+        select="id,user_id,type,amount,category,description,date,time,account_method,is_recurring,fixed_obligation_id,created_at",
     ) or []
     return [
         {
@@ -672,14 +435,8 @@ def add_transaction(user_id, tx):
 
 
 def update_transaction(user_id, tx_id, updates):
-    field_map = {
-        "amount": "amount", "description": "description", "category": "category",
-        "date": "date", "time": "time", "accountMethod": "account_method",
-        "isRecurring": "is_recurring", "type": "type",
-    }
+    field_map = {"description": "description"}
     patch = {field_map[key]: value for key, value in updates.items() if key in field_map}
-    if "date" in patch:
-        patch["date"] = _iso_date(patch["date"], True)
     if patch:
         sb.rest_request("transactions", method="PATCH", params={"id": f"eq.{tx_id}", "user_id": f"eq.{user_id}"}, body=patch)
 
@@ -688,8 +445,35 @@ def delete_transaction(user_id, tx_id):
     sb.rest_request("transactions", method="DELETE", params={"id": f"eq.{tx_id}", "user_id": f"eq.{user_id}"})
 
 
+def reset_monthly_fixed_obligations(user_id, month_key=None):
+    """Reset recurring payment state without deleting closed-month records."""
+    month_key = month_key or get_current_month_key()
+    rows = sb.rest_request(
+        "fixed_obligations",
+        params={"user_id": f"eq.{user_id}"},
+        select="id,status,paid_date",
+    ) or []
+    stale_rows = [
+        row for row in rows
+        if row.get("status") == "paid" and not str(row.get("paid_date") or "").startswith(month_key)
+    ]
+    for row in stale_rows:
+        sb.rest_request(
+            "fixed_obligations",
+            method="PATCH",
+            params={"id": f"eq.{row.get('id')}", "user_id": f"eq.{user_id}"},
+            body={"status": "pending", "paid_date": None},
+        )
+    return len(stale_rows)
+
+
 def get_fixed_obligations(user_id):
-    rows = sb.rest_request("fixed_obligations", params={"user_id": f"eq.{user_id}", "order": "due_day.asc"}) or []
+    reset_monthly_fixed_obligations(user_id)
+    rows = sb.rest_request(
+        "fixed_obligations",
+        params={"user_id": f"eq.{user_id}", "order": "due_day.asc"},
+        select="id,user_id,name,amount,due_day,category,status,paid_date,reminder_days_before,is_automatic,notes",
+    ) or []
     return [
         {
             "id": row.get("id"), "userId": row.get("user_id"), "name": row.get("name"),
@@ -762,23 +546,43 @@ def toggle_pay_fixed_obligation(user_id, item_id):
 
 
 def get_savings_goals(user_id):
-    rows = sb.rest_request("savings_goals", params={"user_id": f"eq.{user_id}", "order": "created_at.asc"}) or []
-    return [
-        {
+    rows = sb.rest_request(
+        "savings_goals",
+        params={"user_id": f"eq.{user_id}", "order": "created_at.asc"},
+        select="id,user_id,name,target_amount,current_amount,deadline,icon,color,category,image_url",
+    ) or []
+    contributions = get_goal_contributions(user_id)
+    totals = {}
+    for contribution in contributions:
+        goal_id = str(contribution.get("goalId") or "")
+        if goal_id:
+            totals[goal_id] = totals.get(goal_id, 0) + _num(contribution.get("amount"))
+
+    result = []
+    for row in rows:
+        goal_id = str(row.get("id") or "")
+        contributed_amount = totals.get(goal_id, 0)
+        if _num(row.get("current_amount")) != contributed_amount:
+            sb.rest_request(
+                "savings_goals",
+                method="PATCH",
+                params={"id": f"eq.{goal_id}", "user_id": f"eq.{user_id}"},
+                body={"current_amount": contributed_amount},
+            )
+        result.append({
             "id": row.get("id"), "userId": row.get("user_id"), "name": row.get("name"),
-            "targetAmount": _num(row.get("target_amount")), "currentAmount": _num(row.get("current_amount")),
+            "targetAmount": _num(row.get("target_amount")), "currentAmount": contributed_amount,
             "deadline": row.get("deadline") or "", "icon": row.get("icon"), "color": row.get("color"),
             "category": row.get("category") or "", "imageUrl": row.get("image_url") or "",
-        }
-        for row in rows
-    ]
+        })
+    return result
 
 
 def add_savings_goal(user_id, goal):
     goal_id = goal.get("id") or f"goal_{int(time.time() * 1000)}"
     row = {
         "id": goal_id, "user_id": user_id, "name": goal["name"], "target_amount": goal["targetAmount"],
-        "current_amount": goal.get("currentAmount", 0), "deadline": _iso_date(goal.get("deadline")),
+        "current_amount": 0, "deadline": _iso_date(goal.get("deadline")),
         "icon": goal.get("icon", "laptop"), "color": goal.get("color", "#0058bc"),
         "category": goal.get("category", ""), "image_url": goal.get("imageUrl", ""),
     }
@@ -788,7 +592,7 @@ def add_savings_goal(user_id, goal):
 
 def update_savings_goal(user_id, goal_id, updates):
     field_map = {
-        "name": "name", "targetAmount": "target_amount", "currentAmount": "current_amount",
+        "name": "name", "targetAmount": "target_amount",
         "deadline": "deadline", "icon": "icon", "color": "color", "category": "category", "imageUrl": "image_url",
     }
     patch = {field_map[key]: value for key, value in updates.items() if key in field_map}
@@ -807,7 +611,12 @@ def contribute_to_goal(user_id, goal_id, amount, contribution_type="Manual"):
     if not rows:
         return None
     goal = rows[0]
-    new_amount = _num(goal.get("current_amount")) + amount
+    contribution_rows = sb.rest_request(
+        "goal_contributions",
+        params={"goal_id": f"eq.{goal_id}", "user_id": f"eq.{user_id}", "select": "amount"},
+    ) or []
+    contributed_amount = sum(_num(row.get("amount")) for row in contribution_rows)
+    new_amount = contributed_amount + amount
     sb.rest_request("savings_goals", method="PATCH", params={"id": f"eq.{goal_id}", "user_id": f"eq.{user_id}"}, body={"current_amount": new_amount})
     contribution_id = f"contrib_{int(time.time() * 1000)}"
     sb.rest_request(
@@ -823,8 +632,17 @@ def contribute_to_goal(user_id, goal_id, amount, contribution_type="Manual"):
     return {"goalId": goal_id, "newAmount": new_amount, "contributionId": contribution_id}
 
 
-def get_goal_contributions(user_id):
-    rows = sb.rest_request("goal_contributions", params={"user_id": f"eq.{user_id}", "order": "timestamp.desc"}) or []
+def get_goal_contributions(user_id, month_key=None):
+    params = {"user_id": f"eq.{user_id}", "order": "timestamp.desc"}
+    if month_key:
+        start_date, end_date = _month_bounds(month_key)
+        params["date"] = f"gte.{start_date}"
+        params["date.lt"] = end_date
+    rows = sb.rest_request(
+        "goal_contributions",
+        params=params,
+        select="id,user_id,goal_id,goal_name,amount,date,type,timestamp",
+    ) or []
     return [
         {
             "id": row.get("id"), "userId": row.get("user_id"), "goalId": row.get("goal_id"),
@@ -835,8 +653,32 @@ def get_goal_contributions(user_id):
     ]
 
 
+def get_record_months(user_id):
+    """Return month keys without loading full transaction histories."""
+    transaction_rows = sb.rest_request(
+        "transactions",
+        params={"user_id": f"eq.{user_id}"},
+        select="date",
+    ) or []
+    contribution_rows = sb.rest_request(
+        "goal_contributions",
+        params={"user_id": f"eq.{user_id}"},
+        select="date",
+    ) or []
+    months = {
+        str(row.get("date") or "")[:7]
+        for row in [*transaction_rows, *contribution_rows]
+        if len(str(row.get("date") or "")) >= 7
+    }
+    return sorted((month for month in months if month[4:5] == "-"), reverse=True)
+
+
 def get_category_budgets(user_id):
-    rows = sb.rest_request("category_budgets", params={"user_id": f"eq.{user_id}", "order": "category.asc"}) or []
+    rows = sb.rest_request(
+        "category_budgets",
+        params={"user_id": f"eq.{user_id}", "order": "category.asc"},
+        select="category,limit_amount,icon",
+    ) or []
     return [{"category": row.get("category"), "limit": _num(row.get("limit_amount")), "icon": row.get("icon")} for row in rows]
 
 

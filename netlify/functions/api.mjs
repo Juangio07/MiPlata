@@ -23,6 +23,10 @@ function json(data, status = 200, extraHeaders = {}) {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Headers': 'Content-Type, Authorization',
       'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
+      'X-Content-Type-Options': 'nosniff',
+      'X-Frame-Options': 'DENY',
+      'Referrer-Policy': 'strict-origin-when-cross-origin',
+      'Cache-Control': 'no-store',
       ...extraHeaders,
     },
   });
@@ -76,9 +80,10 @@ async function authRequest(path, method = 'GET', body = null, key = SUPABASE_PUB
   });
 }
 
-async function restRequest(table, { method = 'GET', params = {}, body = null, returning = false } = {}) {
+async function restRequest(table, { method = 'GET', params = {}, body = null, returning = false, select = '' } = {}) {
   const url = new URL(`${SUPABASE_URL}/rest/v1/${table}`);
   Object.entries(params).forEach(([key, value]) => url.searchParams.set(key, value));
+  if (select) url.searchParams.set('select', select);
   return supabaseRequest(url, {
     method,
     headers: {
@@ -93,6 +98,12 @@ function monthKey(date = new Date()) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
 }
 
+function monthBounds(key) {
+  const [year, month] = String(key).split('-').map(Number);
+  const next = new Date(year, month, 1);
+  return [`${year}-${String(month).padStart(2, '0')}-01`, `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, '0')}-01`];
+}
+
 function monthLabel(key) {
   const [year, month] = String(key || monthKey()).split('-');
   return `${MONTHS[(Number(month) || 1) - 1] || month} ${year}`;
@@ -101,6 +112,43 @@ function monthLabel(key) {
 function number(value) {
   const result = Number(value);
   return Number.isFinite(result) ? result : 0;
+}
+
+function nonNegativeNumber(value, allowZero = true) {
+  const result = Number(value);
+  if (!Number.isFinite(result) || result < 0 || (!allowZero && result === 0)) return null;
+  return result;
+}
+
+function isValidMonthKey(value) {
+  const match = /^(\d{4})-(\d{2})$/.exec(String(value || '').trim());
+  return Boolean(match && Number(match[2]) >= 1 && Number(match[2]) <= 12);
+}
+
+function isValidEmail(email) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email || '');
+}
+
+function isDuplicateEmailError(error) {
+  const payload = error?.payload || {};
+  const details = [
+    payload.code,
+    payload.error_code,
+    payload.msg,
+    payload.message,
+    payload.error,
+    payload.error_description,
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+  return error?.status === 409 || [
+    'email_exists',
+    'user_already_exists',
+    'already registered',
+    'already been registered',
+    'already exists',
+  ].some((marker) => details.includes(marker));
 }
 
 function dateOnly(value, fallbackToday = false) {
@@ -121,6 +169,44 @@ function dateOnly(value, fallbackToday = false) {
     }
   }
   return fallbackToday ? new Date().toISOString().slice(0, 10) : null;
+}
+
+function isPastGoalMonth(value) {
+  const normalized = dateOnly(value);
+  if (!normalized) return false;
+  const [year, month] = normalized.split('-').map(Number);
+  const now = new Date();
+  return year < now.getFullYear() || (year === now.getFullYear() && month < now.getMonth() + 1);
+}
+
+async function availableCashForUser(userId) {
+  const [profiles, transactions, goals] = await Promise.all([
+    restRequest('profiles', {
+      params: { id: `eq.${userId}`, limit: '1' },
+      select: 'initial_balance',
+    }),
+    restRequest('transactions', {
+      params: { user_id: `eq.${userId}` },
+      select: 'type,amount,date',
+    }),
+    restRequest('savings_goals', {
+      params: { user_id: `eq.${userId}` },
+      select: 'current_amount',
+    }),
+  ]);
+
+  const currentMonth = monthKey();
+  const totalIncome = (transactions || [])
+    .filter((transaction) => transaction.type === 'ingreso' && String(transaction.date || '').startsWith(currentMonth))
+    .reduce((sum, transaction) => sum + number(transaction.amount), 0);
+  const totalExpenses = (transactions || [])
+    .filter((transaction) => transaction.type === 'gasto' && String(transaction.date || '').startsWith(currentMonth))
+    .reduce((sum, transaction) => sum + number(transaction.amount), 0);
+  const totalSavings = (goals || [])
+    .reduce((sum, goal) => sum + number(goal.current_amount), 0);
+  const initialBalance = number(profiles?.[0]?.initial_balance);
+
+  return Math.max(0, initialBalance + totalIncome - totalExpenses - totalSavings);
 }
 
 function timestamp(value) {
@@ -159,7 +245,10 @@ function profileToClient(row) {
 }
 
 async function getProfile(userId) {
-  const rows = await restRequest('profiles', { params: { id: `eq.${userId}`, limit: '1' } });
+  const rows = await restRequest('profiles', {
+    params: { id: `eq.${userId}`, limit: '1' },
+    select: 'id,name,email,avatar_url,plan,member_since,monthly_salary,initial_balance,monthly_budget_limit,budget_needs,budget_wants,budget_savings,alert_80_percent,auto_adjust_variable,currency,reset_day,smart_categorization',
+  });
   return profileToClient(rows?.[0]);
 }
 
@@ -174,7 +263,7 @@ const DEFAULT_CATEGORIES = [
   ['Otros', 150000, 'more_horiz'],
 ];
 
-async function ensureUserDefaults(userId, name, email, monthlySalary = null, avatarUrl = '') {
+async function ensureUserDefaults(userId, name, email, monthlySalary = null, avatarUrl = '', applyDefaultPreferences = false) {
   const rows = await restRequest('profiles', { params: { id: `eq.${userId}`, limit: '1' } });
   if (!rows?.length) {
     await restRequest('profiles', {
@@ -187,6 +276,9 @@ async function ensureUserDefaults(userId, name, email, monthlySalary = null, ava
         avatar_url: avatarUrl || null,
         monthly_salary: monthlySalary || 0,
         monthly_budget_limit: monthlySalary || 0,
+        alert_80_percent: true,
+        auto_adjust_variable: true,
+        smart_categorization: true,
       },
     });
   } else {
@@ -197,6 +289,11 @@ async function ensureUserDefaults(userId, name, email, monthlySalary = null, ava
     if (monthlySalary !== null) {
       patch.monthly_salary = monthlySalary || 0;
       if (!rows[0].monthly_budget_limit) patch.monthly_budget_limit = monthlySalary || 0;
+    }
+    if (applyDefaultPreferences) {
+      patch.alert_80_percent = true;
+      patch.auto_adjust_variable = true;
+      patch.smart_categorization = true;
     }
     if (Object.keys(patch).length) {
       await restRequest('profiles', { method: 'PATCH', params: { id: `eq.${userId}` }, body: patch });
@@ -242,8 +339,8 @@ async function addTransaction(userId, tx) {
   return id;
 }
 
-async function initializeRegisteredUser(userId, name, email, salary, avatarUrl) {
-  const profile = await ensureUserDefaults(userId, name, email, salary, avatarUrl);
+async function initializeRegisteredUser(userId, name, email, salary, avatarUrl, applyDefaultPreferences = true) {
+  const profile = await ensureUserDefaults(userId, name, email, salary, avatarUrl, applyDefaultPreferences);
   if (number(salary) > 0) {
     const existing = await restRequest('transactions', {
       params: {
@@ -287,72 +384,70 @@ function demoMonthDate(offset, day) {
 }
 
 async function ensureDemoData(userId) {
-  const transactions = await restRequest('transactions', { params: { user_id: `eq.${userId}` } });
-  const fixed = await restRequest('fixed_obligations', { params: { user_id: `eq.${userId}`, limit: '1' } });
-  const goals = await restRequest('savings_goals', { params: { user_id: `eq.${userId}`, limit: '1' } });
-  const existingTransactionIds = new Set((transactions || []).map((row) => row.id));
-
-  if (!transactions?.length) {
-    await restRequest('transactions', {
-      method: 'POST', returning: true, body: [
-        { id: 'demo_tx_income', user_id: userId, type: 'ingreso', amount: 5800000, category: 'Nómina', description: 'Nómina mensual', date: demoDate(3), time: '08:30:00', account_method: 'Bancolombia', is_recurring: false, fixed_obligation_id: null },
-        { id: 'demo_tx_food', user_id: userId, type: 'gasto', amount: 184500, category: 'Alimentación', description: 'Supermercado de la semana', date: demoDate(1), time: '18:15:00', account_method: 'Tarjeta Débito', is_recurring: false, fixed_obligation_id: null },
-        { id: 'demo_tx_transport', user_id: userId, type: 'gasto', amount: 65000, category: 'Transporte', description: 'Gasolina y transporte', date: demoDate(2), time: '17:45:00', account_method: 'Nequi QR', is_recurring: false, fixed_obligation_id: null },
-        { id: 'demo_tx_entertainment', user_id: userId, type: 'gasto', amount: 52000, category: 'Entretenimiento', description: 'Cine y salida', date: demoDate(4), time: '20:10:00', account_method: 'Tarjeta Crédito', is_recurring: false, fixed_obligation_id: null },
-      ],
-    });
-  }
-
-  const historicalTransactions = [
-    { id: 'demo_tx_previous_1_income_salary', user_id: userId, type: 'ingreso', amount: 2900000, category: 'Nómina', description: 'Nómina primera quincena', date: demoMonthDate(1, 15), time: '08:30:00', account_method: 'Bancolombia', is_recurring: false, fixed_obligation_id: null },
-    { id: 'demo_tx_previous_1_income_extra', user_id: userId, type: 'ingreso', amount: 650000, category: 'Honorarios', description: 'Proyecto freelance', date: demoMonthDate(1, 26), time: '16:00:00', account_method: 'Nequi', is_recurring: false, fixed_obligation_id: null },
-    { id: 'demo_tx_previous_1_rent', user_id: userId, type: 'gasto', amount: 1200000, category: 'Vivienda', description: 'Arriendo del apartamento', date: demoMonthDate(1, 5), time: '10:00:00', account_method: 'Transferencia Bancaria', is_recurring: false, fixed_obligation_id: null },
-    { id: 'demo_tx_previous_1_food', user_id: userId, type: 'gasto', amount: 460000, category: 'Alimentación', description: 'Mercado mensual', date: demoMonthDate(1, 8), time: '17:30:00', account_method: 'Tarjeta Débito', is_recurring: false, fixed_obligation_id: null },
-    { id: 'demo_tx_previous_1_services', user_id: userId, type: 'gasto', amount: 263000, category: 'Servicios', description: 'Energía, acueducto e internet', date: demoMonthDate(1, 12), time: '14:15:00', account_method: 'PSE Bancolombia', is_recurring: false, fixed_obligation_id: null },
-    { id: 'demo_tx_previous_1_transport', user_id: userId, type: 'gasto', amount: 215000, category: 'Transporte', description: 'Gasolina y estacionamiento', date: demoMonthDate(1, 18), time: '18:30:00', account_method: 'Bancolombia Débito', is_recurring: false, fixed_obligation_id: null },
-    { id: 'demo_tx_previous_1_leisure', user_id: userId, type: 'gasto', amount: 180000, category: 'Entretenimiento', description: 'Cine y salida de fin de semana', date: demoMonthDate(1, 22), time: '20:45:00', account_method: 'Tarjeta Crédito', is_recurring: false, fixed_obligation_id: null },
-    { id: 'demo_tx_previous_2_income_salary', user_id: userId, type: 'ingreso', amount: 2900000, category: 'Nómina', description: 'Nómina mensual', date: demoMonthDate(2, 15), time: '08:30:00', account_method: 'Bancolombia', is_recurring: false, fixed_obligation_id: null },
-    { id: 'demo_tx_previous_2_income_extra', user_id: userId, type: 'ingreso', amount: 750000, category: 'Honorarios', description: 'Asesoría independiente', date: demoMonthDate(2, 26), time: '16:00:00', account_method: 'Nequi', is_recurring: false, fixed_obligation_id: null },
-    { id: 'demo_tx_previous_2_rent', user_id: userId, type: 'gasto', amount: 1200000, category: 'Vivienda', description: 'Arriendo del apartamento', date: demoMonthDate(2, 5), time: '10:00:00', account_method: 'Transferencia Bancaria', is_recurring: false, fixed_obligation_id: null },
-    { id: 'demo_tx_previous_2_food', user_id: userId, type: 'gasto', amount: 680000, category: 'Alimentación', description: 'Mercado y alimentos del hogar', date: demoMonthDate(2, 10), time: '18:00:00', account_method: 'Tarjeta Débito', is_recurring: false, fixed_obligation_id: null },
-    { id: 'demo_tx_previous_2_services', user_id: userId, type: 'gasto', amount: 285000, category: 'Servicios', description: 'Servicios públicos e internet', date: demoMonthDate(2, 14), time: '14:30:00', account_method: 'PSE', is_recurring: false, fixed_obligation_id: null },
-    { id: 'demo_tx_previous_2_transport', user_id: userId, type: 'gasto', amount: 245000, category: 'Transporte', description: 'Gasolina y mantenimiento', date: demoMonthDate(2, 19), time: '17:15:00', account_method: 'Nequi', is_recurring: false, fixed_obligation_id: null },
-    { id: 'demo_tx_previous_2_shopping', user_id: userId, type: 'gasto', amount: 290000, category: 'Compras', description: 'Ropa y artículos para el hogar', date: demoMonthDate(2, 22), time: '16:30:00', account_method: 'Tarjeta Crédito', is_recurring: false, fixed_obligation_id: null },
+  const now = new Date();
+  const currentMonth = monthKey();
+  const currentDay = Math.max(1, Math.min(28, now.getDate()));
+  const dateFromToday = (offset) => `${currentMonth}-${String(Math.max(1, currentDay - offset)).padStart(2, '0')}`;
+  const tx = (id, type, amount, category, description, date, time, accountMethod, fixedObligationId = null, isRecurring = false) => ({
+    id, user_id: userId, type, amount, category, description, date, time, account_method: accountMethod,
+    is_recurring: isRecurring, fixed_obligation_id: fixedObligationId,
+  });
+  const transactions = [
+    tx('demo_tx_income', 'ingreso', 2000000, 'Nómina', 'Nómina mensual', dateFromToday(3), '08:30:00', 'Bancolombia'),
+    tx('demo_tx_food', 'gasto', 240000, 'Alimentación', 'Mercado de la semana', dateFromToday(1), '18:15:00', 'Tarjeta Débito'),
+    tx('demo_tx_transport', 'gasto', 85000, 'Transporte', 'Gasolina y transporte', dateFromToday(2), '17:45:00', 'Nequi QR'),
+    tx('demo_tx_health', 'gasto', 45000, 'Salud', 'Medicamentos', dateFromToday(4), '11:10:00', 'Efectivo'),
+    tx('demo_tx_internet', 'gasto', 80000, 'Servicios', 'Pago Internet Fibra', dateFromToday(5), '09:00:00', 'Débito automático', 'demo_fixed_internet', true),
+    tx('demo_tx_services', 'gasto', 120000, 'Servicios', 'Pago servicios públicos', dateFromToday(6), '14:00:00', 'PSE', 'demo_fixed_services'),
+    tx('demo_tx_previous_1_income_salary', 'ingreso', 2000000, 'Nómina', 'Nómina mensual', demoMonthDate(1, 15), '08:30:00', 'Bancolombia'),
+    tx('demo_tx_previous_1_income_extra', 'ingreso', 250000, 'Honorarios', 'Trabajo freelance', demoMonthDate(1, 26), '16:00:00', 'Nequi'),
+    tx('demo_tx_previous_1_rent', 'gasto', 500000, 'Vivienda', 'Arriendo del apartamento', demoMonthDate(1, 5), '10:00:00', 'Transferencia Bancaria'),
+    tx('demo_tx_previous_1_food', 'gasto', 300000, 'Alimentación', 'Mercado mensual', demoMonthDate(1, 8), '17:30:00', 'Tarjeta Débito'),
+    tx('demo_tx_previous_1_services', 'gasto', 150000, 'Servicios', 'Servicios públicos e internet', demoMonthDate(1, 12), '14:15:00', 'PSE'),
+    tx('demo_tx_previous_1_transport', 'gasto', 100000, 'Transporte', 'Gasolina y transporte', demoMonthDate(1, 18), '18:30:00', 'Bancolombia Débito'),
+    tx('demo_tx_previous_1_leisure', 'gasto', 80000, 'Entretenimiento', 'Cine y salida de fin de semana', demoMonthDate(1, 22), '20:45:00', 'Tarjeta Crédito'),
+    tx('demo_tx_previous_2_income_salary', 'ingreso', 2000000, 'Nómina', 'Nómina mensual', demoMonthDate(2, 15), '08:30:00', 'Bancolombia'),
+    tx('demo_tx_previous_2_income_extra', 'ingreso', 180000, 'Honorarios', 'Asesoría independiente', demoMonthDate(2, 26), '16:00:00', 'Nequi'),
+    tx('demo_tx_previous_2_rent', 'gasto', 500000, 'Vivienda', 'Arriendo del apartamento', demoMonthDate(2, 5), '10:00:00', 'Transferencia Bancaria'),
+    tx('demo_tx_previous_2_food', 'gasto', 340000, 'Alimentación', 'Mercado y alimentos del hogar', demoMonthDate(2, 10), '18:00:00', 'Tarjeta Débito'),
+    tx('demo_tx_previous_2_services', 'gasto', 170000, 'Servicios', 'Servicios públicos e internet', demoMonthDate(2, 14), '14:30:00', 'PSE'),
+    tx('demo_tx_previous_2_transport', 'gasto', 110000, 'Transporte', 'Gasolina y mantenimiento', demoMonthDate(2, 19), '17:15:00', 'Nequi'),
+    tx('demo_tx_previous_2_shopping', 'gasto', 160000, 'Compras', 'Ropa y artículos para el hogar', demoMonthDate(2, 22), '16:30:00', 'Tarjeta Crédito'),
   ];
-  const missingHistorical = historicalTransactions.filter((transaction) => !existingTransactionIds.has(transaction.id));
-  if (missingHistorical.length) {
-    await restRequest('transactions', { method: 'POST', returning: true, body: missingHistorical });
-  }
+  const fixed = [
+    { id: 'demo_fixed_rent', user_id: userId, name: 'Arriendo', amount: 500000, due_day: 5, category: 'Vivienda', status: 'pending', paid_date: null, reminder_days_before: 3, is_automatic: false, notes: 'Pago mensual del apartamento' },
+    { id: 'demo_fixed_internet', user_id: userId, name: 'Internet Fibra', amount: 80000, due_day: 8, category: 'Servicios', status: 'paid', paid_date: dateFromToday(5), reminder_days_before: 3, is_automatic: true, notes: 'Internet del hogar' },
+    { id: 'demo_fixed_services', user_id: userId, name: 'Servicios públicos', amount: 120000, due_day: 15, category: 'Servicios', status: 'paid', paid_date: dateFromToday(6), reminder_days_before: 3, is_automatic: false, notes: 'Luz, agua y gas' },
+  ];
+  const goals = [
+    { id: 'demo_goal_emergency', user_id: userId, name: 'Fondo de Emergencia', target_amount: 3000000, current_amount: 120000, deadline: `${now.getFullYear() + 1}-06-30`, icon: 'shield', color: '#0058bc', category: 'Seguridad', image_url: '' },
+    { id: 'demo_goal_trip', user_id: userId, name: 'Viaje familiar', target_amount: 1800000, current_amount: 80000, deadline: `${now.getFullYear() + 1}-12-15`, icon: 'flight', color: '#00838f', category: 'Viajes', image_url: '' },
+  ];
+  const contributions = [
+    { id: 'demo_contribution_1', user_id: userId, goal_id: 'demo_goal_emergency', goal_name: 'Fondo de Emergencia', amount: 120000, date: dateFromToday(1), type: 'Automático', timestamp: Date.now() - 3600000 },
+    { id: 'demo_contribution_2', user_id: userId, goal_id: 'demo_goal_trip', goal_name: 'Viaje familiar', amount: 80000, date: dateFromToday(3), type: 'Manual', timestamp: Date.now() - 7200000 },
+  ];
+  const categoryBudgets = [
+    ['Alimentación', 400000, 'restaurant'], ['Transporte', 180000, 'directions_car'],
+    ['Entretenimiento', 150000, 'sports_esports'], ['Salud', 120000, 'medical_services'],
+    ['Compras', 150000, 'shopping_bag'], ['Servicios', 180000, 'bolt'],
+    ['Educación', 100000, 'school'], ['Otros', 100000, 'more_horiz'],
+  ].map(([category, limit_amount, icon]) => ({ id: `cb_${userId}_${category}`, user_id: userId, category, limit_amount, icon }));
 
-  if (!fixed?.length) {
-    const currentMonth = monthKey();
-    await restRequest('fixed_obligations', {
-      method: 'POST', returning: true, body: [
-        { id: 'demo_fixed_rent', user_id: userId, name: 'Arriendo', amount: 800000, due_day: 5, category: 'Vivienda', status: 'pending', paid_date: null, reminder_days_before: 3, is_automatic: false, notes: 'Pago mensual del apartamento' },
-        { id: 'demo_fixed_internet', user_id: userId, name: 'Internet Fibra', amount: 130000, due_day: 8, category: 'Servicios', status: 'paid', paid_date: `${currentMonth}-${String(Math.max(1, new Date().getDate() - 2)).padStart(2, '0')}`, reminder_days_before: 3, is_automatic: true, notes: 'Internet del hogar' },
-        { id: 'demo_fixed_services', user_id: userId, name: 'Servicios públicos', amount: 220000, due_day: 15, category: 'Servicios', status: 'paid', paid_date: `${currentMonth}-${String(Math.max(1, new Date().getDate() - 1)).padStart(2, '0')}`, reminder_days_before: 3, is_automatic: false, notes: 'Luz, agua y gas' },
-      ],
-    });
-  }
-
-  if (!goals?.length) {
-    await restRequest('savings_goals', {
-      method: 'POST', returning: true, body: [
-        { id: 'demo_goal_emergency', user_id: userId, name: 'Fondo de Emergencia', target_amount: 4000000, current_amount: 2400000, deadline: `${new Date().getFullYear() + 1}-01-20`, icon: 'shield', color: '#0058bc', category: 'Seguridad', image_url: '' },
-        { id: 'demo_goal_laptop', user_id: userId, name: 'MacBook M3 Pro', target_amount: 5000000, current_amount: 3200000, deadline: `${new Date().getFullYear()}-12-20`, icon: 'laptop', color: '#0058bc', category: 'Tecnología', image_url: '' },
-      ],
-    });
-  }
-
-  const contributions = await restRequest('goal_contributions', { params: { user_id: `eq.${userId}`, limit: '1' } });
-  if (!contributions?.length) {
-    await restRequest('goal_contributions', {
-      method: 'POST', returning: true, body: [
-        { id: 'demo_contribution_1', user_id: userId, goal_id: 'demo_goal_emergency', goal_name: 'Fondo de Emergencia', amount: 200000, date: demoDate(1), type: 'Automático', timestamp: Date.now() - 3600000 },
-        { id: 'demo_contribution_2', user_id: userId, goal_id: 'demo_goal_laptop', goal_name: 'MacBook M3 Pro', amount: 150000, date: demoDate(3), type: 'Manual', timestamp: Date.now() - 7200000 },
-      ],
-    });
-  }
+  // Demo data is intentionally ephemeral: every new demo session starts clean.
+  await Promise.all(['goal_contributions', 'transactions', 'fixed_obligations', 'savings_goals', 'category_budgets'].map((table) => (
+    restRequest(table, { method: 'DELETE', params: { user_id: `eq.${userId}` } })
+  )));
+  await restRequest('profiles', { method: 'PATCH', params: { id: `eq.${userId}` }, body: {
+    name: 'Fixelar', monthly_salary: 2000000, monthly_budget_limit: 2000000, budget_needs: 50, budget_wants: 30, budget_savings: 20, alert_80_percent: true, auto_adjust_variable: true, smart_categorization: true,
+  } });
+  await Promise.all([
+    restRequest('category_budgets', { method: 'POST', returning: true, body: categoryBudgets }),
+    restRequest('transactions', { method: 'POST', returning: true, body: transactions }),
+    restRequest('fixed_obligations', { method: 'POST', returning: true, body: fixed }),
+    restRequest('savings_goals', { method: 'POST', returning: true, body: goals }),
+    restRequest('goal_contributions', { method: 'POST', returning: true, body: contributions }),
+  ]);
 }
 
 function sessionResponse(auth, profile, message) {
@@ -381,8 +476,17 @@ async function readBody(request) {
   }
 }
 
-async function userTransactions(userId) {
-  const rows = await restRequest('transactions', { params: { user_id: `eq.${userId}`, order: 'date.desc,created_at.desc' } }) || [];
+async function userTransactions(userId, selectedMonth = null) {
+  const params = { user_id: `eq.${userId}`, order: 'date.desc,created_at.desc' };
+  if (selectedMonth) {
+    const [startDate, endDate] = monthBounds(selectedMonth);
+    params.date = `gte.${startDate}`;
+    params['date.lt'] = endDate;
+  }
+  const rows = await restRequest('transactions', {
+    params,
+    select: 'id,user_id,type,amount,category,description,date,time,account_method,is_recurring,fixed_obligation_id,created_at',
+  }) || [];
   return rows.map((row) => ({
     id: row.id, userId: row.user_id, type: row.type, amount: number(row.amount), category: row.category,
     description: row.description, date: String(row.date || '').slice(0, 10), time: row.time || '',
@@ -391,8 +495,26 @@ async function userTransactions(userId) {
   }));
 }
 
+async function resetMonthlyFixedObligations(userId) {
+  const currentMonth = monthKey();
+  const rows = await restRequest('fixed_obligations', {
+    params: { user_id: `eq.${userId}` },
+    select: 'id,status,paid_date',
+  }) || [];
+  const staleRows = rows.filter((row) => row.status === 'paid' && !String(row.paid_date || '').startsWith(currentMonth));
+  await Promise.all(staleRows.map((row) => restRequest('fixed_obligations', {
+    method: 'PATCH',
+    params: { id: `eq.${row.id}`, user_id: `eq.${userId}` },
+    body: { status: 'pending', paid_date: null },
+  })));
+}
+
 async function userFixed(userId) {
-  const rows = await restRequest('fixed_obligations', { params: { user_id: `eq.${userId}`, order: 'due_day.asc' } }) || [];
+  await resetMonthlyFixedObligations(userId);
+  const rows = await restRequest('fixed_obligations', {
+    params: { user_id: `eq.${userId}`, order: 'due_day.asc' },
+    select: 'id,user_id,name,amount,due_day,category,status,paid_date,reminder_days_before,is_automatic,notes',
+  }) || [];
   return rows.map((row) => ({
     id: row.id, userId: row.user_id, name: row.name, amount: number(row.amount), dueDay: row.due_day,
     category: row.category, status: row.status, paidDate: row.paid_date, reminderDaysBefore: row.reminder_days_before,
@@ -401,16 +523,34 @@ async function userFixed(userId) {
 }
 
 async function userGoals(userId) {
-  const rows = await restRequest('savings_goals', { params: { user_id: `eq.${userId}`, order: 'created_at.asc' } }) || [];
+  const rows = await restRequest('savings_goals', {
+    params: { user_id: `eq.${userId}`, order: 'created_at.asc' },
+    select: 'id,user_id,name,target_amount,current_amount,deadline,icon,color,category,image_url',
+  }) || [];
+  const contributions = await userContributions(userId);
+  const totals = contributions.reduce((result, contribution) => {
+    const goalId = String(contribution.goalId || '');
+    if (goalId) result[goalId] = (result[goalId] || 0) + number(contribution.amount);
+    return result;
+  }, {});
   return rows.map((row) => ({
     id: row.id, userId: row.user_id, name: row.name, targetAmount: number(row.target_amount),
-    currentAmount: number(row.current_amount), deadline: row.deadline || '', icon: row.icon, color: row.color,
+    currentAmount: totals[String(row.id)] || 0, deadline: row.deadline || '', icon: row.icon, color: row.color,
     category: row.category || '', imageUrl: row.image_url || '',
   }));
 }
 
-async function userContributions(userId) {
-  const rows = await restRequest('goal_contributions', { params: { user_id: `eq.${userId}`, order: 'timestamp.desc' } }) || [];
+async function userContributions(userId, selectedMonth = null) {
+  const params = { user_id: `eq.${userId}`, order: 'timestamp.desc' };
+  if (selectedMonth) {
+    const [startDate, endDate] = monthBounds(selectedMonth);
+    params.date = `gte.${startDate}`;
+    params['date.lt'] = endDate;
+  }
+  const rows = await restRequest('goal_contributions', {
+    params,
+    select: 'id,user_id,goal_id,goal_name,amount,date,type,timestamp',
+  }) || [];
   return rows.map((row) => ({
     id: row.id, userId: row.user_id, goalId: row.goal_id, goalName: row.goal_name, amount: number(row.amount),
     date: row.date || '', type: row.type, timestamp: row.timestamp,
@@ -418,8 +558,39 @@ async function userContributions(userId) {
 }
 
 async function userBudgets(userId) {
-  const rows = await restRequest('category_budgets', { params: { user_id: `eq.${userId}`, order: 'category.asc' } }) || [];
+  const rows = await restRequest('category_budgets', {
+    params: { user_id: `eq.${userId}`, order: 'category.asc' },
+    select: 'category,limit_amount,icon',
+  }) || [];
   return rows.map((row) => ({ category: row.category, limit: number(row.limit_amount), icon: row.icon }));
+}
+
+async function userRecordMonths(userId) {
+  const [transactions, contributions] = await Promise.all([
+    restRequest('transactions', { params: { user_id: `eq.${userId}` }, select: 'date' }),
+    restRequest('goal_contributions', { params: { user_id: `eq.${userId}` }, select: 'date' }),
+  ]);
+  const months = new Set([...(transactions || []), ...(contributions || [])]
+    .map((row) => String(row.date || '').slice(0, 7))
+    .filter((value) => /^\d{4}-\d{2}$/.test(value)));
+  months.add(monthKey());
+  return [...months].sort().reverse();
+}
+
+async function userBootstrap(userId) {
+  const currentMonth = monthKey();
+  const [profile, transactions, fixedObligations, savingsGoals, goalContributions, categoryBudgets] = await Promise.all([
+    getProfile(userId),
+    userTransactions(userId, currentMonth),
+    userFixed(userId),
+    userGoals(userId),
+    userContributions(userId, currentMonth),
+    userBudgets(userId),
+  ]);
+  const availableMonths = await userRecordMonths(userId);
+  // userGoals already synchronizes currentAmount from the complete history;
+  // only the current month's movements are intentionally sent to the client.
+  return { user: profile, transactions, fixedObligations, savingsGoals, goalContributions, categoryBudgets, availableMonths };
 }
 
 async function deleteUserData(userId) {
@@ -434,15 +605,18 @@ async function handleAuth(route, request) {
     const email = 'demo@miplata.app';
     const password = 'MiPlataDemo2026!';
     try {
-      await authRequest('/admin/users', 'POST', { email, password, email_confirm: true, user_metadata: { name: 'Cuenta de demostración' } }, SUPABASE_SECRET_KEY, SUPABASE_SECRET_KEY);
+      await authRequest('/admin/users', 'POST', { email, password, email_confirm: true, user_metadata: { name: 'Fixelar' } }, SUPABASE_SECRET_KEY, SUPABASE_SECRET_KEY);
     } catch (error) {
       if (![400, 409, 422].includes(error.status)) throw error;
     }
     const auth = await authRequest('/token?grant_type=password', 'POST', { email, password });
     const user = auth.user || {};
-    const profile = await ensureUserDefaults(user.id, 'Cuenta de demostración', email, null, '');
+    const profile = await ensureUserDefaults(user.id, 'Fixelar', email, null, '');
     await ensureDemoData(user.id);
-    return json(sessionResponse(auth, profile, 'Sesión de demostración iniciada'));
+    return json({
+      ...sessionResponse(auth, profile, 'Sesión de demostración iniciada'),
+      bootstrap: await userBootstrap(user.id),
+    });
   }
 
   if (route === 'auth/login' && request.method === 'POST') {
@@ -458,11 +632,54 @@ async function handleAuth(route, request) {
     }
   }
 
+  if (route === 'auth/password-reset/request' && request.method === 'POST') {
+    const email = String(body.email || '').trim().toLowerCase();
+    const redirectTo = String(body.redirectTo || '').trim();
+    if (!isValidEmail(email)) return json({ error: 'Ingresa un correo electrónico válido' }, 400);
+    if (!/^https?:\/\/\S+$/.test(redirectTo)) return json({ error: 'La URL de recuperación no es válida' }, 400);
+    try {
+      await authRequest('/recover', 'POST', { email, redirect_to: redirectTo });
+      return json({ message: 'Si el correo está registrado, recibirás un enlace para recuperar tu contraseña.' });
+    } catch (error) {
+      console.warn('Password recovery email failed', { status: error.status, message: error.message });
+      if (error.status === 429) {
+        return json({ error: 'Supabase limitó temporalmente los correos de recuperación. Espera unos minutos y vuelve a intentarlo.' }, 429);
+      }
+      if (!error.status) {
+        return json({ error: 'No se pudo conectar con el servicio de correo de Supabase. Intenta nuevamente.' }, 503);
+      }
+      if ([400, 422].includes(error.status)) {
+        return json({ error: 'No se pudo enviar el enlace. Verifica la URL de redirección en Supabase.' }, 400);
+      }
+      return json({ error: 'No se pudo enviar el enlace de recuperación. Intenta nuevamente.' }, 502);
+    }
+  }
+
+  if (route === 'auth/password-reset/confirm' && request.method === 'POST') {
+    const accessToken = String(body.accessToken || '').trim();
+    const password = String(body.password || '');
+    if (!accessToken) return json({ error: 'El enlace de recuperación no es válido o ya expiró' }, 401);
+    if (password.length < 6) return json({ error: 'La contraseña debe tener al menos 6 caracteres' }, 400);
+    try {
+      await authRequest('/user', 'PUT', { password }, SUPABASE_PUBLISHABLE_KEY, accessToken);
+      return json({ message: 'Contraseña actualizada correctamente' });
+    } catch (error) {
+      if ([400, 401, 403, 404].includes(error.status)) {
+        return json({ error: 'El enlace de recuperación no es válido o ya expiró' }, 401);
+      }
+      return json({ error: 'No se pudo actualizar la contraseña. Intenta nuevamente.' }, 502);
+    }
+  }
+
   if (route === 'auth/register' && request.method === 'POST') {
     const name = String(body.name || '').trim();
     const email = String(body.email || '').trim().toLowerCase();
-    const password = body.password || '123456';
+    const password = String(body.password || '');
     if (!name) return json({ error: 'El nombre es requerido' }, 400);
+    if (!email) return json({ error: 'El correo electrónico es requerido' }, 400);
+    if (!isValidEmail(email)) return json({ error: 'Ingresa un correo electrónico válido' }, 400);
+    if (!password) return json({ error: 'La contraseña es requerida' }, 400);
+    if (password.length < 6) return json({ error: 'La contraseña debe tener al menos 6 caracteres' }, 400);
     try {
       await authRequest('/admin/users', 'POST', {
         email, password, email_confirm: true, user_metadata: { name, avatar_url: body.avatarUrl || '' },
@@ -472,8 +689,10 @@ async function handleAuth(route, request) {
       const profile = await initializeRegisteredUser(user.id, name, email, number(body.monthlySalary), body.avatarUrl || '');
       return json(sessionResponse(auth, profile, `¡Bienvenido a MiPlata, ${name.split(' ')[0]}! Todo listo y limpio en 0 para comenzar.`));
     } catch (error) {
-      if ([400, 409, 422].includes(error.status)) return json({ error: 'Ya existe una cuenta con este correo' }, 409);
-      return json({ error: error.message }, 502);
+      if (isDuplicateEmailError(error)) {
+        return json({ error: 'Este correo ya está registrado. Inicia sesión o usa otro correo.' }, 409);
+      }
+      return json({ error: 'No se pudo crear la cuenta. Intenta nuevamente.' }, 502);
     }
   }
 
@@ -498,8 +717,22 @@ async function handleProtected(route, request, user) {
   const userId = user.id;
   const body = await readBody(request);
 
+  if (route === 'bootstrap' && request.method === 'GET') {
+    return json(await userBootstrap(userId));
+  }
+
+  const monthlyReportMatch = route === 'reports/monthly' && request.method === 'GET';
+  if (monthlyReportMatch) {
+    const requestedMonth = new URL(request.url).searchParams.get('month') || monthKey();
+    if (!isValidMonthKey(requestedMonth)) return json({ error: 'El mes solicitado no es válido' }, 400);
+    return json({
+      month: requestedMonth,
+      transactions: await userTransactions(userId, requestedMonth),
+      goalContributions: await userContributions(userId, requestedMonth),
+    });
+  }
+
   if (route === 'user' && request.method === 'GET') {
-    if ((user.email || '').trim().toLowerCase() === 'demo@miplata.app') await ensureDemoData(userId);
     return json({ user: await getProfile(userId) });
   }
 
@@ -521,6 +754,7 @@ async function handleProtected(route, request, user) {
 
   if (route === 'user/reset' && request.method === 'POST') {
     for (const table of ['goal_contributions', 'transactions', 'fixed_obligations', 'savings_goals']) await restRequest(table, { method: 'DELETE', params: { user_id: `eq.${userId}` } });
+    if ((user.email || '').trim().toLowerCase() === 'demo@miplata.app') await ensureDemoData(userId);
     return json({ message: 'Datos reiniciados al estado por defecto' });
   }
 
@@ -531,17 +765,19 @@ async function handleProtected(route, request, user) {
   }
 
   if (route === 'transactions' && request.method === 'GET') return json(await userTransactions(userId));
-  if (route === 'transactions' && request.method === 'POST') return json({ id: await addTransaction(userId, body), message: 'Movimiento registrado con éxito' });
+  if (route === 'transactions' && request.method === 'POST') {
+    const amount = nonNegativeNumber(body.amount);
+    if (!['gasto', 'ingreso'].includes(body.type)) return json({ error: 'El tipo de movimiento no es válido' }, 400);
+    if (amount === null) return json({ error: 'El monto debe ser un número mayor o igual a 0' }, 400);
+    if (!String(body.category || '').trim() || !String(body.description || '').trim()) return json({ error: 'La categoría y la descripción son requeridas' }, 400);
+    return json({ id: await addTransaction(userId, { ...body, amount }), message: 'Movimiento registrado con éxito' });
+  }
 
   const transactionMatch = route.match(/^transactions\/([^/]+)$/);
   if (transactionMatch) {
     const id = decodeURIComponent(transactionMatch[1]);
-    if (request.method === 'DELETE') {
-      await restRequest('transactions', { method: 'DELETE', params: { id: `eq.${id}`, user_id: `eq.${userId}` } });
-      return json({ message: 'Registro eliminado' });
-    }
     if (request.method === 'PUT') {
-      const fieldMap = { amount: 'amount', description: 'description', category: 'category', date: 'date', time: 'time', accountMethod: 'account_method', isRecurring: 'is_recurring', type: 'type' };
+      const fieldMap = { description: 'description' };
       const patch = {};
       Object.entries(body).forEach(([key, value]) => { if (fieldMap[key]) patch[fieldMap[key]] = value; });
       if (patch.date) patch.date = dateOnly(patch.date, true);
@@ -552,8 +788,13 @@ async function handleProtected(route, request, user) {
 
   if (route === 'fixed-obligations' && request.method === 'GET') return json(await userFixed(userId));
   if (route === 'fixed-obligations' && request.method === 'POST') {
+    const amount = nonNegativeNumber(body.amount, false);
+    const dueDay = Number(body.dueDay);
+    if (!String(body.name || '').trim() || amount === null || !Number.isInteger(dueDay) || dueDay < 1 || dueDay > 31) {
+      return json({ error: 'Nombre, monto y día de vencimiento son válidos y requeridos' }, 400);
+    }
     const id = body.id || `fix_${Date.now()}`;
-    await restRequest('fixed_obligations', { method: 'POST', returning: true, body: { id, user_id: userId, name: body.name, amount: body.amount, due_day: body.dueDay, category: body.category, status: body.status || 'pending', paid_date: dateOnly(body.paidDate), reminder_days_before: body.reminderDaysBefore ?? 3, is_automatic: Boolean(body.isAutomatic), notes: body.notes || '' } });
+    await restRequest('fixed_obligations', { method: 'POST', returning: true, body: { id, user_id: userId, name: body.name, amount, due_day: dueDay, category: body.category, status: body.status || 'pending', paid_date: dateOnly(body.paidDate), reminder_days_before: body.reminderDaysBefore ?? 3, is_automatic: Boolean(body.isAutomatic), notes: body.notes || '' } });
     return json({ id, message: 'Nuevo gasto fijo agregado' });
   }
 
@@ -590,8 +831,13 @@ async function handleProtected(route, request, user) {
 
   if (route === 'savings-goals' && request.method === 'GET') return json(await userGoals(userId));
   if (route === 'savings-goals' && request.method === 'POST') {
+    const targetAmount = nonNegativeNumber(body.targetAmount, false);
+    if (!String(body.name || '').trim() || targetAmount === null) return json({ error: 'El nombre y el valor objetivo de la meta son requeridos' }, 400);
+    const deadline = dateOnly(body.deadline);
+    if (body.deadline && !deadline) return json({ error: 'La fecha límite no es válida' }, 400);
+    if (deadline && isPastGoalMonth(deadline)) return json({ error: 'La fecha límite debe ser el mes actual o un mes futuro' }, 400);
     const id = body.id || `goal_${Date.now()}`;
-    await restRequest('savings_goals', { method: 'POST', returning: true, body: { id, user_id: userId, name: body.name, target_amount: body.targetAmount, current_amount: body.currentAmount || 0, deadline: dateOnly(body.deadline), icon: body.icon || 'laptop', color: body.color || '#0058bc', category: body.category || '', image_url: body.imageUrl || '' } });
+    await restRequest('savings_goals', { method: 'POST', returning: true, body: { id, user_id: userId, name: body.name, target_amount: targetAmount, current_amount: 0, deadline, icon: body.icon || 'laptop', color: body.color || '#0058bc', category: body.category || '', image_url: body.imageUrl || '' } });
     return json({ id, message: `Meta "${body.name}" creada con éxito` });
   }
 
@@ -599,11 +845,17 @@ async function handleProtected(route, request, user) {
   if (goalMatch) {
     const id = decodeURIComponent(goalMatch[1]);
     if (goalMatch[2] === 'contribute' && request.method === 'POST') {
-      const amount = number(body.amount);
-      if (amount <= 0) return json({ error: 'El monto debe ser mayor a 0' }, 400);
+      const amount = nonNegativeNumber(body.amount, false);
+      if (amount === null) return json({ error: 'El monto debe ser mayor a 0' }, 400);
+      const availableCash = await availableCashForUser(userId);
+      if (amount > availableCash) {
+        return json({ error: `No tienes suficiente dinero disponible. Te quedan $${availableCash.toLocaleString('es-CO')} COP` }, 400);
+      }
       const rows = await restRequest('savings_goals', { params: { id: `eq.${id}`, user_id: `eq.${userId}`, limit: '1' } });
       if (!rows?.length) return json({ error: 'Meta no encontrada' }, 404);
-      const newAmount = number(rows[0].current_amount) + amount;
+      const contributionRows = await restRequest('goal_contributions', { params: { goal_id: `eq.${id}`, user_id: `eq.${userId}`, select: 'amount' } }) || [];
+      const contributedAmount = contributionRows.reduce((sum, row) => sum + number(row.amount), 0);
+      const newAmount = contributedAmount + amount;
       await restRequest('savings_goals', { method: 'PATCH', params: { id: `eq.${id}`, user_id: `eq.${userId}` }, body: { current_amount: newAmount } });
       const contributionId = `contrib_${Date.now()}`;
       await restRequest('goal_contributions', { method: 'POST', returning: true, body: { id: contributionId, user_id: userId, goal_id: id, goal_name: rows[0].name, amount, date: dateOnly(null, true), type: body.type || 'Manual', timestamp: Date.now() } });
@@ -614,10 +866,15 @@ async function handleProtected(route, request, user) {
       return json({ message: 'Meta de ahorro eliminada' });
     }
     if (request.method === 'PUT') {
-      const fieldMap = { name: 'name', targetAmount: 'target_amount', currentAmount: 'current_amount', deadline: 'deadline', icon: 'icon', color: 'color', category: 'category', imageUrl: 'image_url' };
+      const fieldMap = { name: 'name', targetAmount: 'target_amount', deadline: 'deadline', icon: 'icon', color: 'color', category: 'category', imageUrl: 'image_url' };
       const patch = {};
       Object.entries(body).forEach(([key, value]) => { if (fieldMap[key]) patch[fieldMap[key]] = value; });
-      if (patch.deadline) patch.deadline = dateOnly(patch.deadline);
+      if (Object.prototype.hasOwnProperty.call(body, 'deadline')) {
+        const deadline = dateOnly(body.deadline);
+        if (body.deadline && !deadline) return json({ error: 'La fecha límite no es válida' }, 400);
+        if (deadline && isPastGoalMonth(deadline)) return json({ error: 'La fecha límite debe ser el mes actual o un mes futuro' }, 400);
+        patch.deadline = deadline;
+      }
       await restRequest('savings_goals', { method: 'PATCH', params: { id: `eq.${id}`, user_id: `eq.${userId}` }, body: patch });
       return json({ message: 'Meta actualizada' });
     }
@@ -626,8 +883,11 @@ async function handleProtected(route, request, user) {
   if (route === 'goal-contributions' && request.method === 'GET') return json(await userContributions(userId));
   if (route === 'category-budgets' && request.method === 'GET') return json(await userBudgets(userId));
   if (route === 'category-budgets' && request.method === 'PUT') {
-    await restRequest('category_budgets', { method: 'PATCH', params: { user_id: `eq.${userId}`, category: `eq.${body.category}` }, body: { limit_amount: number(body.limit) } });
-    return json({ message: `Presupuesto para ${body.category} actualizado` });
+    const category = String(body.category || '').trim();
+    const limit = nonNegativeNumber(body.limit);
+    if (!category || limit === null) return json({ error: 'La categoría y el límite deben ser válidos' }, 400);
+    await restRequest('category_budgets', { method: 'PATCH', params: { user_id: `eq.${userId}`, category: `eq.${category}` }, body: { limit_amount: limit } });
+    return json({ message: `Presupuesto para ${category} actualizado` });
   }
 
   return json({ error: 'Ruta no encontrada' }, 404);

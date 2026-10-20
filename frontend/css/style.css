@@ -119,6 +119,11 @@ body.quick-add-open {
   overflow: hidden !important;
 }
 
+html.search-open,
+body.search-open {
+  overflow: hidden !important;
+}
+
 .qa-categories-scroll {
   overscroll-behavior-x: contain;
   scroll-behavior: smooth;
@@ -494,3 +499,86 @@ body.quick-add-open {
 
 .w-full { width: 100%; }
 .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Keep hidden modal and view layers hidden even when a component class sets display. */
+.hidden { display: none !important; }
+
+/* Keep the normal mobile layout unchanged while making the historical report
+   clean and complete when the browser saves it as a PDF. */
+@media print {
+  @page {
+    size: A4 portrait;
+    margin: 12mm;
+  }
+
+  html,
+  body {
+    min-height: auto !important;
+    background: #ffffff !important;
+    color: #0b1c30 !important;
+  }
+
+  body {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  #app,
+  #main-content {
+    min-height: auto !important;
+    height: auto !important;
+    display: block !important;
+    padding: 0 !important;
+  }
+
+  #header-container,
+  #bottom-nav,
+  #fab-container,
+  #view-auth,
+  #tab-ingresos,
+  #tab-gastos,
+  #tab-obligaciones,
+  #tab-metas,
+  #tab-perfil,
+  #modal-quick-add,
+  #modal-search,
+  #modal-cash-detail,
+  #modal-fixed-obligation,
+  #modal-savings-goal,
+  #modal-aporte-goal,
+  #modal-edit-transaction,
+  #modal-edit-profile,
+  .no-print {
+    display: none !important;
+  }
+
+  #tab-inicio,
+  #past-month-report {
+    display: flex !important;
+    width: 100% !important;
+    max-width: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    gap: 10px !important;
+    animation: none !important;
+  }
+
+  #past-month-report > * {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  #past-month-report .past-month-report__transaction-list {
+    max-height: none !important;
+    overflow: visible !important;
+  }
+
+  #past-month-report .past-month-report__transactions-card {
+    break-inside: auto;
+    page-break-inside: auto;
+  }
+
+  #past-month-report [data-tx-id] {
+    cursor: default !important;
+  }
+}
