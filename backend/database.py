@@ -216,13 +216,10 @@ def seed_demo_user_data():
     # Category budgets
     initial_categories = [
         ('Alimentación', 400000, 'restaurant'),
-        ('Transporte', 180000, 'directions_car'),
-        ('Entretenimiento', 150000, 'sports_esports'),
-        ('Salud', 120000, 'medical_services'),
         ('Compras', 150000, 'shopping_bag'),
-        ('Servicios', 180000, 'bolt'),
         ('Educación', 100000, 'school'),
-        ('Otros', 100000, 'more_horiz'),
+        ('Entretenimiento', 150000, 'sports_esports'),
+        ('Transporte', 180000, 'directions_car'),
     ]
     cursor.execute("DELETE FROM category_budgets WHERE user_id = ?", (DEMO_USER_ID,))
     for cat, limit_val, icon in initial_categories:
@@ -352,10 +349,9 @@ def seed_demo_user_data_2000000():
 
     cursor.execute("DELETE FROM category_budgets WHERE user_id = ?", (DEMO_USER_ID,))
     for category, limit_amount, icon in [
-        ('Alimentación', 400000, 'restaurant'), ('Transporte', 180000, 'directions_car'),
-        ('Entretenimiento', 150000, 'sports_esports'), ('Salud', 120000, 'medical_services'),
-        ('Compras', 150000, 'shopping_bag'), ('Servicios', 180000, 'bolt'),
-        ('Educación', 100000, 'school'), ('Otros', 100000, 'more_horiz'),
+        ('Alimentación', 400000, 'restaurant'), ('Compras', 150000, 'shopping_bag'),
+        ('Educación', 100000, 'school'), ('Entretenimiento', 150000, 'sports_esports'),
+        ('Transporte', 180000, 'directions_car'),
     ]:
         cursor.execute("INSERT INTO category_budgets (id, user_id, category, limit_amount, icon) VALUES (?, ?, ?, ?, ?)",
                        (f"cb_{DEMO_USER_ID}_{category}", DEMO_USER_ID, category, limit_amount, icon))
@@ -517,13 +513,10 @@ def create_user(name, email, password, monthly_salary=0, avatar_url=''):
     # Seed default category budgets for new user
     initial_categories = [
         ('Alimentación', 700000, 'restaurant'),
-        ('Transporte', 250000, 'directions_car'),
-        ('Entretenimiento', 300000, 'sports_esports'),
-        ('Salud', 200000, 'medical_services'),
         ('Compras', 350000, 'shopping_bag'),
-        ('Servicios', 250000, 'bolt'),
         ('Educación', 200000, 'school'),
-        ('Otros', 150000, 'more_horiz'),
+        ('Entretenimiento', 300000, 'sports_esports'),
+        ('Transporte', 250000, 'directions_car'),
     ]
     for cat, limit_val, icon in initial_categories:
         cursor.execute("""
@@ -827,6 +820,7 @@ def toggle_pay_fixed_obligation(user_id, item_id):
     is_now_paid = (row["status"] != "paid")
     new_status = "paid" if is_now_paid else "pending"
     paid_date = datetime.now().strftime("%Y-%m-%d") if is_now_paid else None
+    transaction_id = None
 
     cursor.execute("""
     UPDATE fixed_obligations SET status = ?, paid_date = ? WHERE id = ? AND user_id = ?
@@ -836,10 +830,13 @@ def toggle_pay_fixed_obligation(user_id, item_id):
         # Check if already in transactions
         cursor.execute("SELECT id FROM transactions WHERE fixed_obligation_id = ? AND user_id = ?", (item_id, user_id))
         existing_tx = cursor.fetchone()
-        if not existing_tx:
+        if existing_tx:
+            transaction_id = existing_tx["id"]
+        else:
             today_iso = datetime.now().strftime("%Y-%m-%d")
             now_time = datetime.now().strftime("%I:%M %p")
             tx_id = f"tx_fix_{item_id}_{int(time.time() * 1000)}"
+            transaction_id = tx_id
             cursor.execute("""
             INSERT INTO transactions (id, user_id, type, amount, category, description, date, time, account_method, is_recurring, fixed_obligation_id, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -863,7 +860,7 @@ def toggle_pay_fixed_obligation(user_id, item_id):
 
     conn.commit()
     conn.close()
-    return {"status": new_status, "isPaid": is_now_paid}
+    return {"status": new_status, "isPaid": is_now_paid, "transactionId": transaction_id}
 
 # Savings goals
 def get_savings_goals(user_id):

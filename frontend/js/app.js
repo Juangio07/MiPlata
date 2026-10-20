@@ -71,8 +71,21 @@ const state = {
   activeTipIndex: 0,
 };
 
+// Only ordinary, variable expenses participate in the monthly category
+// budgets. Fixed obligations and goal contributions have their own modules
+// and must not trigger a category-budget alert.
+const CATEGORY_BUDGET_CATEGORIES = [
+  'Alimentación',
+  'Compras',
+  'Educación',
+  'Entretenimiento',
+  'Transporte',
+];
+
 let lastLoadedMonthKey = getCurrentMonthKey();
 let monthlyRolloverTimer = null;
+let mutationReconcileTimer = null;
+let localMutationVersion = 0;
 
 // Initial DOM Selectors
 const DOM = {
@@ -118,6 +131,30 @@ const DOM = {
   toastText: document.getElementById('toast-text'),
 };
 
+window.addEventListener('miplata:auth-expired', () => {
+  state.currentUser = null;
+  state.transactions = [];
+  state.fixedObligations = [];
+  state.savingsGoals = [];
+  state.goalContributions = [];
+  state.categoryBudgets = [];
+  state.availableMonths = [];
+  state.monthlyReports = {};
+  [
+    DOM.modalQuickAdd,
+    DOM.modalSearch,
+    DOM.modalFixedObligation,
+    DOM.modalSavingsGoal,
+    DOM.modalAporteGoal,
+    DOM.modalEditTransaction,
+    DOM.modalEditProfile,
+    DOM.modalEditBudget,
+    DOM.modalConfirmDelete,
+  ].forEach((modal) => modal?.classList.add('hidden'));
+  renderApp();
+  showToast('Tu sesión expiró. Ingresa nuevamente para continuar.', 'error');
+});
+
 // Toast Helper
 let toastTimeout = null;
 export function showToast(message, type = 'success') {
@@ -136,6 +173,45 @@ export function showToast(message, type = 'success') {
   toastTimeout = setTimeout(() => {
     DOM.toastContainer.classList.add('hidden');
   }, 3200);
+}
+
+function openDeleteConfirmationModal({ title, message, successMessage, errorMessage, onConfirm }) {
+  DOM.modalConfirmDelete.classList.remove('hidden');
+  DOM.modalConfirmDelete.innerHTML = `
+    <div class="bg-white rounded-3xl p-6 max-w-sm w-full shadow-2xl flex flex-col gap-4 text-center">
+      <div class="w-12 h-12 rounded-full bg-rose-100 text-rose-600 flex items-center justify-center mx-auto">
+        ${getIconSvg('alertTriangle', 'w-6 h-6')}
+      </div>
+      <div>
+        <h3 id="delete-confirm-title" class="font-bold text-base text-[#0b1c30]"></h3>
+        <p id="delete-confirm-message" class="text-xs text-slate-500 mt-1"></p>
+      </div>
+      <div class="flex items-center gap-2 pt-2">
+        <button id="btn-cancel-delete" type="button" class="flex-1 py-2 rounded-xl bg-slate-100 text-slate-700 text-xs font-semibold cursor-pointer">Cancelar</button>
+        <button id="btn-confirm-delete" type="button" class="flex-1 py-2 rounded-xl bg-rose-600 text-white text-xs font-semibold cursor-pointer">Sí, eliminar</button>
+      </div>
+    </div>
+  `;
+
+  document.getElementById('delete-confirm-title').textContent = title;
+  document.getElementById('delete-confirm-message').textContent = message;
+
+  const close = () => DOM.modalConfirmDelete.classList.add('hidden');
+  document.getElementById('btn-cancel-delete').onclick = close;
+  document.getElementById('btn-confirm-delete').onclick = async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    button.classList.add('opacity-60', 'cursor-wait');
+    try {
+      await onConfirm();
+      close();
+      showToast(successMessage);
+    } catch (error) {
+      button.disabled = false;
+      button.classList.remove('opacity-60', 'cursor-wait');
+      showToast(error.message || errorMessage, 'error');
+    }
+  };
 }
 
 // Avatar Helper
@@ -419,10 +495,13 @@ function getBudgetAdjustment(monthKey = state.selectedMonth, user = state.curren
 
 function getEffectiveCategoryBudgets(monthKey = state.selectedMonth) {
   const adjustment = getBudgetAdjustment(monthKey);
-  return state.categoryBudgets.map((budget) => ({
-    ...budget,
-    limit: Math.max(0, Math.round((Number(budget.limit) || 0) * adjustment.categoryScale)),
-  }));
+  return state.categoryBudgets
+    .filter((budget) => CATEGORY_BUDGET_CATEGORIES.includes(budget.category))
+    .sort((left, right) => CATEGORY_BUDGET_CATEGORIES.indexOf(left.category) - CATEGORY_BUDGET_CATEGORIES.indexOf(right.category))
+    .map((budget) => ({
+      ...budget,
+      limit: Math.max(0, Math.round((Number(budget.limit) || 0) * adjustment.categoryScale)),
+    }));
 }
 
 function computeMetrics() {
@@ -457,12 +536,11 @@ function computeMetrics() {
     .filter((transaction) => transaction.isGoalContribution)
     .reduce((sum, transaction) => sum + transaction.amount, 0);
 
-  const baseBalance = currentUser?.initialBalance || 0;
   // Pending fixed obligations remain visible as "Por Pagar" and do not reduce
   // this balance until they are actually paid and recorded as an expense.
   // Goal contributions are virtual expense records in monthTransactions, so
   // subtracting the accumulated goal balance here would count them twice.
-  const availableCash = Math.max(0, baseBalance + totalIncome - totalExpenses);
+  const availableCash = Math.max(0, totalIncome - totalExpenses);
 
   const budgetAdjustment = getBudgetAdjustment(selectedMonth, currentUser);
   const monthlyBudgetLimit = budgetAdjustment.monthlyBudgetLimit;
@@ -602,19 +680,162 @@ function syncGoalAmountsWithContributions(goals, contributions) {
   }));
 }
 
-async function refreshAllData() {
+async function refreshAllData(expectedMutationVersion = null) {
   try {
     const data = await api.getBootstrap();
     if (!data?.user) {
       state.currentUser = null;
+      renderApp();
       return false;
     }
+    if (expectedMutationVersion !== null && expectedMutationVersion !== localMutationVersion) return false;
     lastLoadedMonthKey = getCurrentMonthKey();
     return applyBootstrapData(data);
   } catch (err) {
     console.error('Error fetching data from backend', err);
     return false;
   }
+}
+
+function registerLocalMutation(...records) {
+  localMutationVersion += 1;
+  state.monthlyReports = {};
+  const monthKeys = new Set([getCurrentMonthKey(), ...(state.availableMonths || [])]);
+  records.flat().forEach((record) => {
+    const monthKey = String(record?.date || '').slice(0, 7);
+    if (/^\d{4}-\d{2}$/.test(monthKey)) monthKeys.add(monthKey);
+  });
+  state.availableMonths = [...monthKeys].sort((left, right) => right.localeCompare(left));
+  scheduleMutationReconcile();
+}
+
+function scheduleMutationReconcile() {
+  if (mutationReconcileTimer) window.clearTimeout(mutationReconcileTimer);
+  const expectedMutationVersion = localMutationVersion;
+  mutationReconcileTimer = window.setTimeout(async () => {
+    mutationReconcileTimer = null;
+    const refreshed = await refreshAllData(expectedMutationVersion);
+    if (refreshed) renderActiveView();
+    else if (expectedMutationVersion !== localMutationVersion) scheduleMutationReconcile();
+  }, 1500);
+}
+
+function applyLocalTransaction(tx, response = {}) {
+  const transaction = {
+    ...tx,
+    id: response.id || tx.id || `tx_local_${Date.now()}`,
+    userId: state.currentUser?.id,
+    amount: Number(tx.amount) || 0,
+    createdAt: tx.createdAt || Date.now(),
+  };
+  state.transactions = [...state.transactions.filter((item) => item.id !== transaction.id), transaction];
+  registerLocalMutation(transaction);
+  return transaction;
+}
+
+function updateLocalTransaction(id, updates) {
+  state.transactions = state.transactions.map((item) => item.id === id ? { ...item, ...updates } : item);
+  registerLocalMutation();
+}
+
+function upsertLocalFixedObligation(item, id = null) {
+  const obligation = {
+    ...item,
+    id: id || item.id || `fix_local_${Date.now()}`,
+    userId: state.currentUser?.id,
+    amount: Number(item.amount) || 0,
+    paidDate: item.paidDate || null,
+  };
+  state.fixedObligations = [...state.fixedObligations.filter((entry) => entry.id !== obligation.id), obligation];
+  registerLocalMutation();
+  return obligation;
+}
+
+function updateLocalFixedObligation(id, updates) {
+  state.fixedObligations = state.fixedObligations.map((item) => item.id === id ? { ...item, ...updates } : item);
+  registerLocalMutation();
+}
+
+function removeLocalFixedObligation(id) {
+  state.fixedObligations = state.fixedObligations.filter((item) => item.id !== id);
+  state.transactions = state.transactions.filter((item) => item.fixedObligationId !== id);
+  registerLocalMutation();
+}
+
+function applyLocalFixedToggle(id, result = {}) {
+  const obligation = state.fixedObligations.find((item) => item.id === id);
+  if (!obligation) return;
+  const isPaid = Boolean(result.isPaid);
+  const paidDate = isPaid ? getTodayISODate() : null;
+  state.fixedObligations = state.fixedObligations.map((item) => item.id === id
+    ? { ...item, status: isPaid ? 'paid' : 'pending', paidDate }
+    : item);
+  if (isPaid && !state.transactions.some((item) => item.fixedObligationId === id)) {
+    state.transactions = [...state.transactions, {
+      id: result.transactionId || `tx_fix_${id}_local_${Date.now()}`,
+      userId: state.currentUser?.id,
+      type: 'gasto',
+      amount: Number(obligation.amount) || 0,
+      category: obligation.category,
+      description: `${obligation.name} (Gasto Fijo)`,
+      date: paidDate,
+      time: getCurrentTimeString(),
+      accountMethod: 'Fijo Mensual',
+      isRecurring: true,
+      fixedObligationId: id,
+      createdAt: Date.now(),
+    }];
+  } else if (!isPaid) {
+    state.transactions = state.transactions.filter((item) => item.fixedObligationId !== id);
+  }
+  registerLocalMutation();
+}
+
+function upsertLocalSavingsGoal(goal, id = null) {
+  const savedGoal = {
+    ...goal,
+    id: id || goal.id || `goal_local_${Date.now()}`,
+    userId: state.currentUser?.id,
+    targetAmount: Number(goal.targetAmount) || 0,
+    currentAmount: Number(goal.currentAmount) || 0,
+    imageUrl: goal.imageUrl || '',
+  };
+  state.savingsGoals = [...state.savingsGoals.filter((item) => item.id !== savedGoal.id), savedGoal];
+  registerLocalMutation();
+  return savedGoal;
+}
+
+function updateLocalSavingsGoal(id, updates) {
+  state.savingsGoals = state.savingsGoals.map((item) => item.id === id ? { ...item, ...updates } : item);
+  registerLocalMutation();
+}
+
+function removeLocalSavingsGoal(id) {
+  state.savingsGoals = state.savingsGoals.filter((item) => item.id !== id);
+  state.goalContributions = state.goalContributions.filter((item) => item.goalId !== id);
+  registerLocalMutation();
+}
+
+function applyLocalGoalContribution(goalId, amount, type, response = {}) {
+  const goal = state.savingsGoals.find((item) => item.id === goalId);
+  if (!goal) return;
+  const result = response.result || {};
+  const contribution = {
+    id: result.contributionId || `contrib_local_${Date.now()}`,
+    userId: state.currentUser?.id,
+    goalId,
+    goalName: goal.name,
+    amount: Number(amount) || 0,
+    date: getTodayISODate(),
+    type,
+    timestamp: Date.now(),
+  };
+  const newAmount = Number(result.newAmount);
+  state.goalContributions = [contribution, ...state.goalContributions.filter((item) => item.id !== contribution.id)];
+  state.savingsGoals = state.savingsGoals.map((item) => item.id === goalId
+    ? { ...item, currentAmount: Number.isFinite(newAmount) ? newAmount : (Number(item.currentAmount) || 0) + contribution.amount }
+    : item);
+  registerLocalMutation(contribution);
 }
 
 function setupMonthlyRolloverWatcher() {
@@ -2058,9 +2279,19 @@ function renderExpenses() {
   const metrics = computeMetrics();
   const effectiveCategoryBudgets = getEffectiveCategoryBudgets(state.selectedMonth);
 
-  // Compute category spent map
+  // Category budgets cover only normal expenses. Fixed payments and goal
+  // contributions remain visible in the general expense total/history, but
+  // they are tracked separately and cannot consume a normal category limit.
+  const budgetExpenseTxs = expenseTxs.filter((transaction) => (
+    !transaction.fixedObligationId
+    && String(transaction.accountMethod || '').trim().toLowerCase() !== 'fijo mensual'
+    && !transaction.isGoalContribution
+    && CATEGORY_BUDGET_CATEGORIES.includes(transaction.category)
+  ));
+
+  // Compute category spent map from the same source used by the alert/cards.
   const categorySpentMap = {};
-  expenseTxs.forEach((t) => {
+  budgetExpenseTxs.forEach((t) => {
     categorySpentMap[t.category] = (categorySpentMap[t.category] || 0) + t.amount;
   });
 
@@ -2073,7 +2304,8 @@ function renderExpenses() {
       topName = cat;
     }
   });
-  const topPercent = totalExpenses > 0 ? Math.round((topAmount / totalExpenses) * 100) : 0;
+  const budgetExpenseTotal = budgetExpenseTxs.reduce((sum, transaction) => sum + transaction.amount, 0);
+  const topPercent = budgetExpenseTotal > 0 ? Math.round((topAmount / budgetExpenseTotal) * 100) : 0;
 
   // Categories exceeding limit
   const exceededCategories = effectiveCategoryBudgets.filter(
@@ -2206,7 +2438,6 @@ function renderExpenses() {
 
         <div class="grid grid-cols-1 gap-2">
           ${effectiveCategoryBudgets
-            .slice(0, 4)
             .map((catBudget) => {
               const spent = categorySpentMap[catBudget.category] || 0;
               const percent = catBudget.limit > 0 ? Math.round((spent / catBudget.limit) * 100) : 0;
@@ -2677,10 +2908,14 @@ function renderObligations() {
   DOM.tabObligaciones.querySelectorAll('.obligation-toggle-btn').forEach((btn) => {
     btn.onclick = async (e) => {
       e.stopPropagation();
-      const res = await api.togglePayFixedObligation(btn.dataset.payId);
-      await refreshAllData();
-      renderObligations();
-      showToast(res.message);
+      try {
+        const res = await api.togglePayFixedObligation(btn.dataset.payId);
+        applyLocalFixedToggle(btn.dataset.payId, res.result);
+        renderObligations();
+        showToast(res.message);
+      } catch (error) {
+        showToast(error.message || 'No se pudo actualizar el gasto fijo', 'error');
+      }
     };
   });
 
@@ -3285,30 +3520,17 @@ function renderProfile() {
   };
 
   document.getElementById('btn-delete-account').onclick = () => {
-    DOM.modalConfirmDelete.classList.remove('hidden');
-    DOM.modalConfirmDelete.innerHTML = `
-      <div class="bg-white rounded-3xl p-6 max-w-sm w-full shadow-2xl flex flex-col gap-4 text-center">
-        <div class="w-12 h-12 rounded-full bg-rose-100 text-rose-600 flex items-center justify-center mx-auto">
-          ${getIconSvg('alertTriangle', 'w-6 h-6')}
-        </div>
-        <div>
-          <h3 class="font-bold text-base text-[#0b1c30]">¿Eliminar cuenta y datos?</h3>
-          <p class="text-xs text-slate-500 mt-1">Esta acción borrará todas tus transacciones, metas y gastos fijos de forma irreversible.</p>
-        </div>
-        <div class="flex items-center gap-2 pt-2">
-          <button id="btn-cancel-delete" class="flex-1 py-2 rounded-xl bg-slate-100 text-slate-700 text-xs font-semibold cursor-pointer">Cancelar</button>
-          <button id="btn-confirm-delete" class="flex-1 py-2 rounded-xl bg-rose-600 text-white text-xs font-semibold cursor-pointer">Sí, eliminar</button>
-        </div>
-      </div>
-    `;
-    document.getElementById('btn-cancel-delete').onclick = () => DOM.modalConfirmDelete.classList.add('hidden');
-    document.getElementById('btn-confirm-delete').onclick = async () => {
-      await api.deleteAccount();
-      state.currentUser = null;
-      DOM.modalConfirmDelete.classList.add('hidden');
-      renderApp();
-      showToast('Cuenta eliminada');
-    };
+    openDeleteConfirmationModal({
+      title: '¿Eliminar cuenta y datos?',
+      message: 'Esta acción borrará todas tus transacciones, metas y gastos fijos de forma irreversible.',
+      successMessage: 'Cuenta eliminada',
+      errorMessage: 'No se pudo eliminar la cuenta',
+      onConfirm: async () => {
+        await api.deleteAccount();
+        state.currentUser = null;
+        renderApp();
+      },
+    });
   };
 }
 
@@ -3760,15 +3982,17 @@ function renderAuth() {
       syncSalaryOptionState();
     };
 
-    avatarInput.onchange = (e) => {
+    avatarInput.onchange = async (e) => {
       const file = e.target.files?.[0];
       if (!file) return;
-      const reader = new FileReader();
-      reader.onload = (evt) => {
-        registerAvatarUrl = evt.target.result;
+      try {
+        registerAvatarUrl = await compressImageForUpload(file);
         avatarPreview.innerHTML = renderAvatarHtml(regName.value || 'Tu', registerAvatarUrl, 'lg');
-      };
-      reader.readAsDataURL(file);
+      } catch (error) {
+        registerAvatarUrl = '';
+        avatarInput.value = '';
+        showToast(error.message || 'No se pudo cargar la imagen', 'error');
+      }
     };
 
     formReg.onsubmit = async (e) => {
@@ -4117,9 +4341,13 @@ function renderQuickAddModalContent() {
         isRecurring: false,
       };
 
-      await api.addTransaction(tx);
-
-      await refreshAllData();
+      try {
+        const result = await api.addTransaction(tx);
+        applyLocalTransaction(tx, result);
+      } catch (error) {
+        showToast(error.message || 'No se pudo guardar el movimiento', 'error');
+        return;
+      }
       DOM.modalQuickAdd.classList.add('hidden');
       state.quickAdd.isOpen = false;
       document.documentElement.classList.remove('quick-add-open');
@@ -4197,8 +4425,7 @@ function openEditTransactionModal(tx) {
 
     try {
       await api.updateTransaction(tx.id, { description: desc });
-
-      await refreshAllData();
+      updateLocalTransaction(tx.id, { description: desc });
       DOM.modalEditTransaction.classList.add('hidden');
       renderActiveView();
       showToast('Movimiento actualizado');
@@ -4330,44 +4557,56 @@ function openAddOrEditObligationModal(obligation = null) {
 
     if (!name || amount <= 0) return;
 
-    if (isEdit) {
-      await api.updateFixedObligation(obligation.id, {
-        name,
-        amount,
-        dueDay,
-        category,
-        reminderDaysBefore,
-        notes: `Vence Día ${dueDay} del mes`,
-      });
-      showToast('Obligación actualizada');
-    } else {
-      await api.addFixedObligation({
-        name,
-        amount,
-        dueDay,
-        category,
-        reminderDaysBefore,
-        status: 'pending',
-        notes: `Vence Día ${dueDay} del mes`,
-      });
-      showToast('Gasto fijo agregado');
-    }
+    try {
+      if (isEdit) {
+        const updates = {
+          name,
+          amount,
+          dueDay,
+          category,
+          reminderDaysBefore,
+          notes: `Vence Día ${dueDay} del mes`,
+        };
+        await api.updateFixedObligation(obligation.id, updates);
+        updateLocalFixedObligation(obligation.id, updates);
+        showToast('Obligación actualizada');
+      } else {
+        const item = {
+          name,
+          amount,
+          dueDay,
+          category,
+          reminderDaysBefore,
+          status: 'pending',
+          notes: `Vence Día ${dueDay} del mes`,
+        };
+        const result = await api.addFixedObligation(item);
+        upsertLocalFixedObligation(item, result.id);
+        showToast('Gasto fijo agregado');
+      }
 
-    await refreshAllData();
-    DOM.modalFixedObligation.classList.add('hidden');
-    renderActiveView();
+      DOM.modalFixedObligation.classList.add('hidden');
+      renderActiveView();
+    } catch (error) {
+      showToast(error.message || 'No se pudo guardar el gasto fijo', 'error');
+    }
   };
 
   const deleteBtn = document.getElementById('ob-delete-btn');
   if (deleteBtn && isEdit) {
-    deleteBtn.onclick = async () => {
-      if (confirm('¿Deseas eliminar este gasto fijo?')) {
-        await api.deleteFixedObligation(obligation.id);
-        await refreshAllData();
-        DOM.modalFixedObligation.classList.add('hidden');
-        renderActiveView();
-        showToast('Obligación eliminada');
-      }
+    deleteBtn.onclick = () => {
+      openDeleteConfirmationModal({
+        title: '¿Eliminar gasto fijo?',
+        message: 'Esta acción eliminará el gasto fijo y su registro asociado de forma permanente.',
+        successMessage: 'Obligación eliminada',
+        errorMessage: 'No se pudo eliminar el gasto fijo',
+        onConfirm: async () => {
+          await api.deleteFixedObligation(obligation.id);
+          removeLocalFixedObligation(obligation.id);
+          DOM.modalFixedObligation.classList.add('hidden');
+          renderActiveView();
+        },
+      });
     };
   }
 }
@@ -4404,6 +4643,60 @@ function formatGoalDeadline(value) {
   if (!normalized) return String(value || '');
   const [, year, month] = normalized.match(/^(\d{4})-(\d{2})-/) || [];
   return year && month ? `${SPANISH_MONTHS[Number(month) - 1] || month} ${year}` : String(value || '');
+}
+
+const GOAL_IMAGE_DATA_URL_LIMIT = 600000;
+
+function compressImageForUpload(file) {
+  if (!file || !String(file.type || '').startsWith('image/')) {
+    return Promise.reject(new Error('Selecciona una imagen válida'));
+  }
+
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('No se pudo leer la imagen'));
+    reader.onload = () => {
+      const image = new Image();
+      image.onerror = () => reject(new Error('No se pudo procesar la imagen'));
+      image.onload = () => {
+        const originalWidth = image.naturalWidth || image.width;
+        const originalHeight = image.naturalHeight || image.height;
+        if (!originalWidth || !originalHeight) {
+          reject(new Error('La imagen no tiene un tamaño válido'));
+          return;
+        }
+
+        const maxDimensions = [1000, 800, 650, 500];
+        let compressed = '';
+        for (const maxDimension of maxDimensions) {
+          const scale = Math.min(1, maxDimension / originalWidth, maxDimension / originalHeight);
+          const canvas = document.createElement('canvas');
+          canvas.width = Math.max(1, Math.round(originalWidth * scale));
+          canvas.height = Math.max(1, Math.round(originalHeight * scale));
+          const context = canvas.getContext('2d');
+          if (!context) {
+            reject(new Error('El navegador no permite procesar la imagen'));
+            return;
+          }
+          context.drawImage(image, 0, 0, canvas.width, canvas.height);
+
+          compressed = canvas.toDataURL('image/webp', 0.78);
+          if (!compressed.startsWith('data:image/webp')) {
+            compressed = canvas.toDataURL('image/jpeg', 0.78);
+          }
+          if (compressed.length <= GOAL_IMAGE_DATA_URL_LIMIT) break;
+        }
+
+        if (compressed.length > GOAL_IMAGE_DATA_URL_LIMIT) {
+          reject(new Error('La imagen es demasiado grande. Elige una imagen más pequeña'));
+          return;
+        }
+        resolve(compressed);
+      };
+      image.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
 }
 
 function isGoalDeadlineBeforeCurrentMonth(year, month) {
@@ -4530,16 +4823,18 @@ function openAddOrEditGoalModal(goal = null) {
   const previewDiv = document.getElementById('goal-img-preview');
   const removeImageBtn = document.getElementById('goal-remove-image');
   if (fileInput) {
-    fileInput.onchange = (e) => {
+    fileInput.onchange = async (e) => {
       const file = e.target.files?.[0];
       if (!file) return;
-      const reader = new FileReader();
-      reader.onload = (evt) => {
-        customGoalImage = evt.target.result;
+      try {
+        customGoalImage = await compressImageForUpload(file);
         previewDiv.innerHTML = `<img src="${customGoalImage}" class="max-w-full max-h-full object-contain" />`;
         removeImageBtn?.classList.remove('hidden');
-      };
-      reader.readAsDataURL(file);
+      } catch (error) {
+        customGoalImage = '';
+        fileInput.value = '';
+        showToast(error.message || 'No se pudo cargar la imagen', 'error');
+      }
     };
   }
 
@@ -4627,17 +4922,19 @@ function openAddOrEditGoalModal(goal = null) {
 
     try {
       if (isEdit) {
-        await api.updateSavingsGoal(goal.id, {
+        const updates = {
           name,
           targetAmount,
           deadline,
           icon,
           color: colors[icon] || '#006c49',
           imageUrl: customGoalImage,
-        });
+        };
+        await api.updateSavingsGoal(goal.id, updates);
+        updateLocalSavingsGoal(goal.id, updates);
         showToast(`Meta "${name}" actualizada`);
       } else {
-        await api.addSavingsGoal({
+        const newGoal = {
           name,
           targetAmount,
           currentAmount: 0,
@@ -4645,11 +4942,12 @@ function openAddOrEditGoalModal(goal = null) {
           icon,
           color: colors[icon] || '#006c49',
           imageUrl: customGoalImage,
-        });
+        };
+        const result = await api.addSavingsGoal(newGoal);
+        upsertLocalSavingsGoal(newGoal, result.id);
         showToast(`Meta "${name}" creada`);
       }
 
-      await refreshAllData();
       DOM.modalSavingsGoal.classList.add('hidden');
       renderActiveView();
     } catch (error) {
@@ -4659,14 +4957,19 @@ function openAddOrEditGoalModal(goal = null) {
 
   const deleteBtn = document.getElementById('goal-delete-btn');
   if (deleteBtn && isEdit) {
-    deleteBtn.onclick = async () => {
-      if (confirm(`¿Deseas eliminar la meta "${goal.name}"?`)) {
-        await api.deleteSavingsGoal(goal.id);
-        await refreshAllData();
-        DOM.modalSavingsGoal.classList.add('hidden');
-        renderActiveView();
-        showToast('Meta eliminada');
-      }
+    deleteBtn.onclick = () => {
+      openDeleteConfirmationModal({
+        title: '¿Eliminar meta?',
+        message: `Esta acción eliminará la meta "${goal.name}" y sus aportes asociados de forma permanente.`,
+        successMessage: 'Meta eliminada',
+        errorMessage: 'No se pudo eliminar la meta',
+        onConfirm: async () => {
+          await api.deleteSavingsGoal(goal.id);
+          removeLocalSavingsGoal(goal.id);
+          DOM.modalSavingsGoal.classList.add('hidden');
+          renderActiveView();
+        },
+      });
     };
   }
 }
@@ -4740,8 +5043,13 @@ function openAporteModal(goalId) {
       return;
     }
 
-    await api.contributeToGoal(goalId, amt, 'Manual');
-    await refreshAllData();
+    try {
+      const result = await api.contributeToGoal(goalId, amt, 'Manual');
+      applyLocalGoalContribution(goalId, amt, 'Manual', result);
+    } catch (error) {
+      showToast(error.message || 'No se pudo registrar el aporte', 'error');
+      return;
+    }
     DOM.modalAporteGoal.classList.add('hidden');
     renderActiveView();
     showToast(`¡Aporte de ${formatCOP(amt)} registrado para ${goal.name}!`);
@@ -4817,16 +5125,19 @@ function openEditProfileModal() {
   nameInput.oninput = syncAvatarFallback;
 
   if (avatarInput) {
-    avatarInput.onchange = (e) => {
+    avatarInput.onchange = async (e) => {
       const file = e.target.files?.[0];
       if (!file) return;
-      const reader = new FileReader();
-      reader.onload = (evt) => {
-        tempAvatarUrl = evt.target.result;
+      try {
+        tempAvatarUrl = await compressImageForUpload(file);
         avatarPreview.innerHTML = renderAvatarHtml(nameInput.value || user.name, tempAvatarUrl, 'profile');
         avatarHint.textContent = 'Foto de perfil seleccionada';
-      };
-      reader.readAsDataURL(file);
+      } catch (error) {
+        tempAvatarUrl = '';
+        avatarInput.value = '';
+        syncAvatarFallback();
+        showToast(error.message || 'No se pudo cargar la imagen', 'error');
+      }
     };
   }
 
@@ -4887,6 +5198,7 @@ function openCategoryBudgetModal(categoryBudget) {
     try {
       await api.updateCategoryBudget(categoryBudget.category, limit);
       categoryBudget.limit = limit;
+      registerLocalMutation();
       closeModal();
       renderExpenses();
       showToast(`Límite de ${categoryBudget.category} actualizado`);

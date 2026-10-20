@@ -12,7 +12,16 @@ const BOOTSTRAP_CACHE_KEY = 'miplata_bootstrap_cache';
 const DEMO_EMAIL = 'demo@miplata.app';
 const API_TIMEOUT_MS = 15000;
 const GET_RETRY_DELAY_MS = 250;
+const SESSION_EXPIRY_SKEW_SECONDS = 45;
+const MAX_EMBEDDED_IMAGE_DATA_URL_LENGTH = 600000;
 const inFlightMutations = new Map();
+
+function validateImagePayload(payload) {
+  const imageUrl = String(payload?.imageUrl || '');
+  if (imageUrl.startsWith('data:') && imageUrl.length > MAX_EMBEDDED_IMAGE_DATA_URL_LENGTH) {
+    throw new Error('La imagen es demasiado grande. Elige una imagen más pequeña');
+  }
+}
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = API_TIMEOUT_MS) {
   const controller = new AbortController();
@@ -61,6 +70,20 @@ function createDemoId(prefix) {
 
 function demoToday() {
   return new Date().toISOString().slice(0, 10);
+}
+
+function getDemoAvailableCash() {
+  if (!isDemoRuntimeActive()) return 0;
+  const income = demoRuntime.transactions
+    .filter((transaction) => transaction.type === 'ingreso')
+    .reduce((total, transaction) => total + (Number(transaction.amount) || 0), 0);
+  const expenses = demoRuntime.transactions
+    .filter((transaction) => transaction.type === 'gasto')
+    .reduce((total, transaction) => total + (Number(transaction.amount) || 0), 0);
+  const contributions = demoRuntime.goalContributions
+    .filter((contribution) => String(contribution.date || '').startsWith(demoToday().slice(0, 7)))
+    .reduce((total, contribution) => total + (Number(contribution.amount) || 0), 0);
+  return Math.max(0, income - expenses - contributions);
 }
 
 function activateDemoRuntime(data) {
@@ -146,7 +169,10 @@ async function refreshSession() {
         if (!res.ok) return false;
         const data = await res.json();
         if (!data.session?.access_token) return false;
-        saveSession(data.session);
+        // Supabase normally rotates the refresh token, but keeping the old
+        // one as a fallback prevents a valid session from becoming unusable
+        // when a response omits that field.
+        saveSession({ ...session, ...data.session });
         return true;
       })
       .catch(() => false)
@@ -157,8 +183,17 @@ async function refreshSession() {
   return refreshPromise;
 }
 
+function sessionNeedsRefresh(session) {
+  const expiresAt = Number(session?.expires_at || 0);
+  if (!expiresAt) return false;
+  return expiresAt <= Math.floor(Date.now() / 1000) + SESSION_EXPIRY_SKEW_SECONDS;
+}
+
+function notifySessionExpired() {
+  window.dispatchEvent(new CustomEvent('miplata:auth-expired'));
+}
+
 async function request(path, options = {}, retry = true) {
-  const headers = { ...getHeaders(), ...(options.headers || {}) };
   const method = String(options.method || 'GET').toUpperCase();
   const lockKey = retry && method !== 'GET' && method !== 'HEAD'
     ? `${method}:${path}:${options.body || ''}`
@@ -167,11 +202,29 @@ async function request(path, options = {}, retry = true) {
 
   const execute = async () => {
     try {
-      const res = await fetchWithTimeout(`${API_BASE}${path}`, { ...options, headers });
+      const session = readSession();
+      if (retry && session?.access_token && sessionNeedsRefresh(session)) {
+        const refreshed = await refreshSession();
+        if (!refreshed) {
+          clearSession();
+          notifySessionExpired();
+          return new Response(JSON.stringify({ error: 'Tu sesión expiró. Ingresa nuevamente.' }), {
+            status: 401,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+      }
+
+      const requestHeaders = { ...getHeaders(), ...(options.headers || {}) };
+      const res = await fetchWithTimeout(`${API_BASE}${path}`, { ...options, headers: requestHeaders });
       if (res.status === 401 && retry && path !== '/api/auth/refresh') {
         const refreshed = await refreshSession();
-        if (refreshed) return request(path, options, false);
+        if (refreshed) {
+          const retryResponse = await request(path, options, false);
+          if (retryResponse.status !== 401) return retryResponse;
+        }
         clearSession();
+        notifySessionExpired();
       }
       return res;
     } catch (error) {
@@ -195,6 +248,7 @@ async function request(path, options = {}, retry = true) {
 
 async function readError(res, fallback) {
   const data = await res.json().catch(() => ({}));
+  if (res.status === 401) return 'Tu sesión expiró. Ingresa nuevamente para continuar.';
   return data.error || fallback;
 }
 
@@ -289,6 +343,7 @@ export const api = {
   },
 
   async register(name, email, password, monthlySalary, avatarUrl) {
+    validateImagePayload({ imageUrl: avatarUrl });
     const res = await request('/api/auth/register', {
       method: 'POST',
       body: JSON.stringify({ name, email, password, monthlySalary, avatarUrl }),
@@ -331,6 +386,7 @@ export const api = {
   },
 
   async updateProfile(updates) {
+    validateImagePayload(updates);
     if (isDemoRuntimeActive()) {
       demoRuntime.user = { ...demoRuntime.user, ...clone(updates) };
       if (updates.budgetRule) {
@@ -472,9 +528,11 @@ export const api = {
       obligation.status = isPaid ? 'paid' : 'pending';
       obligation.paidDate = isPaid ? demoToday() : null;
       const linked = demoRuntime.transactions.some((item) => item.fixedObligationId === id);
+      let transactionId = demoRuntime.transactions.find((item) => item.fixedObligationId === id)?.id || null;
       if (isPaid && !linked) {
+        transactionId = createDemoId(`tx_fix_${id}`);
         demoRuntime.transactions.push({
-          id: createDemoId(`tx_fix_${id}`),
+          id: transactionId,
           userId: demoRuntime.user.id,
           type: 'gasto',
           amount: Number(obligation.amount) || 0,
@@ -491,7 +549,7 @@ export const api = {
         demoRuntime.transactions = demoRuntime.transactions.filter((item) => item.fixedObligationId !== id);
       }
       return {
-        result: { status: obligation.status, isPaid },
+        result: { status: obligation.status, isPaid, transactionId },
         message: isPaid ? 'Marcado como pagado e integrado a gastos.' : 'Gasto fijo desmarcado (vuelve a pendiente).',
       };
     }
@@ -509,6 +567,7 @@ export const api = {
   },
 
   async addSavingsGoal(goal) {
+    validateImagePayload(goal);
     if (isDemoRuntimeActive()) {
       const id = goal.id || createDemoId('goal_demo');
       demoRuntime.savingsGoals.push({
@@ -526,6 +585,7 @@ export const api = {
   },
 
   async updateSavingsGoal(id, updates) {
+    validateImagePayload(updates);
     if (isDemoRuntimeActive()) {
       const goal = demoRuntime.savingsGoals.find((item) => item.id === id);
       if (goal) {
@@ -543,6 +603,7 @@ export const api = {
   async deleteSavingsGoal(id) {
     if (isDemoRuntimeActive()) {
       demoRuntime.savingsGoals = demoRuntime.savingsGoals.filter((item) => item.id !== id);
+      demoRuntime.goalContributions = demoRuntime.goalContributions.filter((item) => item.goalId !== id);
       return { message: 'Meta de ahorro eliminada' };
     }
     const res = await request(`/api/savings-goals/${id}`, { method: 'DELETE' });
@@ -554,10 +615,18 @@ export const api = {
     if (isDemoRuntimeActive()) {
       const goal = demoRuntime.savingsGoals.find((item) => item.id === goalId);
       if (!goal) throw new Error('Meta no encontrada');
+      const numericAmount = Number(amount);
+      if (!Number.isFinite(numericAmount) || numericAmount <= 0) {
+        throw new Error('El monto debe ser mayor a 0');
+      }
+      const availableCash = getDemoAvailableCash();
+      if (numericAmount > availableCash) {
+        throw new Error(`No tienes suficiente dinero disponible. Te quedan $${availableCash.toLocaleString('es-CO')} COP`);
+      }
       const contributedAmount = demoRuntime.goalContributions
         .filter((contribution) => contribution.goalId === goalId)
         .reduce((total, contribution) => total + (Number(contribution.amount) || 0), 0);
-      const newAmount = contributedAmount + (Number(amount) || 0);
+      const newAmount = contributedAmount + numericAmount;
       goal.currentAmount = newAmount;
       const contributionId = createDemoId('contrib_demo');
       demoRuntime.goalContributions.unshift({
@@ -565,7 +634,7 @@ export const api = {
         userId: demoRuntime.user.id,
         goalId,
         goalName: goal.name,
-        amount: Number(amount) || 0,
+        amount: numericAmount,
         date: demoToday(),
         type,
         timestamp: Date.now(),

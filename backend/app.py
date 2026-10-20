@@ -44,6 +44,7 @@ else:
 
 app = Flask(__name__, static_folder=FRONTEND_DIR)
 app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024
+MAX_EMBEDDED_IMAGE_DATA_URL_LENGTH = 600000
 
 DEFAULT_CORS_ORIGINS = {
     "http://127.0.0.1:5000",
@@ -173,13 +174,20 @@ def _is_duplicate_email_error(error):
 def _available_cash_for_user(user_id):
     """Return cash that can still be reserved for a savings goal.
 
-    Savings contributions are reservations, not expenses, so they must be
-    included in this calculation without creating a transaction.
+    Pending fixed obligations are not cash outflows until they are paid and
+    recorded as expenses. Goal contributions are kept in their own table, so
+    the current month's contributions are subtracted here explicitly.
     """
-    user = db.get_user_by_id(user_id) or {}
     current_month = datetime.now().strftime("%Y-%m")
-    transactions = db.get_transactions(user_id) or []
-    goals = db.get_savings_goals(user_id) or []
+    if SUPABASE_ENABLED:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            transactions_future = pool.submit(db.get_transactions, user_id, current_month)
+            contributions_future = pool.submit(db.get_goal_contributions, user_id, current_month)
+            transactions = transactions_future.result() or []
+            contributions = contributions_future.result() or []
+    else:
+        transactions = db.get_transactions(user_id, current_month) or []
+        contributions = db.get_goal_contributions(user_id, current_month) or []
 
     total_income = sum(
         float(transaction.get("amount") or 0)
@@ -193,9 +201,8 @@ def _available_cash_for_user(user_id):
         if transaction.get("type") == "gasto"
         and str(transaction.get("date") or "").startswith(current_month)
     )
-    total_savings = sum(float(goal.get("currentAmount") or 0) for goal in goals)
-    initial_balance = float(user.get("initialBalance") or 0)
-    return max(0, initial_balance + total_income - total_expenses - total_savings)
+    total_savings = sum(float(contribution.get("amount") or 0) for contribution in contributions)
+    return max(0, total_income - total_expenses - total_savings)
 
 # --- Static Frontend Serving ---
 @app.route("/")
@@ -344,6 +351,8 @@ def auth_register():
     password = str(data.get("password") or "")
     monthly_salary = data.get("monthlySalary", 0)
     avatar_url = data.get("avatarUrl", "")
+    if str(avatar_url or "").startswith("data:") and len(str(avatar_url)) > MAX_EMBEDDED_IMAGE_DATA_URL_LENGTH:
+        return jsonify({"error": "La imagen es demasiado grande. Elige una imagen más pequeña"}), 400
 
     if not name:
         return jsonify({"error": "El nombre es requerido"}), 400
@@ -474,6 +483,9 @@ def update_profile():
     if not user_id:
         return jsonify({"error": "No autorizado"}), 401
     data = request.get_json() or {}
+    avatar_url = str(data.get("avatarUrl") or "")
+    if avatar_url.startswith("data:") and len(avatar_url) > MAX_EMBEDDED_IMAGE_DATA_URL_LENGTH:
+        return jsonify({"error": "La imagen es demasiado grande. Elige una imagen más pequeña"}), 400
     updated = db.update_user(user_id, data)
     return jsonify({"user": updated, "message": "Perfil actualizado"})
 
@@ -618,6 +630,9 @@ def add_savings_goal():
     if not user_id:
         return jsonify({"error": "No autorizado"}), 401
     data = request.get_json() or {}
+    image_url = str(data.get("imageUrl") or "")
+    if image_url.startswith("data:") and len(image_url) > MAX_EMBEDDED_IMAGE_DATA_URL_LENGTH:
+        return jsonify({"error": "La imagen es demasiado grande. Elige una imagen más pequeña"}), 400
     target_amount = _parse_amount(data.get("targetAmount"), allow_zero=False)
     if not str(data.get("name") or "").strip() or target_amount is None:
         return jsonify({"error": "El nombre y el valor objetivo de la meta son requeridos"}), 400
@@ -633,6 +648,9 @@ def update_savings_goal(goal_id):
     if not user_id:
         return jsonify({"error": "No autorizado"}), 401
     data = request.get_json() or {}
+    image_url = str(data.get("imageUrl") or "")
+    if image_url.startswith("data:") and len(image_url) > MAX_EMBEDDED_IMAGE_DATA_URL_LENGTH:
+        return jsonify({"error": "La imagen es demasiado grande. Elige una imagen más pequeña"}), 400
     if "deadline" in data and _is_past_goal_month(data.get("deadline")):
         return jsonify({"error": "La fecha límite debe ser el mes actual o un mes futuro"}), 400
     db.update_savings_goal(user_id, goal_id, data)
