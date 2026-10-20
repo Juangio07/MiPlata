@@ -8,6 +8,7 @@ different id.
 
 import time
 from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor
 
 import supabase_client as sb
 
@@ -325,19 +326,28 @@ def ensure_demo_data(user_id):
 
     # The demo is intentionally ephemeral: every new demo session starts from
     # this clean dataset, so interactions never become permanent records.
-    for table in ("goal_contributions", "transactions", "fixed_obligations", "savings_goals", "category_budgets"):
-        sb.rest_request(table, method="DELETE", params={"user_id": f"eq.{user_id}"})
-    sb.rest_request(
-        "profiles",
-        method="PATCH",
-        params={"id": f"eq.{user_id}"},
-        body={"name": "Fixelar", "monthly_salary": 2000000, "monthly_budget_limit": 2000000, "budget_needs": 50, "budget_wants": 30, "budget_savings": 20, "alert_80_percent": True, "auto_adjust_variable": True, "smart_categorization": True},
-    )
-    sb.rest_request("category_budgets", method="POST", body=category_budgets, returning=True)
-    sb.rest_request("transactions", method="POST", body=transactions, returning=True)
-    sb.rest_request("fixed_obligations", method="POST", body=fixed, returning=True)
-    sb.rest_request("savings_goals", method="POST", body=goals, returning=True)
-    sb.rest_request("goal_contributions", method="POST", body=contributions, returning=True)
+    demo_tables = ("goal_contributions", "transactions", "fixed_obligations", "savings_goals", "category_budgets")
+    with ThreadPoolExecutor(max_workers=len(demo_tables)) as pool:
+        list(pool.map(
+            lambda table: sb.rest_request(table, method="DELETE", params={"user_id": f"eq.{user_id}"}),
+            demo_tables,
+        ))
+
+    writes = [
+        lambda: sb.rest_request(
+            "profiles",
+            method="PATCH",
+            params={"id": f"eq.{user_id}"},
+            body={"name": "Fixelar", "monthly_salary": 2000000, "monthly_budget_limit": 2000000, "budget_needs": 50, "budget_wants": 30, "budget_savings": 20, "alert_80_percent": True, "auto_adjust_variable": True, "smart_categorization": True},
+        ),
+        lambda: sb.rest_request("category_budgets", method="POST", body=category_budgets, returning=True),
+        lambda: sb.rest_request("transactions", method="POST", body=transactions, returning=True),
+        lambda: sb.rest_request("fixed_obligations", method="POST", body=fixed, returning=True),
+        lambda: sb.rest_request("savings_goals", method="POST", body=goals, returning=True),
+        lambda: sb.rest_request("goal_contributions", method="POST", body=contributions, returning=True),
+    ]
+    with ThreadPoolExecutor(max_workers=len(writes)) as pool:
+        list(pool.map(lambda write: write(), writes))
 
 
 def update_user(user_id, updates):

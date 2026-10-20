@@ -10,6 +10,24 @@ const API_BASE = '';
 const SESSION_KEY = 'miplata_supabase_session';
 const BOOTSTRAP_CACHE_KEY = 'miplata_bootstrap_cache';
 const DEMO_EMAIL = 'demo@miplata.app';
+const API_TIMEOUT_MS = 15000;
+const GET_RETRY_DELAY_MS = 250;
+const inFlightMutations = new Map();
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = API_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      throw new Error('El servidor tardó demasiado en responder. Intenta nuevamente.');
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
 
 // Demo changes are intentionally session-only. The demo account is shared as
 // a read-only seed in Supabase, while each browser gets its own in-memory copy
@@ -119,7 +137,7 @@ async function refreshSession() {
   const session = readSession();
   if (!session?.refresh_token) return false;
   if (!refreshPromise) {
-    refreshPromise = fetch(`${API_BASE}/api/auth/refresh`, {
+    refreshPromise = fetchWithTimeout(`${API_BASE}/api/auth/refresh`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ refreshToken: session.refresh_token }),
@@ -141,13 +159,38 @@ async function refreshSession() {
 
 async function request(path, options = {}, retry = true) {
   const headers = { ...getHeaders(), ...(options.headers || {}) };
-  const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
-  if (res.status === 401 && retry && path !== '/api/auth/refresh') {
-    const refreshed = await refreshSession();
-    if (refreshed) return request(path, options, false);
-    clearSession();
+  const method = String(options.method || 'GET').toUpperCase();
+  const lockKey = retry && method !== 'GET' && method !== 'HEAD'
+    ? `${method}:${path}:${options.body || ''}`
+    : '';
+  if (lockKey && inFlightMutations.has(lockKey)) return inFlightMutations.get(lockKey);
+
+  const execute = async () => {
+    try {
+      const res = await fetchWithTimeout(`${API_BASE}${path}`, { ...options, headers });
+      if (res.status === 401 && retry && path !== '/api/auth/refresh') {
+        const refreshed = await refreshSession();
+        if (refreshed) return request(path, options, false);
+        clearSession();
+      }
+      return res;
+    } catch (error) {
+      if (retry && method === 'GET') {
+        await new Promise((resolve) => window.setTimeout(resolve, GET_RETRY_DELAY_MS));
+        return request(path, options, false);
+      }
+      throw error;
+    }
+  };
+
+  const promise = execute();
+  if (!lockKey) return promise;
+  inFlightMutations.set(lockKey, promise);
+  try {
+    return await promise;
+  } finally {
+    if (inFlightMutations.get(lockKey) === promise) inFlightMutations.delete(lockKey);
   }
-  return res;
 }
 
 async function readError(res, fallback) {
@@ -261,9 +304,8 @@ export const api = {
   },
 
   async requestPasswordReset(email, redirectTo) {
-    const res = await fetch(`${API_BASE}/api/auth/password-reset/request`, {
+    const res = await request('/api/auth/password-reset/request', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email, redirectTo }),
     });
     if (!res.ok) throw new Error(await readError(res, 'No se pudo enviar el enlace de recuperación'));
@@ -271,9 +313,8 @@ export const api = {
   },
 
   async confirmPasswordReset(accessToken, password) {
-    const res = await fetch(`${API_BASE}/api/auth/password-reset/confirm`, {
+    const res = await request('/api/auth/password-reset/confirm', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ accessToken, password }),
     });
     if (!res.ok) throw new Error(await readError(res, 'No se pudo actualizar la contraseña'));

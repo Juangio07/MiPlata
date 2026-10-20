@@ -22,5 +22,5 @@ if __name__ == "__main__":
     print(f"Servidor ejecutandose en: http://localhost:{port}")
     print(f"Abre tu navegador en http://localhost:{port}")
     print("=" * 60)
-    app.run(host="0.0.0.0", port=port, debug=debug)
+    app.run(host="0.0.0.0", port=port, debug=debug, threaded=True)
 

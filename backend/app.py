@@ -1,6 +1,7 @@
 import os
 import io
 import csv
+import math
 import re
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
@@ -30,7 +31,11 @@ def _load_local_env():
 
 
 _load_local_env()
-SUPABASE_ENABLED = bool(os.environ.get("SUPABASE_URL") and os.environ.get("SUPABASE_SECRET_KEY"))
+SUPABASE_ENABLED = bool(
+    os.environ.get("SUPABASE_URL")
+    and os.environ.get("SUPABASE_PUBLISHABLE_KEY")
+    and os.environ.get("SUPABASE_SECRET_KEY")
+)
 if SUPABASE_ENABLED:
     import supabase_client as sb
     import supabase_database as db
@@ -38,16 +43,47 @@ else:
     import database as db
 
 app = Flask(__name__, static_folder=FRONTEND_DIR)
+app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024
+
+DEFAULT_CORS_ORIGINS = {
+    "http://127.0.0.1:5000",
+    "http://localhost:5000",
+    "http://127.0.0.1:3000",
+    "http://localhost:3000",
+    "https://miplatabyf.netlify.app",
+}
+
+
+def _allowed_cors_origins():
+    configured = os.environ.get("CORS_ORIGINS", "")
+    if not configured.strip():
+        return DEFAULT_CORS_ORIGINS
+    return {origin.strip().rstrip("/") for origin in configured.split(",") if origin.strip()}
 
 # Initialize database schema and ensure demo user exists
 db.init_db()
 
 @app.after_request
 def add_cors_headers(response):
-    response.headers["Access-Control-Allow-Origin"] = "*"
+    origin = request.headers.get("Origin", "").rstrip("/")
+    if origin and origin in _allowed_cors_origins():
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Vary"] = "Origin"
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    if request.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"
+    elif request.path.startswith(("/js/", "/css/", "/assets/")):
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
     return response
+
+
+@app.errorhandler(413)
+def request_too_large(_error):
+    return jsonify({"error": "La solicitud es demasiado grande"}), 413
 
 
 def get_auth_user_from_req():
@@ -90,6 +126,21 @@ def _session_response(auth_data, profile, message):
 
 def _is_valid_email(email):
     return bool(re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email or ""))
+
+
+def _parse_amount(value, allow_zero=True):
+    try:
+        amount = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(amount) or amount < 0 or (not allow_zero and amount == 0):
+        return None
+    return amount
+
+
+def _is_valid_month_key(value):
+    match = re.fullmatch(r"(\d{4})-(\d{2})", str(value or "").strip())
+    return bool(match and 1 <= int(match.group(2)) <= 12)
 
 
 def _is_past_goal_month(value):
@@ -258,6 +309,8 @@ def auth_password_reset_request():
         app.logger.warning("Password recovery email failed (status=%s): %s", error.status, error)
         if error.status == 429:
             return jsonify({"error": "Supabase limitó temporalmente los correos de recuperación. Espera unos minutos y vuelve a intentarlo."}), 429
+        if error.status is None:
+            return jsonify({"error": "No se pudo conectar con el servicio de correo de Supabase. Intenta nuevamente."}), 503
         if error.status in (400, 422):
             return jsonify({"error": "No se pudo enviar el enlace. Verifica la URL de redirección en Supabase."}), 400
         return jsonify({"error": "No se pudo enviar el enlace de recuperación. Intenta nuevamente."}), 502
@@ -364,9 +417,6 @@ def get_user():
     user_id = get_current_user_id_from_req()
     if not user_id:
         return jsonify({"user": None}), 200
-    auth_user = get_auth_user_from_req() if SUPABASE_ENABLED else None
-    if auth_user and (auth_user.get("email") or "").strip().lower() == "demo@miplata.app":
-        db.ensure_demo_data(user_id)
     user = db.get_user_by_id(user_id)
     return jsonify({"user": user})
 
@@ -478,6 +528,14 @@ def add_transaction():
     if not user_id:
         return jsonify({"error": "No autorizado"}), 401
     data = request.get_json() or {}
+    if data.get("type") not in ("gasto", "ingreso"):
+        return jsonify({"error": "El tipo de movimiento no es válido"}), 400
+    amount = _parse_amount(data.get("amount"))
+    if amount is None:
+        return jsonify({"error": "El monto debe ser un número mayor o igual a 0"}), 400
+    if not str(data.get("category") or "").strip() or not str(data.get("description") or "").strip():
+        return jsonify({"error": "La categoría y la descripción son requeridas"}), 400
+    data["amount"] = amount
     tx_id = db.add_transaction(user_id, data)
     return jsonify({"id": tx_id, "message": "Movimiento registrado con éxito"})
 
@@ -505,6 +563,15 @@ def add_fixed_obligation():
     if not user_id:
         return jsonify({"error": "No autorizado"}), 401
     data = request.get_json() or {}
+    amount = _parse_amount(data.get("amount"), allow_zero=False)
+    try:
+        due_day = int(data.get("dueDay"))
+    except (TypeError, ValueError):
+        due_day = 0
+    if not str(data.get("name") or "").strip() or amount is None or not 1 <= due_day <= 31:
+        return jsonify({"error": "Nombre, monto y día de vencimiento son válidos y requeridos"}), 400
+    data["amount"] = amount
+    data["dueDay"] = due_day
     item_id = db.add_fixed_obligation(user_id, data)
     return jsonify({"id": item_id, "message": "Nuevo gasto fijo agregado"})
 
@@ -551,8 +618,12 @@ def add_savings_goal():
     if not user_id:
         return jsonify({"error": "No autorizado"}), 401
     data = request.get_json() or {}
+    target_amount = _parse_amount(data.get("targetAmount"), allow_zero=False)
+    if not str(data.get("name") or "").strip() or target_amount is None:
+        return jsonify({"error": "El nombre y el valor objetivo de la meta son requeridos"}), 400
     if _is_past_goal_month(data.get("deadline")):
         return jsonify({"error": "La fecha límite debe ser el mes actual o un mes futuro"}), 400
+    data["targetAmount"] = target_amount
     goal_id = db.add_savings_goal(user_id, data)
     return jsonify({"id": goal_id, "message": f"Meta \"{data.get('name')}\" creada con éxito"})
 
@@ -581,9 +652,9 @@ def contribute_goal(goal_id):
     if not user_id:
         return jsonify({"error": "No autorizado"}), 401
     data = request.get_json() or {}
-    amount = float(data.get("amount", 0))
+    amount = _parse_amount(data.get("amount"), allow_zero=False)
     contrib_type = data.get("type", "Manual")
-    if amount <= 0:
+    if amount is None:
         return jsonify({"error": "El monto debe ser mayor a 0"}), 400
     available_cash = _available_cash_for_user(user_id)
     if amount > available_cash:
@@ -610,7 +681,7 @@ def get_monthly_report():
     if not user_id:
         return jsonify({"error": "No autorizado"}), 401
     month_key = request.args.get("month", db.get_current_month_key())
-    if not re.fullmatch(r"\d{4}-\d{2}", month_key or ""):
+    if not _is_valid_month_key(month_key):
         return jsonify({"error": "El mes solicitado no es válido"}), 400
     return jsonify({
         "month": month_key,
@@ -633,8 +704,10 @@ def update_category_budget():
     if not user_id:
         return jsonify({"error": "No autorizado"}), 401
     data = request.get_json() or {}
-    category = data.get("category")
-    limit_amount = float(data.get("limit", 0))
+    category = str(data.get("category") or "").strip()
+    limit_amount = _parse_amount(data.get("limit"))
+    if not category or limit_amount is None:
+        return jsonify({"error": "La categoría y el límite deben ser válidos"}), 400
     db.update_category_budget(user_id, category, limit_amount)
     return jsonify({"message": f"Presupuesto para {category} actualizado"})
 
@@ -701,4 +774,4 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     print(f"Starting MiPlata backend server on port {port}...")
     debug = os.environ.get("FLASK_DEBUG", "0") == "1"
-    app.run(host="0.0.0.0", port=port, debug=debug)
+    app.run(host="0.0.0.0", port=port, debug=debug, threaded=True)

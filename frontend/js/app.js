@@ -3320,11 +3320,11 @@ let registerAvatarUrl = '';
 let authRecoveryMode = null;
 let recoveryAccessToken = '';
 let recoveryNotice = '';
+let recoveryError = '';
 
 function recoveryRedirectUrl() {
-  const url = new URL(window.location.href);
+  const url = new URL(window.location.origin);
   url.searchParams.set('password_reset', '1');
-  url.hash = '';
   return url.toString();
 }
 
@@ -3336,11 +3336,33 @@ function readRecoveryAccessToken() {
   return type === 'recovery' ? params.get('access_token') || '' : '';
 }
 
+function readRecoveryError() {
+  const hash = window.location.hash.startsWith('#') ? window.location.hash.slice(1) : window.location.hash;
+  if (!hash) return '';
+  const params = new URLSearchParams(hash);
+  const errorCode = params.get('error_code') || '';
+  const description = (params.get('error_description') || '').toLowerCase();
+  if (!params.get('error') && !errorCode) return '';
+  if (errorCode === 'otp_expired' || description.includes('expired')) {
+    return 'El enlace de recuperación expiró o ya fue utilizado. Solicita uno nuevo.';
+  }
+  return 'No se pudo validar el enlace de recuperación. Solicita uno nuevo.';
+}
+
 function prepareRecoveryFromUrl() {
   const accessToken = readRecoveryAccessToken();
   if (accessToken) {
     recoveryAccessToken = accessToken;
     authRecoveryMode = 'update';
+    return true;
+  }
+  const urlError = readRecoveryError();
+  if (urlError) {
+    recoveryError = urlError;
+    authRecoveryMode = 'request';
+    const cleanUrl = new URL(window.location.href);
+    cleanUrl.hash = '';
+    window.history.replaceState({}, document.title, `${cleanUrl.pathname}${cleanUrl.search}`);
     return true;
   }
   if (new URLSearchParams(window.location.search).get('password_reset') === '1') {
@@ -3381,6 +3403,7 @@ function renderPasswordRecovery() {
             </div>
             <button id="reset-request-submit" type="submit" class="w-full py-3 rounded-2xl bg-[#0058bc] text-white font-bold text-xs shadow-md shadow-[#0058bc]/25 hover:bg-[#004bb0] active:scale-95 transition-all cursor-pointer">Enviar enlace de recuperación</button>
           </form>
+          ${recoveryError ? `<div class="rounded-2xl bg-rose-50 border border-rose-200 px-3 py-2.5 text-xs font-semibold text-rose-700">${recoveryError}</div>` : ''}
           ${recoveryNotice ? `<div class="rounded-2xl bg-emerald-50 border border-emerald-200 px-3 py-2.5 text-xs font-semibold text-[#006c49]">${recoveryNotice}</div>` : ''}
         ` : `
           <form id="form-password-reset-update" class="flex flex-col gap-3.5">
@@ -3412,6 +3435,7 @@ function renderPasswordRecovery() {
     authRecoveryMode = null;
     recoveryAccessToken = '';
     recoveryNotice = '';
+    recoveryError = '';
     isRegisterMode = false;
     renderAuth();
   };
@@ -3428,6 +3452,7 @@ function renderPasswordRecovery() {
         return;
       }
       try {
+        recoveryError = '';
         const result = await api.requestPasswordReset(email, recoveryRedirectUrl());
         recoveryNotice = result.message;
         renderPasswordRecovery();
@@ -3476,6 +3501,7 @@ function renderPasswordRecovery() {
       authRecoveryMode = null;
       recoveryAccessToken = '';
       recoveryNotice = '';
+      recoveryError = '';
       isRegisterMode = false;
       renderAuth();
       showToast('Contraseña actualizada. Ya puedes iniciar sesión');

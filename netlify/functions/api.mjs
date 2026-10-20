@@ -23,6 +23,10 @@ function json(data, status = 200, extraHeaders = {}) {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Headers': 'Content-Type, Authorization',
       'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
+      'X-Content-Type-Options': 'nosniff',
+      'X-Frame-Options': 'DENY',
+      'Referrer-Policy': 'strict-origin-when-cross-origin',
+      'Cache-Control': 'no-store',
       ...extraHeaders,
     },
   });
@@ -108,6 +112,17 @@ function monthLabel(key) {
 function number(value) {
   const result = Number(value);
   return Number.isFinite(result) ? result : 0;
+}
+
+function nonNegativeNumber(value, allowZero = true) {
+  const result = Number(value);
+  if (!Number.isFinite(result) || result < 0 || (!allowZero && result === 0)) return null;
+  return result;
+}
+
+function isValidMonthKey(value) {
+  const match = /^(\d{4})-(\d{2})$/.exec(String(value || '').trim());
+  return Boolean(match && Number(match[2]) >= 1 && Number(match[2]) <= 12);
 }
 
 function isValidEmail(email) {
@@ -426,11 +441,13 @@ async function ensureDemoData(userId) {
   await restRequest('profiles', { method: 'PATCH', params: { id: `eq.${userId}` }, body: {
     name: 'Fixelar', monthly_salary: 2000000, monthly_budget_limit: 2000000, budget_needs: 50, budget_wants: 30, budget_savings: 20, alert_80_percent: true, auto_adjust_variable: true, smart_categorization: true,
   } });
-  await restRequest('category_budgets', { method: 'POST', returning: true, body: categoryBudgets });
-  await restRequest('transactions', { method: 'POST', returning: true, body: transactions });
-  await restRequest('fixed_obligations', { method: 'POST', returning: true, body: fixed });
-  await restRequest('savings_goals', { method: 'POST', returning: true, body: goals });
-  await restRequest('goal_contributions', { method: 'POST', returning: true, body: contributions });
+  await Promise.all([
+    restRequest('category_budgets', { method: 'POST', returning: true, body: categoryBudgets }),
+    restRequest('transactions', { method: 'POST', returning: true, body: transactions }),
+    restRequest('fixed_obligations', { method: 'POST', returning: true, body: fixed }),
+    restRequest('savings_goals', { method: 'POST', returning: true, body: goals }),
+    restRequest('goal_contributions', { method: 'POST', returning: true, body: contributions }),
+  ]);
 }
 
 function sessionResponse(auth, profile, message) {
@@ -624,6 +641,13 @@ async function handleAuth(route, request) {
       await authRequest('/recover', 'POST', { email, redirect_to: redirectTo });
       return json({ message: 'Si el correo está registrado, recibirás un enlace para recuperar tu contraseña.' });
     } catch (error) {
+      console.warn('Password recovery email failed', { status: error.status, message: error.message });
+      if (error.status === 429) {
+        return json({ error: 'Supabase limitó temporalmente los correos de recuperación. Espera unos minutos y vuelve a intentarlo.' }, 429);
+      }
+      if (!error.status) {
+        return json({ error: 'No se pudo conectar con el servicio de correo de Supabase. Intenta nuevamente.' }, 503);
+      }
       if ([400, 422].includes(error.status)) {
         return json({ error: 'No se pudo enviar el enlace. Verifica la URL de redirección en Supabase.' }, 400);
       }
@@ -700,7 +724,7 @@ async function handleProtected(route, request, user) {
   const monthlyReportMatch = route === 'reports/monthly' && request.method === 'GET';
   if (monthlyReportMatch) {
     const requestedMonth = new URL(request.url).searchParams.get('month') || monthKey();
-    if (!/^\d{4}-\d{2}$/.test(requestedMonth)) return json({ error: 'El mes solicitado no es válido' }, 400);
+    if (!isValidMonthKey(requestedMonth)) return json({ error: 'El mes solicitado no es válido' }, 400);
     return json({
       month: requestedMonth,
       transactions: await userTransactions(userId, requestedMonth),
@@ -709,7 +733,6 @@ async function handleProtected(route, request, user) {
   }
 
   if (route === 'user' && request.method === 'GET') {
-    if ((user.email || '').trim().toLowerCase() === 'demo@miplata.app') await ensureDemoData(userId);
     return json({ user: await getProfile(userId) });
   }
 
@@ -742,7 +765,13 @@ async function handleProtected(route, request, user) {
   }
 
   if (route === 'transactions' && request.method === 'GET') return json(await userTransactions(userId));
-  if (route === 'transactions' && request.method === 'POST') return json({ id: await addTransaction(userId, body), message: 'Movimiento registrado con éxito' });
+  if (route === 'transactions' && request.method === 'POST') {
+    const amount = nonNegativeNumber(body.amount);
+    if (!['gasto', 'ingreso'].includes(body.type)) return json({ error: 'El tipo de movimiento no es válido' }, 400);
+    if (amount === null) return json({ error: 'El monto debe ser un número mayor o igual a 0' }, 400);
+    if (!String(body.category || '').trim() || !String(body.description || '').trim()) return json({ error: 'La categoría y la descripción son requeridas' }, 400);
+    return json({ id: await addTransaction(userId, { ...body, amount }), message: 'Movimiento registrado con éxito' });
+  }
 
   const transactionMatch = route.match(/^transactions\/([^/]+)$/);
   if (transactionMatch) {
@@ -759,8 +788,13 @@ async function handleProtected(route, request, user) {
 
   if (route === 'fixed-obligations' && request.method === 'GET') return json(await userFixed(userId));
   if (route === 'fixed-obligations' && request.method === 'POST') {
+    const amount = nonNegativeNumber(body.amount, false);
+    const dueDay = Number(body.dueDay);
+    if (!String(body.name || '').trim() || amount === null || !Number.isInteger(dueDay) || dueDay < 1 || dueDay > 31) {
+      return json({ error: 'Nombre, monto y día de vencimiento son válidos y requeridos' }, 400);
+    }
     const id = body.id || `fix_${Date.now()}`;
-    await restRequest('fixed_obligations', { method: 'POST', returning: true, body: { id, user_id: userId, name: body.name, amount: body.amount, due_day: body.dueDay, category: body.category, status: body.status || 'pending', paid_date: dateOnly(body.paidDate), reminder_days_before: body.reminderDaysBefore ?? 3, is_automatic: Boolean(body.isAutomatic), notes: body.notes || '' } });
+    await restRequest('fixed_obligations', { method: 'POST', returning: true, body: { id, user_id: userId, name: body.name, amount, due_day: dueDay, category: body.category, status: body.status || 'pending', paid_date: dateOnly(body.paidDate), reminder_days_before: body.reminderDaysBefore ?? 3, is_automatic: Boolean(body.isAutomatic), notes: body.notes || '' } });
     return json({ id, message: 'Nuevo gasto fijo agregado' });
   }
 
@@ -797,11 +831,13 @@ async function handleProtected(route, request, user) {
 
   if (route === 'savings-goals' && request.method === 'GET') return json(await userGoals(userId));
   if (route === 'savings-goals' && request.method === 'POST') {
+    const targetAmount = nonNegativeNumber(body.targetAmount, false);
+    if (!String(body.name || '').trim() || targetAmount === null) return json({ error: 'El nombre y el valor objetivo de la meta son requeridos' }, 400);
     const deadline = dateOnly(body.deadline);
     if (body.deadline && !deadline) return json({ error: 'La fecha límite no es válida' }, 400);
     if (deadline && isPastGoalMonth(deadline)) return json({ error: 'La fecha límite debe ser el mes actual o un mes futuro' }, 400);
     const id = body.id || `goal_${Date.now()}`;
-    await restRequest('savings_goals', { method: 'POST', returning: true, body: { id, user_id: userId, name: body.name, target_amount: body.targetAmount, current_amount: 0, deadline, icon: body.icon || 'laptop', color: body.color || '#0058bc', category: body.category || '', image_url: body.imageUrl || '' } });
+    await restRequest('savings_goals', { method: 'POST', returning: true, body: { id, user_id: userId, name: body.name, target_amount: targetAmount, current_amount: 0, deadline, icon: body.icon || 'laptop', color: body.color || '#0058bc', category: body.category || '', image_url: body.imageUrl || '' } });
     return json({ id, message: `Meta "${body.name}" creada con éxito` });
   }
 
@@ -809,8 +845,8 @@ async function handleProtected(route, request, user) {
   if (goalMatch) {
     const id = decodeURIComponent(goalMatch[1]);
     if (goalMatch[2] === 'contribute' && request.method === 'POST') {
-      const amount = number(body.amount);
-      if (amount <= 0) return json({ error: 'El monto debe ser mayor a 0' }, 400);
+      const amount = nonNegativeNumber(body.amount, false);
+      if (amount === null) return json({ error: 'El monto debe ser mayor a 0' }, 400);
       const availableCash = await availableCashForUser(userId);
       if (amount > availableCash) {
         return json({ error: `No tienes suficiente dinero disponible. Te quedan $${availableCash.toLocaleString('es-CO')} COP` }, 400);
@@ -847,8 +883,11 @@ async function handleProtected(route, request, user) {
   if (route === 'goal-contributions' && request.method === 'GET') return json(await userContributions(userId));
   if (route === 'category-budgets' && request.method === 'GET') return json(await userBudgets(userId));
   if (route === 'category-budgets' && request.method === 'PUT') {
-    await restRequest('category_budgets', { method: 'PATCH', params: { user_id: `eq.${userId}`, category: `eq.${body.category}` }, body: { limit_amount: number(body.limit) } });
-    return json({ message: `Presupuesto para ${body.category} actualizado` });
+    const category = String(body.category || '').trim();
+    const limit = nonNegativeNumber(body.limit);
+    if (!category || limit === null) return json({ error: 'La categoría y el límite deben ser válidos' }, 400);
+    await restRequest('category_budgets', { method: 'PATCH', params: { user_id: `eq.${userId}`, category: `eq.${category}` }, body: { limit_amount: limit } });
+    return json({ message: `Presupuesto para ${category} actualizado` });
   }
 
   return json({ error: 'Ruta no encontrada' }, 404);
