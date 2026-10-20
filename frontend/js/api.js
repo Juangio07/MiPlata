@@ -9,7 +9,7 @@
 const API_BASE = '';
 const SESSION_KEY = 'miplata_supabase_session';
 const BOOTSTRAP_CACHE_KEY = 'miplata_bootstrap_cache';
-const DEMO_EMAIL = 'demo@miplata.app';
+export const DEMO_EMAIL = 'demo@miplata.app';
 const API_TIMEOUT_MS = 15000;
 const GET_RETRY_DELAY_MS = 250;
 const SESSION_EXPIRY_SKEW_SECONDS = 45;
@@ -43,7 +43,7 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = API_TIMEOUT_MS) {
 // that disappears when the page is reloaded or the session is closed.
 let demoRuntime = null;
 
-function isDemoUser(user) {
+export function isDemoUser(user) {
   return String(user?.email || '').trim().toLowerCase() === DEMO_EMAIL;
 }
 
@@ -430,8 +430,7 @@ export const api = {
 
   async deleteAccount() {
     if (isDemoRuntimeActive()) {
-      clearSession();
-      return { message: 'La cuenta demo no se puede eliminar' };
+      return { protected: true, message: 'La cuenta demo está protegida y no se puede eliminar' };
     }
     const res = await request('/api/user', { method: 'DELETE' });
     if (!res.ok) throw new Error(await readError(res, 'Error al eliminar cuenta'));

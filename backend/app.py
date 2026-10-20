@@ -515,6 +515,9 @@ def delete_account():
     user_id = get_current_user_id_from_req()
     if not user_id:
         return jsonify({"error": "No autorizado"}), 401
+    account = get_auth_user_from_req() if SUPABASE_ENABLED else db.get_user_by_id(user_id)
+    if ((account or {}).get("email") or "").strip().lower() == "demo@miplata.app":
+        return jsonify({"error": "La cuenta demo está protegida y no se puede eliminar"}), 403
     db.delete_user(user_id)
     if SUPABASE_ENABLED:
         try:

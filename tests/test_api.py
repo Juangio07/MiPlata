@@ -143,6 +143,16 @@ class AuthApiTests(unittest.TestCase):
         self.assertIn("imagen es demasiado grande", response.get_json()["error"])
         update_user.assert_not_called()
 
+    def test_demo_account_cannot_be_deleted(self):
+        with patch.object(app_module, "SUPABASE_ENABLED", False):
+            with patch.object(app_module, "get_current_user_id_from_req", return_value="demo-user"):
+                with patch.object(app_module.db, "get_user_by_id", return_value={"email": "demo@miplata.app"}):
+                    with patch.object(app_module.db, "delete_user") as delete_user:
+                        response = self.client.delete("/api/user")
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("cuenta demo está protegida", response.get_json()["error"])
+        delete_user.assert_not_called()
+
     def test_create_goal_persists_valid_payload(self):
         with patch.object(app_module, "get_current_user_id_from_req", return_value="user-1"):
             with patch.object(app_module.db, "add_savings_goal", return_value="goal-1") as add_goal:

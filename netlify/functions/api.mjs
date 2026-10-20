@@ -763,6 +763,9 @@ async function handleProtected(route, request, user) {
   }
 
   if (route === 'user' && request.method === 'DELETE') {
+    if ((user.email || '').trim().toLowerCase() === 'demo@miplata.app') {
+      return json({ error: 'La cuenta demo está protegida y no se puede eliminar' }, 403);
+    }
     await deleteUserData(userId);
     await authRequest(`/admin/users/${userId}`, 'DELETE', null, SUPABASE_SECRET_KEY, SUPABASE_SECRET_KEY);
     return json({ message: 'Tu cuenta y datos han sido eliminados' });

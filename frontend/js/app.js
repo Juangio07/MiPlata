@@ -4,7 +4,7 @@
  * Faithfully matches original MiPla design, features, and workflows
  */
 
-import { api } from './api.js';
+import { api, isDemoUser } from './api.js';
 import { 
   formatCOP, 
   formatCompactCOP, 
@@ -3470,10 +3470,24 @@ function renderProfile() {
           <span>Cerrar sesión</span>
         </button>
 
+        ${isDemoUser(user)
+          ? `
+        <div class="w-full rounded-2xl bg-slate-50 border border-slate-200/80 px-4 py-3 flex items-center gap-2.5 text-slate-500" aria-label="Cuenta demo protegida">
+          <div class="w-8 h-8 rounded-full bg-white border border-slate-200 flex items-center justify-center shrink-0">
+            ${getIconSvg('lock', 'w-3.5 h-3.5')}
+          </div>
+          <div class="min-w-0">
+            <p class="text-xs font-semibold text-slate-700">Cuenta demo protegida</p>
+            <p class="text-[11px] text-slate-500">No se puede eliminar ni borrar sus datos compartidos</p>
+          </div>
+        </div>
+        `
+          : `
         <button id="btn-delete-account" class="w-full h-11 rounded-full text-rose-600 hover:bg-rose-50 flex items-center justify-center gap-1.5 text-xs font-medium active:scale-95 transition-all cursor-pointer">
           ${getIconSvg('trash2', 'w-3.5 h-3.5')}
           <span>Eliminar cuenta y datos locales</span>
         </button>
+        `}
 
       </div>
 
@@ -3519,7 +3533,8 @@ function renderProfile() {
     showToast('Sesión cerrada');
   };
 
-  document.getElementById('btn-delete-account').onclick = () => {
+  const deleteAccountButton = document.getElementById('btn-delete-account');
+  if (deleteAccountButton) deleteAccountButton.onclick = () => {
     openDeleteConfirmationModal({
       title: '¿Eliminar cuenta y datos?',
       message: 'Esta acción borrará todas tus transacciones, metas y gastos fijos de forma irreversible.',
