@@ -499,22 +499,23 @@ body.search-open {
 
 .w-full { width: 100%; }
 .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.print-report-title { display: none; }
 
 /* Keep hidden modal and view layers hidden even when a component class sets display. */
 .hidden { display: none !important; }
 
-/* Keep the normal mobile layout unchanged while making the historical report
-   clean and complete when the browser saves it as a PDF. */
+/* Keep the normal web layout unchanged while giving the historical PDF the
+   same visual language as MiPlata. */
 @media print {
   @page {
     size: A4 portrait;
-    margin: 12mm;
+    margin: 10mm 11mm 12mm;
   }
 
   html,
   body {
     min-height: auto !important;
-    background: #ffffff !important;
+    background: #f8f9ff !important;
     color: #0b1c30 !important;
   }
 
@@ -556,14 +557,65 @@ body.search-open {
   #past-month-report {
     display: flex !important;
     width: 100% !important;
-    max-width: none !important;
-    margin: 0 !important;
+    max-width: 800px !important;
+    margin: 0 auto !important;
     padding: 0 !important;
-    gap: 10px !important;
+    gap: 12px !important;
     animation: none !important;
   }
 
+  #past-month-report > div:first-child {
+    align-self: flex-start !important;
+    padding: 10px 14px !important;
+    border: 1px solid #d8e2ff !important;
+    border-radius: 20px !important;
+    background: linear-gradient(135deg, #eff4ff, #f8f9ff) !important;
+    box-shadow: 0 1px 4px rgba(11, 28, 48, .04), 0 4px 12px rgba(11, 28, 48, .03) !important;
+  }
+
+  #past-month-report > div:first-child p:first-child {
+    font-size: 10px !important;
+    line-height: 1.2 !important;
+    letter-spacing: -.01em !important;
+  }
+
+  #past-month-report .screen-report-title {
+    display: none !important;
+  }
+
+  #past-month-report .print-report-title {
+    display: inline !important;
+  }
+
+  #past-month-report > div:first-child p:last-child {
+    font-size: 9px !important;
+    line-height: 1.2 !important;
+  }
+
+  #past-month-report > div:nth-child(2) {
+    padding: 20px !important;
+    border: 1px solid rgba(30, 41, 59, .6) !important;
+    border-radius: 28px !important;
+    background: linear-gradient(135deg, #182739, #0f1b2b 62%, #0b1c30) !important;
+    box-shadow: 0 10px 25px -5px rgba(11, 28, 48, .25) !important;
+  }
+
+  #past-month-report > section,
+  #past-month-report > div:nth-child(n+3) {
+    padding: 16px !important;
+    border: 1px solid rgba(226, 232, 240, .8) !important;
+    border-radius: 24px !important;
+    background: #fff !important;
+    box-shadow: 0 1px 4px rgba(11, 28, 48, .04), 0 4px 12px rgba(11, 28, 48, .03) !important;
+  }
+
   #past-month-report > * {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  #past-month-report > div:nth-child(3),
+  #past-month-report > div:nth-child(4) {
     break-inside: avoid;
     page-break-inside: avoid;
   }
@@ -573,9 +625,26 @@ body.search-open {
     overflow: visible !important;
   }
 
+  #past-month-report .truncate,
+  #past-month-report > div:first-child p {
+    overflow: visible !important;
+    text-overflow: clip !important;
+    white-space: normal !important;
+  }
+
+  #past-month-report .tabular-nums,
+  #past-month-report .past-month-report__transaction-list > div > span:last-child {
+    white-space: nowrap !important;
+  }
+
   #past-month-report .past-month-report__transactions-card {
     break-inside: auto;
     page-break-inside: auto;
+  }
+
+  #past-month-report .past-month-report__transaction-list > div {
+    break-inside: avoid;
+    page-break-inside: avoid;
   }
 
   #past-month-report [data-tx-id] {

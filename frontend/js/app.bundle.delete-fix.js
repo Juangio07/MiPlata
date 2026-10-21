@@ -198,8 +198,8 @@ var nt="",Ge="miplata_supabase_session",fe="miplata_bootstrap_cache",It="demo@mi
             ${r("calendar","w-4 h-4")}
           </div>
           <div class="min-w-0">
-            <p class="text-xs font-bold text-[#0058bc] truncate">Mes Cerrado \u2022 ${t}</p>
-            <p class="text-[11px] text-slate-500 truncate">Visualizando balance consolidado e hist\xF3rico</p>
+            <p class="text-xs font-bold text-[#0058bc] truncate"><span class="screen-report-title">${t}</span><span class="print-report-title" style="display:none">${t}</span></p>
+            <p class="text-[11px] text-slate-500 truncate">Balance consolidado</p>
           </div>
         </div>
 

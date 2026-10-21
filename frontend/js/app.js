@@ -1796,8 +1796,8 @@ function renderPastMonthSummaryView(monthKey) {
             ${getIconSvg('calendar', 'w-4 h-4')}
           </div>
           <div class="min-w-0">
-            <p class="text-xs font-bold text-[#0058bc] truncate">Mes Cerrado • ${monthLabel}</p>
-            <p class="text-[11px] text-slate-500 truncate">Visualizando balance consolidado e histórico</p>
+            <p class="text-xs font-bold text-[#0058bc] truncate"><span class="screen-report-title">${monthLabel}</span><span class="print-report-title" style="display:none">${monthLabel}</span></p>
+            <p class="text-[11px] text-slate-500 truncate">Balance consolidado</p>
           </div>
         </div>
 
