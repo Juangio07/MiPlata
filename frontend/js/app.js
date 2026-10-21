@@ -2622,11 +2622,10 @@ function renderExpenses() {
                             <p class="text-[11px] text-slate-500 truncate">${tx.date} • ${tx.category}</p>
                           </div>
                         </div>
-                        <div class="flex items-center gap-2 shrink-0">
-                          <span class="text-xs sm:text-sm font-bold ${tx.type === 'ingreso' ? 'text-[#006c49]' : 'text-[#0b1c30]'} tabular-nums">
+                        <div class="w-28 text-right shrink-0">
+                          <span class="block text-xs sm:text-sm font-bold whitespace-nowrap ${tx.type === 'ingreso' ? 'text-[#006c49]' : 'text-[#0b1c30]'} tabular-nums">
                             ${tx.type === 'ingreso' ? '+' : '-'}${formatCOP(tx.amount)}
                           </span>
-                          ${tx.isGoalContribution ? '' : getIconSvg('chevronRight', 'w-4 h-4 text-slate-300')}
                         </div>
                       </div>
                     `
