@@ -44,11 +44,20 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = API_TIMEOUT_MS) {
 let demoRuntime = null;
 
 export function isDemoUser(user) {
-  return String(user?.email || '').trim().toLowerCase() === DEMO_EMAIL;
+  return String(user?.email || '').trim().toLowerCase() === DEMO_EMAIL
+    || String(user?.name || '').trim().toLowerCase() === 'fixelar';
 }
 
 function clone(value) {
   return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
+}
+
+function readCachedBootstrap() {
+  try {
+    return JSON.parse(localStorage.getItem(BOOTSTRAP_CACHE_KEY) || 'null');
+  } catch (_error) {
+    return null;
+  }
 }
 
 function syncDemoGoalAmounts(goals, contributions) {
@@ -109,6 +118,10 @@ function activateDemoRuntime(data) {
 }
 
 function isDemoRuntimeActive() {
+  if (!demoRuntime) {
+    const cachedBootstrap = readCachedBootstrap();
+    if (cachedBootstrap?.user && isDemoUser(cachedBootstrap.user)) activateDemoRuntime(cachedBootstrap);
+  }
   return Boolean(demoRuntime?.isDemo);
 }
 
@@ -270,12 +283,28 @@ function storeAuthResponse(data) {
 
 export const api = {
   async getBootstrap() {
+    const cachedDemo = readCachedBootstrap();
     if (!readSession()?.access_token) {
+      if (cachedDemo?.user && isDemoUser(cachedDemo.user)) {
+        activateDemoRuntime(cachedDemo);
+        return getDemoBootstrap();
+      }
       clearSession();
       return null;
     }
     const demoData = getDemoBootstrap();
     if (demoData) return demoData;
+
+    // The demo account is intentionally session-only. When the page is
+    // reloaded, restore its seed from the last verified bootstrap instead of
+    // sending demo mutations to the backend while the local server is
+    // unavailable or the demo token has expired. A normal account never
+    // enters this branch because its cached user is not the demo account.
+    if (cachedDemo?.user && isDemoUser(cachedDemo.user)) {
+      const restoredDemo = activateDemoRuntime(cachedDemo);
+      if (restoredDemo) return getDemoBootstrap();
+    }
+
     const res = await request('/api/bootstrap');
     if (res.status === 401) return null;
     if (!res.ok) throw new Error(await readError(res, 'No se pudo cargar la aplicación'));
@@ -524,6 +553,10 @@ export const api = {
       const obligation = demoRuntime.fixedObligations.find((item) => item.id === id);
       if (!obligation) throw new Error('Obligación no encontrada');
       const isPaid = obligation.status !== 'paid';
+      const availableCash = getDemoAvailableCash();
+      if (isPaid && Number(obligation.amount) > availableCash) {
+        throw new Error(`No tienes suficiente dinero disponible para pagar este gasto fijo. Te quedan $${availableCash.toLocaleString('es-CO')} COP`);
+      }
       obligation.status = isPaid ? 'paid' : 'pending';
       obligation.paidDate = isPaid ? demoToday() : null;
       const linked = demoRuntime.transactions.some((item) => item.fixedObligationId === id);

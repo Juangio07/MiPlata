@@ -955,8 +955,8 @@ def update_savings_goal(user_id, goal_id, updates):
 def delete_savings_goal(user_id, goal_id):
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("DELETE FROM savings_goals WHERE id = ? AND user_id = ?", (goal_id, user_id))
     cursor.execute("DELETE FROM goal_contributions WHERE goal_id = ? AND user_id = ?", (goal_id, user_id))
+    cursor.execute("DELETE FROM savings_goals WHERE id = ? AND user_id = ?", (goal_id, user_id))
     conn.commit()
     conn.close()
 

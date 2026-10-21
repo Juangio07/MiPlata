@@ -193,10 +193,17 @@ export function getFinancialTips(data) {
   const needsRulePercent = (currentUser?.budgetRule?.needs || 50) / 100;
   const wantsRulePercent = (currentUser?.budgetRule?.wants || 30) / 100;
 
-  const realisticMonthlySavingsCap = salary > 0
-    ? Math.round(salary * savingsRulePercent)
-    : Math.max(50000, Math.round(availableCash * 0.2));
-  const realisticQuincenalCap = Math.max(50000, Math.round((realisticMonthlySavingsCap / 2) / 10000) * 10000);
+  // The amount recommended for a goal can never be greater than the current
+  // available cash. Pending fixed obligations are not deducted until they
+  // are actually paid and recorded as expenses.
+  const goalCash = Math.max(0, availableCash);
+  const realisticMonthlySavingsCap = Math.min(
+    goalCash,
+    salary > 0 ? Math.round(salary * savingsRulePercent) : Math.round(goalCash * 0.2),
+  );
+  const realisticQuincenalCap = realisticMonthlySavingsCap > 0
+    ? Math.min(goalCash, Math.max(1000, Math.round((realisticMonthlySavingsCap / 2) / 10000) * 10000))
+    : 0;
 
   // PILLAR 1: 50/30/20 Rule
   if (salary > 0) {
@@ -276,15 +283,16 @@ export function getFinancialTips(data) {
     const remaining = incompleteGoal.targetAmount - incompleteGoal.currentAmount;
     const suggestedBoost = Math.min(
       remaining,
-      Math.max(50000, Math.round((availableCash * 0.12) / 10000) * 10000),
-      realisticQuincenalCap
+      goalCash,
+      Math.max(1000, Math.round((goalCash * 0.12) / 10000) * 10000),
+      realisticQuincenalCap || goalCash,
     );
-    if (availableCash >= 50000 && suggestedBoost >= 50000) {
+    if (goalCash >= 50000 && suggestedBoost >= 50000) {
       rawTips.push({
         id: 'tip_goal_boost',
         tag: 'Impulso a Metas',
         title: `Acelera tu meta "${incompleteGoal.name}"`,
-        message: `Tienes ${formatCOP(availableCash)} libres hoy. Si apartas ${formatCOP(suggestedBoost, true)}, tu meta alcanzará el ${Math.round(((incompleteGoal.currentAmount + suggestedBoost) / incompleteGoal.targetAmount) * 100)}% sin desbalancear tus compromisos fijos del mes.`,
+        message: `Tienes ${formatCOP(goalCash)} disponibles. Si apartas ${formatCOP(suggestedBoost, true)}, tu meta alcanzará el ${Math.round(((incompleteGoal.currentAmount + suggestedBoost) / incompleteGoal.targetAmount) * 100)}% sin superar tu saldo disponible.`,
         actionLabel: 'Aportar ahora',
         actionTab: 'metas',
         iconType: 'goal',
@@ -306,7 +314,7 @@ export function getFinancialTips(data) {
   const nextGoal = savingsGoals.find((goal) => goal.currentAmount < goal.targetAmount);
   const nextGoalRemaining = nextGoal ? Math.max(0, nextGoal.targetAmount - nextGoal.currentAmount) : 0;
   const nextGoalMonthly = nextGoal
-    ? Math.max(50000, Math.ceil((nextGoalRemaining / 6) / 10000) * 10000)
+    ? Math.min(goalCash, Math.max(1000, Math.ceil((nextGoalRemaining / 6) / 10000) * 10000))
     : realisticMonthlySavingsCap;
 
   const additionalTips = [
@@ -348,7 +356,9 @@ export function getFinancialTips(data) {
       tag: 'Plan de ahorro',
       title: nextGoal ? `Programa tu próxima meta: "${nextGoal.name}"` : 'Convierte tu ahorro en una meta',
       message: nextGoal
-        ? `Te faltan ${formatCOP(nextGoalRemaining, true)}. Si separas alrededor de ${formatCOP(nextGoalMonthly, true)} al mes, avanzarás de forma constante sin usar el dinero destinado a tus compromisos.`
+        ? nextGoalMonthly > 0
+          ? `Te faltan ${formatCOP(nextGoalRemaining, true)}. Si separas alrededor de ${formatCOP(nextGoalMonthly, true)} al mes, avanzarás de forma constante sin superar tu saldo disponible.`
+          : `Te faltan ${formatCOP(nextGoalRemaining, true)}, pero ahora no tienes saldo disponible para aportar.`
         : `Con un sueldo de ${formatCOP(salary, true)}, apartar ${formatCOP(realisticMonthlySavingsCap, true)} al mes puede convertirse en una meta concreta y medible.`,
       actionLabel: 'Ver metas',
       actionTab: 'metas',

@@ -32,6 +32,43 @@ class AuthApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()["status"], "ok")
 
+    def test_goal_contribution_uses_available_cash_not_pending_fixed(self):
+        transactions = [
+            {"type": "ingreso", "amount": 2_000_000, "date": "2026-10-17"},
+            {"type": "gasto", "amount": 770_000, "date": "2026-10-19"},
+        ]
+        contributions = []
+        with patch.object(app_module, "get_current_user_id_from_req", return_value="user-1"):
+            with patch.object(app_module.db, "get_transactions", return_value=transactions):
+                with patch.object(app_module.db, "get_goal_contributions", return_value=contributions):
+                    with patch.object(
+                        app_module.db,
+                        "contribute_to_goal",
+                        return_value={"goalId": "goal-1", "newAmount": 1_230_000},
+                    ) as contribute:
+                        response = self.client.post(
+                            "/api/savings-goals/goal-1/contribute",
+                            json={"amount": 1_230_000, "type": "Manual"},
+                        )
+
+        self.assertEqual(response.status_code, 200)
+        contribute.assert_called_once_with("user-1", "goal-1", 1_230_000, "Manual")
+
+    def test_fixed_payment_is_rejected_when_available_cash_is_insufficient(self):
+        with patch.object(app_module, "get_current_user_id_from_req", return_value="user-1"):
+            with patch.object(
+                app_module.db,
+                "get_fixed_obligations",
+                return_value=[{"id": "fixed-1", "status": "pending", "amount": 100_000}],
+            ):
+                with patch.object(app_module, "_available_cash_for_user", return_value=50_000):
+                    with patch.object(app_module.db, "toggle_pay_fixed_obligation") as toggle:
+                        response = self.client.post("/api/fixed-obligations/fixed-1/toggle")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("suficiente dinero disponible", response.get_json()["error"])
+        toggle.assert_not_called()
+
     def test_bootstrap_requires_authentication(self):
         response = self.client.get("/api/bootstrap")
         self.assertEqual(response.status_code, 401)
@@ -169,6 +206,19 @@ class AuthApiTests(unittest.TestCase):
         self.assertEqual(response.get_json()["id"], "goal-1")
         add_goal.assert_called_once()
         self.assertEqual(add_goal.call_args.args[1]["targetAmount"], 1500000)
+
+    def test_delete_goal_removes_contributions_before_goal(self):
+        with patch.object(app_module.db.sb, "rest_request", return_value=[]) as request:
+            app_module.db.delete_savings_goal("user-1", "goal-1")
+
+        calls = [
+            (call.args[0], call.kwargs.get("method", "GET"))
+            for call in request.call_args_list
+        ]
+        self.assertEqual(
+            calls,
+            [("goal_contributions", "DELETE"), ("savings_goals", "DELETE")],
+        )
 
     def test_create_goal_rejects_oversized_embedded_image(self):
         with patch.object(app_module, "get_current_user_id_from_req", return_value="user-1"):

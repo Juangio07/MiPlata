@@ -608,6 +608,13 @@ def update_savings_goal(user_id, goal_id, updates):
 
 
 def delete_savings_goal(user_id, goal_id):
+    # Remove dependent contributions first so the foreign-key relation does
+    # not reject the goal deletion in Supabase.
+    sb.rest_request(
+        "goal_contributions",
+        method="DELETE",
+        params={"goal_id": f"eq.{goal_id}", "user_id": f"eq.{user_id}"},
+    )
     sb.rest_request("savings_goals", method="DELETE", params={"id": f"eq.{goal_id}", "user_id": f"eq.{user_id}"})
 
 

@@ -360,13 +360,13 @@ function normalizeRecordTimestamp(value) {
 
 function getRecordSortParts(record) {
   const date = String(record.date || '').slice(0, 10);
-  const time = String(record.time || '').slice(0, 8);
+  const time = String(record.time || '').trim();
   const dayTimestamp = /^\d{4}-\d{2}-\d{2}$/.test(date)
     ? Date.parse(`${date}T00:00:00`)
     : 0;
-  const hasTime = /^\d{2}:\d{2}/.test(time);
+  const hasTime = /^\d{1,2}:\d{2}(?::\d{2})?(?:\s*[AP]M)?$/i.test(time);
   const explicitTimestamp = hasTime && dayTimestamp
-    ? Date.parse(`${date}T${time}`)
+    ? (Date.parse(`${date}T${time}`) || Date.parse(`${date} ${time}`))
     : 0;
   const createdAt = normalizeRecordTimestamp(record.createdAt);
   const createdAtDate = createdAt ? new Date(createdAt).toISOString().slice(0, 10) : '';
@@ -377,6 +377,14 @@ function getRecordSortParts(record) {
     executionTimestamp,
     createdAt,
   };
+}
+
+function compareRecordsByRecency(left, right) {
+  const leftParts = getRecordSortParts(left);
+  const rightParts = getRecordSortParts(right);
+  return rightParts.dayTimestamp - leftParts.dayTimestamp
+    || rightParts.executionTimestamp - leftParts.executionTimestamp
+    || rightParts.createdAt - leftParts.createdAt;
 }
 
 function getRecordIcon(tx, className = 'w-5 h-5') {
@@ -430,13 +438,7 @@ function getMonthlyRecords(monthKey) {
   return [
     ...transactions,
     ...getGoalContributionRecords(monthKey, contributions),
-  ].sort((a, b) => {
-    const left = getRecordSortParts(a);
-    const right = getRecordSortParts(b);
-    return right.dayTimestamp - left.dayTimestamp
-      || right.executionTimestamp - left.executionTimestamp
-      || right.createdAt - left.createdAt;
-  });
+  ].sort(compareRecordsByRecency);
 }
 
 function getConfiguredMonthlyIncome(user = state.currentUser) {
@@ -536,10 +538,11 @@ function computeMetrics() {
     .filter((transaction) => transaction.isGoalContribution)
     .reduce((sum, transaction) => sum + transaction.amount, 0);
 
-  // Pending fixed obligations remain visible as "Por Pagar" and do not reduce
-  // this balance until they are actually paid and recorded as an expense.
   // Goal contributions are virtual expense records in monthTransactions, so
-  // subtracting the accumulated goal balance here would count them twice.
+  // they are already included in totalExpenses. The same real available
+  // balance is used by the dashboard, goal contributions and smart advice.
+  // Pending fixed obligations do not reduce this value until they are paid
+  // and their expense is registered.
   const availableCash = Math.max(0, totalIncome - totalExpenses);
 
   const budgetAdjustment = getBudgetAdjustment(selectedMonth, currentUser);
@@ -706,6 +709,10 @@ function registerLocalMutation(...records) {
     if (/^\d{4}-\d{2}$/.test(monthKey)) monthKeys.add(monthKey);
   });
   state.availableMonths = [...monthKeys].sort((left, right) => right.localeCompare(left));
+  // Demo data is intentionally session-scoped. Its API client already keeps
+  // mutations in memory, so reconciling with the seed would undo the user's
+  // changes before the page is reloaded or the session ends.
+  if (isDemoAccountState()) return;
   scheduleMutationReconcile();
 }
 
@@ -810,9 +817,19 @@ function updateLocalSavingsGoal(id, updates) {
   registerLocalMutation();
 }
 
+function isDemoAccountState() {
+  return isDemoUser(state.currentUser)
+    || String(state.currentUser?.name || '').trim().toLowerCase() === 'fixelar';
+}
+
 function removeLocalSavingsGoal(id) {
   state.savingsGoals = state.savingsGoals.filter((item) => item.id !== id);
   state.goalContributions = state.goalContributions.filter((item) => item.goalId !== id);
+  if (isDemoAccountState()) {
+    localMutationVersion += 1;
+    state.monthlyReports = {};
+    return;
+  }
   registerLocalMutation();
 }
 
@@ -2071,7 +2088,9 @@ function renderPastMonthSummaryView(monthKey) {
 // VIEW 2: INGRESOS
 // -------------------------------------------------------------
 function renderIncomes() {
-  const allIncomes = state.transactions.filter((t) => t.type === 'ingreso');
+  const allIncomes = state.transactions
+    .filter((t) => t.type === 'ingreso')
+    .sort(compareRecordsByRecency);
   const totalIncome = allIncomes.reduce((sum, t) => sum + t.amount, 0);
   const salary = state.currentUser?.monthlySalary || state.currentUser?.monthlyBudgetLimit || 0;
 
@@ -2908,6 +2927,13 @@ function renderObligations() {
   DOM.tabObligaciones.querySelectorAll('.obligation-toggle-btn').forEach((btn) => {
     btn.onclick = async (e) => {
       e.stopPropagation();
+        const obligation = state.fixedObligations.find((item) => item.id === btn.dataset.payId);
+        const isPaying = obligation?.status !== 'paid';
+        const availableCash = computeMetrics().availableCash;
+        if (isPaying && Number(obligation?.amount) > availableCash) {
+          showToast(`No tienes suficiente dinero disponible para pagar este gasto fijo. Te quedan ${formatCOP(availableCash, true)} COP`, 'error');
+          return;
+        }
       try {
         const res = await api.togglePayFixedObligation(btn.dataset.payId);
         applyLocalFixedToggle(btn.dataset.payId, res.result);
@@ -2954,24 +2980,44 @@ function renderGoalsLegacy() {
     const remaining = activeIncompleteGoal.targetAmount - activeIncompleteGoal.currentAmount;
     const salary = metrics.effectiveMonthlyIncome || state.currentUser?.monthlySalary || state.currentUser?.monthlyBudgetLimit || metrics.totalIncome || 0;
     const savingsRulePercent = (state.currentUser?.budgetRule?.savings || 20) / 100;
-    const realisticMonthlySavings = salary > 0 ? Math.round(salary * savingsRulePercent) : Math.max(50000, Math.round(metrics.availableCash * 0.2));
-    const realisticQuincenalCap = Math.max(50000, Math.round(realisticMonthlySavings / 2 / 10000) * 10000);
+    const availableForGoals = Math.max(0, metrics.availableCash);
+    const realisticMonthlySavings = salary > 0
+      ? Math.min(Math.round(salary * savingsRulePercent), availableForGoals)
+      : Math.round(availableForGoals * 0.2);
+    const realisticQuincenalCap = Math.min(
+      availableForGoals,
+      Math.max(1000, Math.round(realisticMonthlySavings / 2 / 10000) * 10000),
+    );
     const suggestedQuincenal = Math.min(remaining, realisticQuincenalCap);
-    const quincenasNeeded = Math.max(1, Math.ceil(remaining / suggestedQuincenal));
-    const mesesNeeded = Math.ceil(quincenasNeeded / 2);
+    const quincenasNeeded = suggestedQuincenal > 0 ? Math.max(1, Math.ceil(remaining / suggestedQuincenal)) : 0;
+    const mesesNeeded = quincenasNeeded > 0 ? Math.ceil(quincenasNeeded / 2) : 0;
     const tiempoTexto =
-      quincenasNeeded === 1
+      quincenasNeeded === 0
+        ? 'cuando tengas dinero disponible'
+        : quincenasNeeded === 1
         ? 'en tu próxima quincena'
         : mesesNeeded === 1
         ? 'en aproximadamente 1 mes (2 quincenas)'
         : `en aproximadamente ${mesesNeeded} meses (${quincenasNeeded} quincenas)`;
 
-    if (metrics.availableCash >= 50000) {
-      const suggested = Math.min(remaining, Math.max(50000, Math.round((metrics.availableCash * 0.15) / 10000) * 10000), realisticQuincenalCap);
+    if (availableForGoals > 0) {
+      const suggested = Math.min(
+        remaining,
+        availableForGoals,
+        Math.max(1000, Math.round((availableForGoals * 0.15) / 10000) * 10000),
+        realisticQuincenalCap || availableForGoals,
+      );
       return {
         tag: 'Consejo Inteligente',
         title: `Impulso para "${activeIncompleteGoal.name}"`,
-        message: `Cuentas con ${formatCOP(metrics.availableCash)} libres hoy. Si apartas ${formatCOP(suggested, true)} (acorde a tu capacidad mensual), tu meta avanzará con rapidez sin comprometer tus gastos fijos.`,
+        message: `Tienes ${formatCOP(availableForGoals)} disponibles. Puedes aportar ${formatCOP(suggested, true)} sin superar tu saldo disponible.`,
+      };
+    }
+    if (availableForGoals === 0) {
+      return {
+        tag: 'Consejo Inteligente',
+        title: `Plan para "${activeIncompleteGoal.name}"`,
+        message: 'No tienes dinero disponible para aportar a una meta en este momento.',
       };
     }
     const salaryPercentNote = salary > 0 ? ` (el ${Math.round((suggestedQuincenal / salary) * 200)}% de tu quincena)` : '';
@@ -3183,10 +3229,19 @@ function renderGoals() {
   const activeGoals = state.savingsGoals.filter((goal) => goal.currentAmount < goal.targetAmount);
   const activeGoal = activeGoals[0] || state.savingsGoals[0];
   const remaining = activeGoal ? Math.max(0, activeGoal.targetAmount - activeGoal.currentAmount) : 0;
-  const suggestedContribution = activeGoal ? Math.min(remaining, 500000) : 0;
+  const availableForGoals = Math.max(0, metrics.availableCash);
+  const suggestedContribution = activeGoal
+    ? Math.min(
+        remaining,
+        availableForGoals,
+        availableForGoals > 0 ? Math.max(1000, Math.round((availableForGoals * 0.15) / 10000) * 10000) : 0,
+      )
+    : 0;
   const tipTitle = activeGoal ? `Impulso para "${activeGoal.name}"` : 'Crea tu primera meta';
   const tip = activeGoal
-    ? `Cuentas con ${formatCOP(metrics.availableCash)} libres hoy. Si apartas ${formatCOP(suggestedContribution, true)} (acorde a tu capacidad mensual), tu meta avanzará con rapidez sin comprometer tus gastos fijos.`
+    ? suggestedContribution > 0
+      ? `Tienes ${formatCOP(availableForGoals)} disponibles. Puedes aportar ${formatCOP(suggestedContribution, true)} sin superar tu saldo disponible.`
+      : 'No tienes dinero disponible para aportar a una meta en este momento.'
     : 'Crea una meta para empezar a reservar dinero de forma automática.';
 
   DOM.tabMetas.innerHTML = `
@@ -4979,6 +5034,10 @@ function openAddOrEditGoalModal(goal = null) {
         successMessage: 'Meta eliminada',
         errorMessage: 'No se pudo eliminar la meta',
         onConfirm: async () => {
+          // The API client applies demo mutations only to its in-memory
+          // runtime; real accounts persist the same request in the backend.
+          // Keeping both layers in sync prevents deleted contributions from
+          // reducing the available cash used by the next goal contribution.
           await api.deleteSavingsGoal(goal.id);
           removeLocalSavingsGoal(goal.id);
           DOM.modalSavingsGoal.classList.add('hidden');
@@ -5052,9 +5111,10 @@ function openAporteModal(goalId) {
     const amt = parseRawNumber(aporteInput.value);
     if (amt <= 0) return;
 
-    const availableCash = computeMetrics().availableCash;
-    if (amt > availableCash) {
-      showToast(`No tienes suficiente dinero disponible. Te quedan ${formatCOP(availableCash, true)}.`, 'error');
+    const metrics = computeMetrics();
+    const availableForGoals = metrics.availableCash;
+    if (amt > availableForGoals) {
+      showToast(`No puedes aportar más de ${formatCOP(availableForGoals, true)} disponibles.`, 'error');
       return;
     }
 

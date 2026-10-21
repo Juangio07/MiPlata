@@ -172,11 +172,11 @@ def _is_duplicate_email_error(error):
 
 
 def _available_cash_for_user(user_id):
-    """Return cash that can still be reserved for a savings goal.
+    """Return the current available balance for a savings goal.
 
-    Pending fixed obligations are not cash outflows until they are paid and
-    recorded as expenses. Goal contributions are kept in their own table, so
-    the current month's contributions are subtracted here explicitly.
+    Only recorded expenses and current-month goal contributions reduce this
+    balance. Pending fixed obligations are not deducted until the user pays
+    them and the linked expense transaction is created.
     """
     current_month = datetime.now().strftime("%Y-%m")
     if SUPABASE_ENABLED:
@@ -612,6 +612,13 @@ def toggle_fixed_obligation(item_id):
     user_id = get_current_user_id_from_req()
     if not user_id:
         return jsonify({"error": "No autorizado"}), 401
+    obligations = db.get_fixed_obligations(user_id) or []
+    obligation = next((item for item in obligations if str(item.get("id")) == str(item_id)), None)
+    if obligation and obligation.get("status") != "paid":
+        available_cash = _available_cash_for_user(user_id)
+        amount = float(obligation.get("amount") or 0)
+        if amount > available_cash:
+            return jsonify({"error": f"No tienes suficiente dinero disponible para pagar este gasto fijo. Te quedan ${available_cash:,.0f} COP"}), 400
     res = db.toggle_pay_fixed_obligation(user_id, item_id)
     if not res:
         return jsonify({"error": "Obligación no encontrada"}), 404
