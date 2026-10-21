@@ -382,9 +382,19 @@ function getRecordSortParts(record) {
 function compareRecordsByRecency(left, right) {
   const leftParts = getRecordSortParts(left);
   const rightParts = getRecordSortParts(right);
-  return rightParts.dayTimestamp - leftParts.dayTimestamp
+  const dayOrder = rightParts.dayTimestamp - leftParts.dayTimestamp;
+  if (dayOrder) return dayOrder;
+
+  // When movements share the same date, the actual creation moment is the
+  // most reliable indicator of which one was registered last. The displayed
+  // time can be missing or arrive in different formats depending on the data
+  // source, so keep it as a fallback instead of the primary tie-breaker.
+  const leftActivity = leftParts.createdAt || leftParts.executionTimestamp;
+  const rightActivity = rightParts.createdAt || rightParts.executionTimestamp;
+  return rightActivity - leftActivity
     || rightParts.executionTimestamp - leftParts.executionTimestamp
-    || rightParts.createdAt - leftParts.createdAt;
+    || rightParts.createdAt - leftParts.createdAt
+    || String(right.id || '').localeCompare(String(left.id || ''));
 }
 
 function getRecordIcon(tx, className = 'w-5 h-5') {
