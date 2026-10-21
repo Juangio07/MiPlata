@@ -190,6 +190,35 @@ class AuthApiTests(unittest.TestCase):
         self.assertIn("cuenta demo está protegida", response.get_json()["error"])
         delete_user.assert_not_called()
 
+    def test_demo_login_reuses_existing_seed_without_resetting_it(self):
+        auth_data = {
+            "user": {"id": "demo-user", "email": "demo@miplata.app"},
+            "access_token": "access-token",
+            "refresh_token": "refresh-token",
+        }
+        profile = {"id": "demo-user", "email": "demo@miplata.app", "name": "Fixelar"}
+        bootstrap = {
+            "user": profile,
+            "transactions": [{"id": "tx-1"}],
+            "fixedObligations": [{"id": "fixed-1"}],
+            "savingsGoals": [{"id": "goal-1"}],
+            "goalContributions": [{"id": "contribution-1"}],
+            "categoryBudgets": [{"id": "budget-1"}],
+            "availableMonths": ["2026-10"],
+        }
+        with patch.object(app_module, "sb") as supabase:
+            supabase.auth_sign_in.return_value = auth_data
+            with patch.object(app_module.db, "initialize_registered_user", return_value=profile):
+                with patch.object(app_module, "get_demo_bootstrap", return_value=bootstrap):
+                    with patch.object(app_module.db, "ensure_demo_data") as ensure_demo_data:
+                        response = self.client.post("/api/auth/demo")
+
+        self.assertEqual(response.status_code, 200)
+        supabase.auth_sign_in.assert_called_once_with("demo@miplata.app", "MiPlataDemo2026!")
+        supabase.auth_admin_create_user.assert_not_called()
+        ensure_demo_data.assert_not_called()
+        self.assertEqual(response.get_json()["bootstrap"], bootstrap)
+
     def test_create_goal_persists_valid_payload(self):
         with patch.object(app_module, "get_current_user_id_from_req", return_value="user-1"):
             with patch.object(app_module.db, "add_savings_goal", return_value="goal-1") as add_goal:

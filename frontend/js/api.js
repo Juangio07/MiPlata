@@ -364,7 +364,12 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ email, password }),
     }, false);
-    if (!res.ok) throw new Error(await readError(res, 'Credenciales incorrectas'));
+    if (!res.ok) {
+      if (res.status === 401) {
+        throw new Error('Correo o contraseña incorrectos.');
+      }
+      throw new Error(await readError(res, 'Credenciales incorrectas'));
+    }
     const data = await res.json();
     demoRuntime = null;
     storeAuthResponse(data);

@@ -167,7 +167,10 @@ export function getFinancialTips(data) {
 
   const rawTips = [];
 
-  const salary = effectiveMonthlyIncome || currentUser?.monthlySalary || currentUser?.monthlyBudgetLimit || totalIncome || 0;
+  // Smart advice follows the limit selected in Profile. The recorded income
+  // continues to control available cash, but changing the limit must also
+  // recalculate the amounts suggested by these tips.
+  const salary = currentUser?.monthlyBudgetLimit || effectiveMonthlyIncome || currentUser?.monthlySalary || totalIncome || 0;
   const savingsRulePercent = (currentUser?.budgetRule?.savings || 20) / 100;
   const needsRulePercent = (currentUser?.budgetRule?.needs || 50) / 100;
   const wantsRulePercent = (currentUser?.budgetRule?.wants || 30) / 100;
@@ -281,7 +284,7 @@ export function getFinancialTips(data) {
 
   // Additional rotating advice keeps the home carousel useful even when the
   // person has few movements recorded. Every message is calculated from the
-  // configured salary, budget rule, commitments, cash and savings goals.
+  // configured limit, budget rule, commitments, cash and savings goals.
   const daysInMonth = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).getDate();
   const daysRemaining = Math.max(1, daysInMonth - new Date().getDate() + 1);
   const availableForVariableSpending = Math.max(0, salary - fixedTotal - realisticMonthlySavingsCap);

@@ -524,27 +524,6 @@ def create_user(name, email, password, monthly_salary=0, avatar_url=''):
         VALUES (?, ?, ?, ?, ?)
         """, (f"cb_{user_id}_{cat}", user_id, cat, limit_val, icon))
 
-    # If initial salary > 0, register initial salary income
-    if monthly_salary > 0:
-        today_iso = datetime.now().strftime("%Y-%m-%d")
-        now_time = datetime.now().strftime("%I:%M %p")
-        cursor.execute("""
-        INSERT INTO transactions (id, user_id, type, amount, category, description, date, time, account_method, is_recurring, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            f"tx_sal_{int(time.time()*1000)}",
-            user_id,
-            "ingreso",
-            monthly_salary,
-            "Nómina",
-            "Nómina / Ingreso mensual registrado",
-            today_iso,
-            now_time,
-            "Cuenta Principal",
-            0,
-            int(time.time() * 1000)
-        ))
-
     conn.commit()
     conn.close()
     set_current_user_id(user_id)

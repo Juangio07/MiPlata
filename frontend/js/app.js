@@ -557,7 +557,10 @@ function computeMetrics() {
   const availableCash = Math.max(0, totalIncome - totalExpenses);
 
   const budgetAdjustment = getBudgetAdjustment(selectedMonth, currentUser);
-  const monthlyBudgetLimit = budgetAdjustment.monthlyBudgetLimit;
+  // The monthly dashboard budget represents the money actually received in
+  // the selected month. The profile limit remains available for planning and
+  // the 50/30/20 rules, but it must not inflate the real remaining balance.
+  const monthlyBudgetLimit = totalIncome > 0 ? totalIncome : 0;
   const monthlyBudgetSpent = totalExpenses;
   const monthlyBudgetRemaining = Math.max(0, monthlyBudgetLimit - monthlyBudgetSpent);
   const monthlyBudgetPercent = monthlyBudgetLimit > 0 ? Math.min(100, Math.round((monthlyBudgetSpent / monthlyBudgetLimit) * 100)) : 0;
@@ -5301,13 +5304,13 @@ function openCategoryBudgetModal(categoryBudget) {
 function openEditBudgetModal() {
   const user = state.currentUser;
   if (!user) return;
-  const currentSalary = user.monthlySalary || user.monthlyBudgetLimit || 5800000;
+  const currentLimit = user.monthlyBudgetLimit || user.monthlySalary || 0;
 
   DOM.modalEditBudget.classList.remove('hidden');
   DOM.modalEditBudget.innerHTML = `
     <div class="bg-white rounded-3xl p-5 sm:p-6 max-w-sm w-full shadow-2xl flex flex-col gap-3.5 border border-slate-100">
       <div class="flex items-center justify-between pb-1 border-b border-slate-100">
-        <h3 class="font-bold text-sm text-[#0b1c30]">Ajustar Salario Mensual</h3>
+        <h3 class="font-bold text-sm text-[#0b1c30]">Modificar Límite Mensual</h3>
         <button id="edit-budget-close" type="button" aria-label="Cerrar ajuste de salario" class="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 cursor-pointer">
           ${getIconSvg('x', 'w-4 h-4')}
         </button>
@@ -5317,12 +5320,12 @@ function openEditBudgetModal() {
         <p class="text-xs text-slate-500">Este valor se utiliza para calcular automáticamente tu regla 50/30/20 y límites del mes.</p>
         
         <div>
-          <label class="text-xs font-bold text-[#0b1c30]">Salario mensual (COP)</label>
-          <input id="edit-salary-input" type="text" value="${currentSalary.toLocaleString('es-CO')}" class="w-full mt-1 px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-xs font-bold text-slate-800 tabular-nums focus:outline-none focus:ring-2 focus:ring-[#0058bc]" />
+          <label class="text-xs font-bold text-[#0b1c30]">Límite mensual (COP)</label>
+          <input id="edit-salary-input" type="text" value="${currentLimit.toLocaleString('es-CO')}" class="w-full mt-1 px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-xs font-bold text-slate-800 tabular-nums focus:outline-none focus:ring-2 focus:ring-[#0058bc]" />
         </div>
 
         <button id="edit-budget-save-btn" class="w-full py-2.5 mt-2 rounded-xl bg-[#0058bc] text-white font-bold text-xs shadow-md hover:bg-[#004bb0] active:scale-95 transition-all cursor-pointer">
-          Guardar Salario
+          Guardar límite
         </button>
       </div>
     </div>
@@ -5337,12 +5340,14 @@ function openEditBudgetModal() {
   };
 
   document.getElementById('edit-budget-save-btn').onclick = async () => {
-    const salary = parseInt(salaryInput.value.replace(/\D/g, ''), 10) || 0;
-    const res = await api.updateProfile({ monthlySalary: salary, monthlyBudgetLimit: salary });
+    const limit = parseInt(salaryInput.value.replace(/\D/g, ''), 10) || 0;
+    const res = await api.updateProfile({ monthlyBudgetLimit: limit });
     state.currentUser = res.user;
+    await refreshAllData();
+    state.currentUser = state.currentUser || res.user;
     DOM.modalEditBudget.classList.add('hidden');
-    renderActiveView();
-    showToast('Salario mensual actualizado');
+    renderApp();
+    showToast('Límite mensual actualizado');
   };
 }
 

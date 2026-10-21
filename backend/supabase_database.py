@@ -195,6 +195,7 @@ def ensure_user_defaults(user_id, name=None, email=None, monthly_salary=0, avata
                 "avatar_url": avatar_url or None,
                 "monthly_salary": monthly_salary or 0,
                 "monthly_budget_limit": monthly_salary or 0,
+                "initial_balance": 0,
                 "alert_80_percent": True,
                 "auto_adjust_variable": True,
                 "smart_categorization": True,
@@ -240,30 +241,8 @@ def ensure_user_defaults(user_id, name=None, email=None, monthly_salary=0, avata
 
 def initialize_registered_user(user_id, name, email, monthly_salary=0, avatar_url="", apply_default_preferences=True):
     user = ensure_user_defaults(user_id, name, email, monthly_salary, avatar_url, apply_default_preferences)
-    if monthly_salary and monthly_salary > 0:
-        existing = sb.rest_request(
-            "transactions",
-            params={
-                "user_id": f"eq.{user_id}",
-                "category": "eq.Nómina",
-                "description": "eq.Nómina / Ingreso mensual registrado",
-                "limit": 1,
-            },
-        ) or []
-        if not existing:
-            add_transaction(
-                user_id,
-                {
-                    "id": f"tx_sal_{int(time.time() * 1000)}",
-                    "type": "ingreso",
-                    "amount": monthly_salary,
-                    "category": "Nómina",
-                    "description": "Nómina / Ingreso mensual registrado",
-                    "date": datetime.now().strftime("%Y-%m-%d"),
-                    "time": datetime.now().strftime("%H:%M:%S"),
-                    "accountMethod": "Cuenta Principal",
-                },
-            )
+    # The salary selected during registration is only an estimate used for
+    # planning. It is not an income that has already been received.
     return get_user_by_id(user_id)
 
 

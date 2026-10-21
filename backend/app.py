@@ -3,8 +3,10 @@ import io
 import csv
 import math
 import re
+from copy import deepcopy
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
+from threading import Lock
 from flask import Flask, request, jsonify, send_from_directory, send_file, make_response
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -45,6 +47,14 @@ else:
 app = Flask(__name__, static_folder=FRONTEND_DIR)
 app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024
 MAX_EMBEDDED_IMAGE_DATA_URL_LENGTH = 600000
+
+# Demo data is a shared, read-only seed. The browser keeps demo interactions
+# in memory, so rebuilding the same Supabase rows on every login only adds
+# latency and creates unnecessary concurrent writes. Cache the verified seed
+# per process/month and initialize it only when it is missing.
+_demo_bootstrap_cache = None
+_demo_bootstrap_cache_key = None
+_demo_bootstrap_lock = Lock()
 
 DEFAULT_CORS_ORIGINS = {
     "http://127.0.0.1:5000",
@@ -236,12 +246,21 @@ def auth_demo():
         demo_password = "MiPlataDemo2026!"
         try:
             try:
-                sb.auth_admin_create_user(demo_email, demo_password, "Fixelar")
-            except sb.SupabaseError as error:
-                # A second click should reuse the same demo account.
-                if error.status not in (400, 409, 422):
+                # Existing demo accounts can sign in directly. Creating an
+                # Auth user first made every demo access perform an admin API
+                # request, even when the account was already configured.
+                auth_data = sb.auth_sign_in(demo_email, demo_password)
+            except sb.SupabaseError as sign_in_error:
+                if sign_in_error.status not in (400, 404):
                     raise
-            auth_data = sb.auth_sign_in(demo_email, demo_password)
+                try:
+                    sb.auth_admin_create_user(demo_email, demo_password, "Fixelar")
+                except sb.SupabaseError as create_error:
+                    # Another request may have created the shared account in
+                    # the meantime; the sign-in below is the source of truth.
+                    if create_error.status not in (400, 409, 422):
+                        raise
+                auth_data = sb.auth_sign_in(demo_email, demo_password)
             auth_user = auth_data.get("user") or {}
             profile = db.initialize_registered_user(
                 auth_user.get("id"),
@@ -251,10 +270,10 @@ def auth_demo():
                 "",
                 apply_default_preferences=False,
             )
-            db.ensure_demo_data(auth_user.get("id"))
+            bootstrap = get_demo_bootstrap(auth_user.get("id"))
             return jsonify({
                 **_session_response(auth_data, profile, "Sesión de demostración iniciada"),
-                "bootstrap": get_bootstrap_payload(auth_user.get("id")),
+                "bootstrap": bootstrap,
             })
         except sb.SupabaseError as error:
             return jsonify({"error": str(error)}), 502
@@ -290,7 +309,11 @@ def auth_login():
             )
             return jsonify(_session_response(auth_data, profile, f"¡Bienvenido de nuevo, {profile['name'].split()[0]}!"))
         except sb.SupabaseError as error:
-            return jsonify({"error": "Correo o contraseña incorrectos"}), 401 if error.status in (400, 401) else 502
+            if error.status in (400, 401):
+                return jsonify({
+                    "error": "Correo o contraseña incorrectos."
+                }), 400
+            return jsonify({"error": "No se pudo iniciar sesión. Intenta nuevamente."}), 502
 
     user = db.get_user_by_email(email)
     if user and password and user.get("password") == password:
@@ -377,7 +400,7 @@ def auth_register():
             return jsonify(_session_response(
                 auth_data,
                 profile,
-                f"¡Bienvenido a MiPlata, {name.split()[0]}! Todo listo y limpio en 0 para comenzar.",
+                f"¡Cuenta creada, {name.split()[0]}!",
             ))
         except sb.SupabaseError as error:
             if _is_duplicate_email_error(error):
@@ -389,7 +412,7 @@ def auth_register():
         return jsonify({"error": "Ya existe una cuenta con este correo"}), 409
 
     user = db.create_user(name, email, password, monthly_salary, avatar_url)
-    return jsonify({"user": user, "message": f"¡Bienvenido a MiPlata, {user['name'].split()[0]}! Todo listo y limpio en 0 para comenzar."})
+    return jsonify({"user": user, "message": f"¡Cuenta creada, {user['name'].split()[0]}!"})
 
 @app.route("/api/auth/logout", methods=["POST"])
 def auth_logout():
@@ -469,6 +492,38 @@ def get_bootstrap_payload(user_id):
         "categoryBudgets": category_budgets,
         "availableMonths": sorted(set([current_month, *(available_months or [])]), reverse=True),
     }
+
+
+def _demo_bootstrap_is_ready(bootstrap):
+    return bool(bootstrap) and all(
+        bootstrap.get(key)
+        for key in (
+            "transactions",
+            "fixedObligations",
+            "savingsGoals",
+            "goalContributions",
+            "categoryBudgets",
+        )
+    )
+
+
+def get_demo_bootstrap(user_id):
+    """Return the shared demo seed without rebuilding it on every login."""
+    global _demo_bootstrap_cache, _demo_bootstrap_cache_key
+
+    cache_key = (str(user_id), db.get_current_month_key())
+    with _demo_bootstrap_lock:
+        if _demo_bootstrap_cache_key == cache_key and _demo_bootstrap_cache:
+            return deepcopy(_demo_bootstrap_cache)
+
+        bootstrap = get_bootstrap_payload(user_id)
+        if not _demo_bootstrap_is_ready(bootstrap):
+            db.ensure_demo_data(user_id)
+            bootstrap = get_bootstrap_payload(user_id)
+
+        _demo_bootstrap_cache_key = cache_key
+        _demo_bootstrap_cache = deepcopy(bootstrap)
+        return deepcopy(bootstrap)
 
 @app.route("/api/bootstrap", methods=["GET"])
 def bootstrap():
