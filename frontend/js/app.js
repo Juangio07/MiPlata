@@ -375,6 +375,7 @@ function getRecordSortParts(record) {
   return {
     dayTimestamp: dayTimestamp || executionTimestamp,
     executionTimestamp,
+    explicitTimestamp,
     createdAt,
   };
 }
@@ -389,8 +390,8 @@ function compareRecordsByRecency(left, right) {
   // most reliable indicator of which one was registered last. The displayed
   // time can be missing or arrive in different formats depending on the data
   // source, so keep it as a fallback instead of the primary tie-breaker.
-  const leftActivity = leftParts.createdAt || leftParts.executionTimestamp;
-  const rightActivity = rightParts.createdAt || rightParts.executionTimestamp;
+  const leftActivity = leftParts.createdAt || leftParts.explicitTimestamp || leftParts.executionTimestamp;
+  const rightActivity = rightParts.createdAt || rightParts.explicitTimestamp || rightParts.executionTimestamp;
   return rightActivity - leftActivity
     || rightParts.executionTimestamp - leftParts.executionTimestamp
     || rightParts.createdAt - leftParts.createdAt
@@ -626,12 +627,16 @@ function handleInsightAlertAction(button) {
 
   if (focusTarget === 'balance') {
     const focusBalance = () => {
-      document.getElementById('dashboard-balance-card')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      const balanceCard = document.getElementById('dashboard-balance-card');
+      if (!balanceCard) return;
+      balanceCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      balanceCard.classList.add('ring-2', 'ring-blue-200');
+      window.setTimeout(() => balanceCard.classList.remove('ring-2', 'ring-blue-200'), 1200);
     };
 
     if (state.activeTab !== 'inicio') {
-      switchTab(targetTab);
-      requestAnimationFrame(focusBalance);
+      switchTab('inicio');
+      requestAnimationFrame(() => window.setTimeout(focusBalance, 0));
     } else {
       focusBalance();
     }
@@ -988,15 +993,15 @@ function renderActiveView() {
 function renderSystemAlertCard(alert) {
   const alertIcon = alert.icon || (alert.type === 'danger' ? 'alertTriangle' : alert.type === 'warning' ? 'alertCircle' : 'info');
   const iconTone = alert.type === 'danger'
-    ? 'bg-[#ffe1e7] text-[#f3194d]'
+    ? 'bg-orange-100 text-amber-700'
     : alert.type === 'warning'
-    ? 'bg-[#fff0d7] text-[#b45309]'
-    : 'bg-[#dce8ff] text-[#0058bc]';
+    ? 'bg-blue-100 text-blue-600'
+    : 'bg-blue-100 text-blue-600';
   const messageTone = alert.type === 'danger'
-    ? 'text-[#f3194d]'
+    ? 'text-amber-700'
     : alert.type === 'warning'
-    ? 'text-[#b45309]'
-    : 'text-[#0058bc]';
+    ? 'text-blue-600'
+    : 'text-blue-600';
   const description = alert.description || alert.message || '';
 
   return `
@@ -1005,10 +1010,10 @@ function renderSystemAlertCard(alert) {
         <div class="w-12 h-12 rounded-full ${iconTone} flex items-center justify-center shrink-0">${getIconSvg(alertIcon, 'w-5 h-5')}</div>
         <div class="min-w-0">
           <p class="text-sm font-semibold text-[#0b1c30]">${alert.title}</p>
-          <p class="text-[11px] font-semibold ${messageTone}">${description}</p>
+          <p class="text-sm font-bold ${messageTone}">${description}</p>
         </div>
       </div>
-      <button data-tab="${alert.actionTab || 'gastos'}" data-focus="${alert.actionFocus || ''}" class="insight-alert-action rounded-full bg-white px-4 py-2 text-sm font-semibold text-[#0058bc] border border-slate-200 shadow-sm cursor-pointer hover:bg-[#eef3ff] whitespace-nowrap">
+      <button data-tab="${alert.actionTab || 'gastos'}" data-focus="${alert.actionFocus || ''}" class="insight-alert-action shrink-0 rounded-full bg-white px-4 py-2 text-sm font-semibold text-[#0058bc] border border-slate-200 shadow-sm cursor-pointer hover:bg-[#eef3ff] whitespace-nowrap">
         ${alert.actionLabel || 'Ver'}
       </button>
     </div>
@@ -1524,7 +1529,7 @@ function renderDashboard() {
           <div class="flex items-center gap-3 min-w-0">
             <div class="w-12 h-12 rounded-full bg-[#ffe1e7] text-[#f3194d] flex items-center justify-center shrink-0">${getIconSvg('bellRing', 'w-5 h-5')}</div>
             <div class="min-w-0">
-              <p class="text-sm font-semibold text-[#0b1c30]">${pending.length} ${pending.length === 1 ? 'fijo' : 'fijos'} por pagar</p>
+              <p class="text-sm font-semibold text-[#0b1c30]">${pending.length} ${pending.length === 1 ? 'gasto fijo' : 'gastos fijos'} por pagar</p>
               <p class="text-sm font-bold text-[#f3194d]">${formatCOP(metrics.fixedCommitted)} COP este mes</p>
             </div>
           </div>

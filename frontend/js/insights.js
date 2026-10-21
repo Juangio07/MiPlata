@@ -129,27 +129,16 @@ export function getFinancialAlerts(data) {
       alerts.push({
         id: 'alert_budget_80',
         type: 'warning',
-        title: `Alerta preventiva: ${monthlyBudgetPercent}% de presupuesto usado`,
-        description: `Has consumido ${formatCOP(monthlyBudgetSpent)} de tu presupuesto mensual. Te quedan ${formatCOP(monthlyBudgetRemaining, true)} disponibles.`,
+        title: `Presupuesto usado al ${monthlyBudgetPercent}%`,
+        description: `Disponible: ${formatCOP(monthlyBudgetRemaining, true)}.`,
         actionLabel: 'Controlar gastos',
         actionTab: 'gastos',
       });
     }
   }
 
-  // 2. Cashflow / Deficit Alert
-  if (totalIncome > 0 && totalExpenses + fixedCommitted > totalIncome) {
-    const deficit = totalExpenses + fixedCommitted - totalIncome;
-    alerts.push({
-      id: 'alert_cashflow_negative',
-      type: 'danger',
-      title: 'Compromisos superan ingresos del mes',
-      description: `Tus gastos acumulados más compromisos fijos (${formatCOP(totalExpenses + fixedCommitted)}) exceden lo recibido por ${formatCOP(deficit, true)}.`,
-      actionLabel: 'Ver balance',
-      actionTab: 'inicio',
-      actionFocus: 'balance',
-    });
-  } else if (totalIncome === 0 && totalExpenses > 0) {
+  // 2. Income registration and available-money alerts
+  if (totalIncome === 0 && totalExpenses > 0) {
     alerts.push({
       id: 'alert_no_income_registered',
       type: 'info',
@@ -157,16 +146,6 @@ export function getFinancialAlerts(data) {
       description: `Tienes ${formatCOP(totalExpenses)} en gastos. Registra tus ingresos recibidos para calcular con exactitud tu dinero disponible real.`,
       actionLabel: 'Registrar ingreso',
       actionTab: 'ingresos',
-    });
-  } else if (totalIncome > 0 && availableCash === 0 && (totalExpenses > 0 || fixedCommitted > 0)) {
-    alerts.push({
-      id: 'alert_zero_available',
-      type: 'warning',
-      icon: 'wallet',
-      title: 'Dinero disponible en $0 COP',
-      description: 'Todos tus ingresos del mes están comprometidos en gastos ya pagados o cuotas pendientes.',
-      actionLabel: 'Ver compromisos',
-      actionTab: 'obligaciones',
     });
   }
 
