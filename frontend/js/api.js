@@ -12,6 +12,10 @@ const BOOTSTRAP_CACHE_KEY = 'miplata_bootstrap_cache';
 export const DEMO_EMAIL = 'demo@miplata.app';
 const API_TIMEOUT_MS = 15000;
 const GET_RETRY_DELAY_MS = 250;
+const AUTH_NETWORK_RETRY_PATHS = new Set([
+  '/api/auth/login',
+  '/api/auth/demo',
+]);
 const SESSION_EXPIRY_SKEW_SECONDS = 45;
 const MAX_EMBEDDED_IMAGE_DATA_URL_LENGTH = 600000;
 const inFlightMutations = new Map();
@@ -23,16 +27,35 @@ function validateImagePayload(payload) {
   }
 }
 
+function isNetworkFailure(error) {
+  if (error?.code === 'MIPLATA_NETWORK_ERROR') return true;
+  const message = String(error?.message || '');
+  return error instanceof TypeError
+    || /failed to fetch|networkerror|load failed/i.test(message);
+}
+
+function createNetworkError() {
+  const error = new Error(
+    'No se pudo conectar con MiPlata. Verifica que el servidor esté activo e inténtalo de nuevo.',
+  );
+  error.code = 'MIPLATA_NETWORK_ERROR';
+  return error;
+}
+
+function normalizeNetworkError(error) {
+  if (error?.name === 'AbortError') {
+    return new Error('El servidor tardó demasiado en responder. Intenta nuevamente.');
+  }
+  return isNetworkFailure(error) ? createNetworkError() : error;
+}
+
 async function fetchWithTimeout(url, options = {}, timeoutMs = API_TIMEOUT_MS) {
   const controller = new AbortController();
   const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
     return await fetch(url, { ...options, signal: controller.signal });
   } catch (error) {
-    if (error?.name === 'AbortError') {
-      throw new Error('El servidor tardó demasiado en responder. Intenta nuevamente.');
-    }
-    throw error;
+    throw normalizeNetworkError(error);
   } finally {
     window.clearTimeout(timeoutId);
   }
@@ -57,6 +80,15 @@ function readCachedBootstrap() {
     return JSON.parse(localStorage.getItem(BOOTSTRAP_CACHE_KEY) || 'null');
   } catch (_error) {
     return null;
+  }
+}
+
+function hasActiveDemoSession() {
+  try {
+    const currentUser = JSON.parse(localStorage.getItem('miplata_user_cache') || 'null');
+    return String(currentUser?.email || '').trim().toLowerCase() === DEMO_EMAIL;
+  } catch (_error) {
+    return false;
   }
 }
 
@@ -206,7 +238,7 @@ function notifySessionExpired() {
   window.dispatchEvent(new CustomEvent('miplata:auth-expired'));
 }
 
-async function request(path, options = {}, retry = true) {
+async function request(path, options = {}, retry = true, networkAttempt = 0) {
   const method = String(options.method || 'GET').toUpperCase();
   const lockKey = retry && method !== 'GET' && method !== 'HEAD'
     ? `${method}:${path}:${options.body || ''}`
@@ -241,11 +273,20 @@ async function request(path, options = {}, retry = true) {
       }
       return res;
     } catch (error) {
-      if (retry && method === 'GET') {
+      const normalizedError = normalizeNetworkError(error);
+      if (
+        networkAttempt === 0
+        && AUTH_NETWORK_RETRY_PATHS.has(path)
+        && isNetworkFailure(normalizedError)
+      ) {
         await new Promise((resolve) => window.setTimeout(resolve, GET_RETRY_DELAY_MS));
-        return request(path, options, false);
+        return request(path, options, retry, 1);
       }
-      throw error;
+      if (retry && method === 'GET' && networkAttempt === 0) {
+        await new Promise((resolve) => window.setTimeout(resolve, GET_RETRY_DELAY_MS));
+        return request(path, options, false, 1);
+      }
+      throw normalizedError;
     }
   };
 
@@ -285,10 +326,6 @@ export const api = {
   async getBootstrap() {
     const cachedDemo = readCachedBootstrap();
     if (!readSession()?.access_token) {
-      if (cachedDemo?.user && isDemoUser(cachedDemo.user)) {
-        activateDemoRuntime(cachedDemo);
-        return getDemoBootstrap();
-      }
       clearSession();
       return null;
     }
@@ -300,7 +337,7 @@ export const api = {
     // sending demo mutations to the backend while the local server is
     // unavailable or the demo token has expired. A normal account never
     // enters this branch because its cached user is not the demo account.
-    if (cachedDemo?.user && isDemoUser(cachedDemo.user)) {
+    if (hasActiveDemoSession() && cachedDemo?.user && isDemoUser(cachedDemo.user)) {
       const restoredDemo = activateDemoRuntime(cachedDemo);
       if (restoredDemo) return getDemoBootstrap();
     }
@@ -373,6 +410,10 @@ export const api = {
     const data = await res.json();
     demoRuntime = null;
     storeAuthResponse(data);
+    const cached = readCachedBootstrap();
+    if (cached?.user?.id && cached.user.id === data?.user?.id) {
+      data.bootstrap = cached;
+    }
     return data;
   },
 

@@ -208,15 +208,66 @@ class AuthApiTests(unittest.TestCase):
         }
         with patch.object(app_module, "sb") as supabase:
             supabase.auth_sign_in.return_value = auth_data
-            with patch.object(app_module.db, "initialize_registered_user", return_value=profile):
-                with patch.object(app_module, "get_demo_bootstrap", return_value=bootstrap):
-                    with patch.object(app_module.db, "ensure_demo_data") as ensure_demo_data:
-                        response = self.client.post("/api/auth/demo")
+            with patch.object(app_module.db, "get_user_by_id", return_value=profile):
+                with patch.object(app_module.db, "initialize_registered_user") as initialize_user:
+                    with patch.object(app_module, "_local_demo_bootstrap", return_value=bootstrap):
+                        with patch.object(app_module.db, "ensure_demo_data") as ensure_demo_data:
+                            response = self.client.post("/api/auth/demo")
 
         self.assertEqual(response.status_code, 200)
         supabase.auth_sign_in.assert_called_once_with("demo@miplata.app", "MiPlataDemo2026!")
         supabase.auth_admin_create_user.assert_not_called()
+        initialize_user.assert_not_called()
         ensure_demo_data.assert_not_called()
+        self.assertEqual(response.get_json()["bootstrap"], bootstrap)
+
+    def test_existing_login_does_not_reseed_profile(self):
+        auth_data = {
+            "user": {"id": "user-1", "email": "user@example.com", "user_metadata": {"name": "Usuario"}},
+            "access_token": "access-token",
+            "refresh_token": "refresh-token",
+        }
+        profile = {"id": "user-1", "email": "user@example.com", "name": "Usuario"}
+        with patch.object(app_module.sb, "auth_sign_in", return_value=auth_data):
+            with patch.object(app_module.db, "get_user_by_id", return_value=profile) as get_user:
+                with patch.object(app_module.db, "ensure_user_defaults") as ensure_user_defaults:
+                    with patch.object(app_module, "get_bootstrap_payload") as get_bootstrap:
+                        response = self.client.post(
+                            "/api/auth/login",
+                            json={"email": "user@example.com", "password": "secret123"},
+                        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["user"]["id"], profile["id"])
+        self.assertEqual(response.get_json()["user"]["name"], profile["name"])
+        get_user.assert_not_called()
+        self.assertNotIn("bootstrap", response.get_json())
+        get_bootstrap.assert_not_called()
+        ensure_user_defaults.assert_not_called()
+
+    def test_demo_login_retries_transient_auth_connection_failure(self):
+        auth_data = {
+            "user": {"id": "demo-user", "email": "demo@miplata.app"},
+            "access_token": "access-token",
+            "refresh_token": "refresh-token",
+        }
+        profile = {"id": "demo-user", "email": "demo@miplata.app", "name": "Fixelar"}
+        bootstrap = {
+            "user": profile,
+            "transactions": [{"id": "tx-1"}],
+            "fixedObligations": [{"id": "fixed-1"}],
+            "savingsGoals": [{"id": "goal-1"}],
+            "goalContributions": [{"id": "contribution-1"}],
+            "categoryBudgets": [{"id": "budget-1"}],
+            "availableMonths": ["2026-10"],
+        }
+        with patch.object(app_module.sb, "auth_sign_in", side_effect=[SupabaseError("offline"), auth_data]) as sign_in:
+            with patch.object(app_module.db, "get_user_by_id", return_value=profile):
+                with patch.object(app_module, "_local_demo_bootstrap", return_value=bootstrap):
+                    response = self.client.post("/api/auth/demo")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(sign_in.call_count, 2)
         self.assertEqual(response.get_json()["bootstrap"], bootstrap)
 
     def test_create_goal_persists_valid_payload(self):

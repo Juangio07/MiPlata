@@ -6,6 +6,7 @@ this module on the server and is never returned to the frontend.
 
 import json
 import os
+import socket
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -46,6 +47,22 @@ SUPABASE_PUBLISHABLE_KEY = os.environ.get("SUPABASE_PUBLISHABLE_KEY", "")
 SUPABASE_SECRET_KEY = os.environ.get("SUPABASE_SECRET_KEY", "")
 USER_AGENT = "MiPlata-Backend/1.0"
 
+try:
+    SUPABASE_HTTP_TIMEOUT = max(
+        5.0,
+        min(float(os.environ.get("SUPABASE_HTTP_TIMEOUT", "8")), 30.0),
+    )
+except (TypeError, ValueError):
+    SUPABASE_HTTP_TIMEOUT = 8.0
+
+try:
+    SUPABASE_BOOTSTRAP_TIMEOUT = max(
+        2.0,
+        min(float(os.environ.get("SUPABASE_BOOTSTRAP_TIMEOUT", "3.5")), 8.0),
+    )
+except (TypeError, ValueError):
+    SUPABASE_BOOTSTRAP_TIMEOUT = 3.5
+
 
 def is_configured():
     return bool(SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY and SUPABASE_SECRET_KEY)
@@ -58,7 +75,7 @@ def public_config():
     }
 
 
-def _json_request(url, method="GET", body=None, headers=None):
+def _json_request(url, method="GET", body=None, headers=None, timeout=None):
     request_headers = {
         "Accept": "application/json",
         "User-Agent": USER_AGENT,
@@ -72,7 +89,7 @@ def _json_request(url, method="GET", body=None, headers=None):
 
     request = Request(url, data=payload, headers=request_headers, method=method)
     try:
-        with urlopen(request, timeout=20) as response:
+        with urlopen(request, timeout=timeout or SUPABASE_HTTP_TIMEOUT) as response:
             raw = response.read().decode("utf-8")
             if not raw:
                 return None
@@ -88,6 +105,8 @@ def _json_request(url, method="GET", body=None, headers=None):
             payload = {"message": raw}
         message = payload.get("msg") or payload.get("message") or payload.get("error_description") or payload.get("error") or "Error de Supabase"
         raise SupabaseError(message, status=error.code, payload=payload) from error
+    except (TimeoutError, socket.timeout) as error:
+        raise SupabaseError("Supabase tardó demasiado en responder") from error
     except URLError as error:
         raise SupabaseError("No se pudo conectar con Supabase") from error
 
@@ -170,7 +189,7 @@ def auth_admin_delete_user(user_id):
     )
 
 
-def rest_request(table, method="GET", params=None, body=None, select=None, returning=False):
+def rest_request(table, method="GET", params=None, body=None, select=None, returning=False, timeout=None):
     query = dict(params or {})
     if select:
         query["select"] = select
@@ -181,4 +200,4 @@ def rest_request(table, method="GET", params=None, body=None, select=None, retur
     headers = _auth_headers(SUPABASE_SECRET_KEY, SUPABASE_SECRET_KEY)
     if returning:
         headers["Prefer"] = "return=representation"
-    return _json_request(url, method=method, body=body, headers=headers)
+    return _json_request(url, method=method, body=body, headers=headers, timeout=timeout)

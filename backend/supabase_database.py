@@ -162,11 +162,12 @@ def _profile_to_dict(row):
     }
 
 
-def get_user_by_id(user_id):
+def get_user_by_id(user_id, timeout=None):
     rows = sb.rest_request(
         "profiles",
         params={"id": f"eq.{user_id}", "limit": 1},
         select="id,name,email,avatar_url,plan,member_since,monthly_salary,initial_balance,monthly_budget_limit,budget_needs,budget_wants,budget_savings,alert_80_percent,auto_adjust_variable,currency,reset_day,smart_categorization",
+        timeout=timeout,
     ) or []
     return _profile_to_dict(rows[0]) if rows else None
 
@@ -361,7 +362,7 @@ def delete_user(user_id):
         sb.rest_request(table, method="DELETE", params={"user_id" if table != "profiles" else "id": f"eq.{user_id}"})
 
 
-def get_transactions(user_id, month_key=None):
+def get_transactions(user_id, month_key=None, timeout=None):
     params = {"user_id": f"eq.{user_id}", "order": "date.desc,created_at.desc"}
     if month_key:
         start_date, end_date = _month_bounds(month_key)
@@ -372,6 +373,7 @@ def get_transactions(user_id, month_key=None):
         "transactions",
         params=params,
         select="id,user_id,type,amount,category,description,date,time,account_method,is_recurring,fixed_obligation_id,created_at",
+        timeout=timeout,
     ) or []
     return [
         {
@@ -425,13 +427,14 @@ def delete_transaction(user_id, tx_id):
     sb.rest_request("transactions", method="DELETE", params={"id": f"eq.{tx_id}", "user_id": f"eq.{user_id}"})
 
 
-def reset_monthly_fixed_obligations(user_id, month_key=None):
+def reset_monthly_fixed_obligations(user_id, month_key=None, timeout=None):
     """Reset recurring payment state without deleting closed-month records."""
     month_key = month_key or get_current_month_key()
     rows = sb.rest_request(
         "fixed_obligations",
         params={"user_id": f"eq.{user_id}"},
         select="id,status,paid_date",
+        timeout=timeout,
     ) or []
     stale_rows = [
         row for row in rows
@@ -447,13 +450,30 @@ def reset_monthly_fixed_obligations(user_id, month_key=None):
     return len(stale_rows)
 
 
-def get_fixed_obligations(user_id):
-    reset_monthly_fixed_obligations(user_id)
+def get_fixed_obligations(user_id, timeout=None):
     rows = sb.rest_request(
         "fixed_obligations",
         params={"user_id": f"eq.{user_id}", "order": "due_day.asc"},
         select="id,user_id,name,amount,due_day,category,status,paid_date,reminder_days_before,is_automatic,notes",
+        timeout=timeout,
     ) or []
+    current_month = get_current_month_key()
+    stale_rows = [
+        row
+        for row in rows
+        if row.get("status") == "paid"
+        and not str(row.get("paid_date") or "").startswith(current_month)
+    ]
+    for row in stale_rows:
+        sb.rest_request(
+            "fixed_obligations",
+            method="PATCH",
+            params={"id": f"eq.{row.get('id')}", "user_id": f"eq.{user_id}"},
+            body={"status": "pending", "paid_date": None},
+            timeout=timeout,
+        )
+        row["status"] = "pending"
+        row["paid_date"] = None
     return [
         {
             "id": row.get("id"), "userId": row.get("user_id"), "name": row.get("name"),
@@ -529,15 +549,16 @@ def toggle_pay_fixed_obligation(user_id, item_id):
     return {"status": new_status, "isPaid": is_now_paid, "transactionId": transaction_id}
 
 
-def get_savings_goals(user_id):
+def get_savings_goals(user_id, sync_current_amount=True, timeout=None):
     rows = sb.rest_request(
         "savings_goals",
         params={"user_id": f"eq.{user_id}", "order": "created_at.asc"},
         select="id,user_id,name,target_amount,current_amount,deadline,icon,color,category,image_url",
+        timeout=timeout,
     ) or []
-    contributions = get_goal_contributions(user_id)
+    contributions = get_goal_contributions(user_id, timeout=timeout) if sync_current_amount else None
     totals = {}
-    for contribution in contributions:
+    for contribution in contributions or []:
         goal_id = str(contribution.get("goalId") or "")
         if goal_id:
             totals[goal_id] = totals.get(goal_id, 0) + _num(contribution.get("amount"))
@@ -545,13 +566,14 @@ def get_savings_goals(user_id):
     result = []
     for row in rows:
         goal_id = str(row.get("id") or "")
-        contributed_amount = totals.get(goal_id, 0)
-        if _num(row.get("current_amount")) != contributed_amount:
+        contributed_amount = totals.get(goal_id, _num(row.get("current_amount")))
+        if sync_current_amount and _num(row.get("current_amount")) != contributed_amount:
             sb.rest_request(
                 "savings_goals",
                 method="PATCH",
                 params={"id": f"eq.{goal_id}", "user_id": f"eq.{user_id}"},
                 body={"current_amount": contributed_amount},
+                timeout=timeout,
             )
         result.append({
             "id": row.get("id"), "userId": row.get("user_id"), "name": row.get("name"),
@@ -631,7 +653,7 @@ def contribute_to_goal(user_id, goal_id, amount, contribution_type="Manual"):
     return {"goalId": goal_id, "newAmount": new_amount, "contributionId": contribution_id}
 
 
-def get_goal_contributions(user_id, month_key=None):
+def get_goal_contributions(user_id, month_key=None, timeout=None):
     params = {"user_id": f"eq.{user_id}", "order": "timestamp.desc"}
     if month_key:
         start_date, end_date = _month_bounds(month_key)
@@ -640,6 +662,7 @@ def get_goal_contributions(user_id, month_key=None):
         "goal_contributions",
         params=params,
         select="id,user_id,goal_id,goal_name,amount,date,type,timestamp",
+        timeout=timeout,
     ) or []
     return [
         {
@@ -651,18 +674,25 @@ def get_goal_contributions(user_id, month_key=None):
     ]
 
 
-def get_record_months(user_id):
+def get_record_months(user_id, timeout=None):
     """Return month keys without loading full transaction histories."""
-    transaction_rows = sb.rest_request(
-        "transactions",
-        params={"user_id": f"eq.{user_id}"},
-        select="date",
-    ) or []
-    contribution_rows = sb.rest_request(
-        "goal_contributions",
-        params={"user_id": f"eq.{user_id}"},
-        select="date",
-    ) or []
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        transaction_future = pool.submit(
+            sb.rest_request,
+            "transactions",
+            params={"user_id": f"eq.{user_id}"},
+            select="date",
+            timeout=timeout,
+        )
+        contribution_future = pool.submit(
+            sb.rest_request,
+            "goal_contributions",
+            params={"user_id": f"eq.{user_id}"},
+            select="date",
+            timeout=timeout,
+        )
+        transaction_rows = transaction_future.result() or []
+        contribution_rows = contribution_future.result() or []
     months = {
         str(row.get("date") or "")[:7]
         for row in [*transaction_rows, *contribution_rows]
@@ -671,11 +701,12 @@ def get_record_months(user_id):
     return sorted((month for month in months if month[4:5] == "-"), reverse=True)
 
 
-def get_category_budgets(user_id):
+def get_category_budgets(user_id, timeout=None):
     rows = sb.rest_request(
         "category_budgets",
         params={"user_id": f"eq.{user_id}", "order": "category.asc"},
         select="category,limit_amount,icon",
+        timeout=timeout,
     ) or []
     return [{"category": row.get("category"), "limit": _num(row.get("limit_amount")), "icon": row.get("icon")} for row in rows]
 

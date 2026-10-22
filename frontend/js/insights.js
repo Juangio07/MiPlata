@@ -175,23 +175,31 @@ export function getFinancialTips(data) {
   const needsRulePercent = (currentUser?.budgetRule?.needs || 50) / 100;
   const wantsRulePercent = (currentUser?.budgetRule?.wants || 30) / 100;
 
+  const suggestedNeeds = salary > 0 ? Math.round(salary * needsRulePercent) : 0;
+  const suggestedWants = salary > 0 ? Math.round(salary * wantsRulePercent) : 0;
+  const idealSavings = salary > 0 ? Math.round(salary * savingsRulePercent) : 0;
+  // Savings are capped by the 50/30/20 plan and reduced when fixed
+  // commitments leave less room. This keeps the advice from treating the
+  // entire salary as money that can be saved.
+  const maximumSavingsAfterCommitments = salary > 0
+    ? Math.max(0, salary - fixedTotal - suggestedWants)
+    : 0;
+  const plannedMonthlySavings = salary > 0
+    ? Math.min(idealSavings, maximumSavingsAfterCommitments)
+    : Math.round(Math.max(0, availableCash) * 0.2);
+
   // The amount recommended for a goal can never be greater than the current
   // available cash. Pending fixed obligations are not deducted until they
   // are actually paid and recorded as expenses.
   const goalCash = Math.max(0, availableCash);
-  const realisticMonthlySavingsCap = Math.min(
-    goalCash,
-    salary > 0 ? Math.round(salary * savingsRulePercent) : Math.round(goalCash * 0.2),
-  );
+  const realisticMonthlySavingsCap = plannedMonthlySavings;
   const realisticQuincenalCap = realisticMonthlySavingsCap > 0
     ? Math.min(goalCash, Math.max(1000, Math.round((realisticMonthlySavingsCap / 2) / 10000) * 10000))
     : 0;
 
   // PILLAR 1: 50/30/20 Rule
   if (salary > 0) {
-    const suggestedNeeds = Math.round(salary * needsRulePercent);
-    const suggestedWants = Math.round(salary * wantsRulePercent);
-    const suggestedSavings = Math.round(salary * savingsRulePercent);
+    const suggestedSavings = plannedMonthlySavings;
     const quincenalSavingsIdeal = Math.round((suggestedSavings / 2) / 10000) * 10000;
 
     if (fixedTotal > 0 && fixedTotal <= suggestedNeeds) {

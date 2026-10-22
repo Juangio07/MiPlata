@@ -173,13 +173,15 @@
     </div>
 
     <!-- Application Script Entrypoint -->
-    <script type="module" src="js/demo-login-performance.js?v=20261021-demo-login-v2"></script>
-    <link rel="modulepreload" href="js/app.bundle.delete-fix.js?v=20261021-budget-sync-v3" />
-    <script type="module" src="js/app.bundle.delete-fix.js?v=20261021-budget-sync-v3"></script>
+    <script src="js/network-guard.js?v=20261021-network-v1"></script>
+    <script type="module" src="js/demo-login-performance.js?v=20261021-demo-login-v4"></script>
+    <script src="js/auth-bootstrap-guard.js?v=20261022-auth-data-first-v3"></script>
+    <link rel="modulepreload" href="js/app.bundle.delete-fix.js?v=20261021-login-fast-v12" />
+    <script type="module" src="js/app.bundle.delete-fix.js?v=20261021-login-fast-v12"></script>
     <script>
       if ('serviceWorker' in navigator && location.protocol !== 'file:') {
         window.addEventListener('load', () => {
-          navigator.serviceWorker.register('/sw.js', { updateViaCache: 'none' }).catch(() => {
+          navigator.serviceWorker.register('/sw.js?v=20261022-auth-data-first-v3', { updateViaCache: 'none' }).catch(() => {
             // La aplicación sigue funcionando aunque el caché offline no esté disponible.
           });
         });

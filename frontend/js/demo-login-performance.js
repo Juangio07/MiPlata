@@ -8,6 +8,22 @@
   const demoSessionKey = 'miplata_demo_session_cache_v1';
   let demoRequestActive = false;
 
+  const isNetworkFailure = (error) => {
+    if (error?.code === 'MIPLATA_NETWORK_ERROR') return true;
+    const message = String(error?.message || '');
+    return error instanceof TypeError
+      || /failed to fetch|networkerror|load failed/i.test(message);
+  };
+
+  const normalizeNetworkError = (error) => {
+    if (!isNetworkFailure(error)) return error;
+    const normalized = new Error(
+      'No se pudo conectar con MiPlata. Verifica que el servidor esté activo e inténtalo de nuevo.',
+    );
+    normalized.code = 'MIPLATA_NETWORK_ERROR';
+    return normalized;
+  };
+
   const readStorage = (key) => {
     try {
       return JSON.parse(localStorage.getItem(key) || 'null');
@@ -104,8 +120,26 @@
       // The shared API error helper treats every 401 as an expired session.
       // Login is the exception: show a useful credentials/account message.
       return originalFetch(input, init).then(async (response) => {
-        if (response.status !== 401) return response;
         const body = await response.clone().json().catch(() => ({}));
+
+        // Reuse the last verified snapshot for this same account. The active
+        // bundle can render it immediately after authentication instead of
+        // waiting for every Supabase table; the next refresh reconciles it.
+        if (response.ok && body?.user?.id) {
+          const cached = readStorage('miplata_bootstrap_cache');
+          const cacheMatchesUser = cached?.user?.id === body.user.id;
+          const cacheHasData = Array.isArray(cached?.transactions)
+            && Array.isArray(cached?.fixedObligations)
+            && Array.isArray(cached?.savingsGoals);
+          if (cacheMatchesUser && cacheHasData) {
+            return new Response(JSON.stringify({ ...body, bootstrap: cached }), {
+              status: response.status,
+              headers: { 'Content-Type': 'application/json' },
+            });
+          }
+        }
+
+        if (response.status !== 401) return response;
         return new Response(JSON.stringify({
           ...body,
           error: 'Correo o contraseña incorrectos.',
@@ -113,6 +147,8 @@
           status: 400,
           headers: { 'Content-Type': 'application/json' },
         });
+      }).catch((error) => {
+        throw normalizeNetworkError(error);
       });
     }
     if (!isDemoLogin) return originalFetch(input, init);
@@ -140,6 +176,8 @@
     }).finally(() => {
       demoRequestActive = false;
       setButtonState(false);
+    }).catch((error) => {
+      throw normalizeNetworkError(error);
     });
   };
 })();

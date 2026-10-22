@@ -3310,7 +3310,11 @@ function renderProfile() {
   if (!user) return;
 
   const budgetAdjustment = getBudgetAdjustment(getCurrentMonthKey(), user);
-  const salary = budgetAdjustment.monthlyBudgetLimit || user.monthlyBudgetLimit || user.monthlySalary || 5800000;
+  // Keep the displayed assigned limit aligned with the value editable in the
+  // modal. The automatic variable-income adjustment remains available for
+  // monthly/category calculations, but must not replace the configured base
+  // limit shown to the user.
+  const salary = user.monthlyBudgetLimit || user.monthlySalary || 5800000;
   const needs = Math.round(salary * ((user.budgetRule?.needs || 50) / 100));
   const wants = Math.round(salary * ((user.budgetRule?.wants || 30) / 100));
   const savings = Math.round(salary * ((user.budgetRule?.savings || 20) / 100));
@@ -4006,7 +4010,10 @@ function renderAuth() {
         renderApp();
         showToast(res.message);
       } catch (err) {
-        showToast('Error al conectar con la demo', 'error');
+        showToast(
+          err?.message || 'No se pudo conectar con MiPlata. Intenta nuevamente.',
+          'error',
+        );
       }
     };
   }
@@ -4157,9 +4164,20 @@ function renderAuth() {
       try {
         const res = await api.login(email, pass);
         state.currentUser = res.user;
-        await refreshAllData();
+        showToast('Cargando tus datos…', 'info');
+
+        // The login response is held until the first bootstrap is available
+        // by auth-bootstrap-guard.js. Keep this source entry point aligned:
+        // do not reveal a blank or stale dashboard between both requests.
+        const refreshed = await refreshAllData();
+        if (!refreshed || !state.currentUser) {
+          state.currentUser = null;
+          renderApp();
+          showToast('No se pudieron cargar tus datos. Intenta nuevamente.', 'error');
+          return;
+        }
         renderApp();
-        showToast(res.message);
+        showToast(res.message, 'success');
       } catch (err) {
         showToast(err.message, 'error');
       }
@@ -5168,11 +5186,17 @@ function openEditProfileModal() {
 
       <div class="flex flex-col items-center gap-3 mb-7">
         <div id="profile-modal-avatar-preview">${renderAvatarHtml(user.name, tempAvatarUrl, 'profile')}</div>
-        <label class="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-[#eef4ff] text-[#0058bc] text-sm font-semibold cursor-pointer active:scale-95 transition-all">
-          ${getIconSvg('camera', 'w-4 h-4')}
-          <span>Subir foto</span>
-          <input id="input-profile-avatar" type="file" accept="image/*" class="sr-only" />
-        </label>
+        <div class="flex flex-wrap items-center justify-center gap-2">
+          <label class="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-[#eef4ff] text-[#0058bc] text-sm font-semibold cursor-pointer active:scale-95 transition-all">
+            ${getIconSvg('camera', 'w-4 h-4')}
+            <span>Subir foto</span>
+            <input id="input-profile-avatar" type="file" accept="image/*" class="sr-only" />
+          </label>
+          <button id="remove-profile-avatar-btn" type="button" aria-label="Quitar foto de perfil" ${tempAvatarUrl ? '' : 'disabled'} class="inline-flex items-center gap-2 px-4 py-2 rounded-full text-sm font-semibold transition-all ${tempAvatarUrl ? 'bg-[#fff0f2] text-[#e61e4d] cursor-pointer active:scale-95' : 'bg-[#f1f5fa] text-[#a5b4c7] cursor-not-allowed'}">
+            ${getIconSvg('x', 'w-4 h-4')}
+            <span>Quitar foto</span>
+          </button>
+        </div>
         <p id="profile-avatar-hint" class="text-xs text-[#8da0bd] text-center">${tempAvatarUrl ? 'Foto de perfil seleccionada' : `Mostrando iniciales "${getInitials(user.name)}" según tu nombre`}</p>
       </div>
 
@@ -5189,7 +5213,7 @@ function openEditProfileModal() {
 
         <div class="grid grid-cols-2 gap-3 pt-3">
           <button id="edit-profile-cancel-btn" class="h-12 rounded-full bg-[#eff4f8] text-[#50627b] font-semibold text-sm active:scale-95 transition-all cursor-pointer">Cancelar</button>
-          <button id="edit-profile-save-btn" class="h-12 rounded-full bg-[#0058bc] text-white font-bold text-sm shadow-md hover:bg-[#004bb0] active:scale-95 transition-all cursor-pointer">Guardar Cambios</button>
+          <button id="edit-profile-save-btn" type="button" aria-label="Guardar perfil" class="h-12 rounded-full bg-[#0058bc] text-white font-bold text-sm shadow-md hover:bg-[#004bb0] active:scale-95 transition-all cursor-pointer">Guardar Cambios</button>
         </div>
       </div>
     </div>
@@ -5203,9 +5227,20 @@ function openEditProfileModal() {
   const avatarPreview = document.getElementById('profile-modal-avatar-preview');
   const nameInput = document.getElementById('edit-name-input');
   const avatarHint = document.getElementById('profile-avatar-hint');
+  const removeAvatarButton = document.getElementById('remove-profile-avatar-btn');
 
   const syncAvatarFallback = () => {
     const name = nameInput.value.trim() || user.name;
+    if (removeAvatarButton) {
+      removeAvatarButton.disabled = !tempAvatarUrl;
+      removeAvatarButton.classList.toggle('bg-[#fff0f2]', Boolean(tempAvatarUrl));
+      removeAvatarButton.classList.toggle('text-[#e61e4d]', Boolean(tempAvatarUrl));
+      removeAvatarButton.classList.toggle('cursor-pointer', Boolean(tempAvatarUrl));
+      removeAvatarButton.classList.toggle('active:scale-95', Boolean(tempAvatarUrl));
+      removeAvatarButton.classList.toggle('bg-[#f1f5fa]', !tempAvatarUrl);
+      removeAvatarButton.classList.toggle('text-[#a5b4c7]', !tempAvatarUrl);
+      removeAvatarButton.classList.toggle('cursor-not-allowed', !tempAvatarUrl);
+    }
     if (!tempAvatarUrl) {
       avatarPreview.innerHTML = renderAvatarHtml(name, '', 'profile');
       avatarHint.textContent = `Mostrando iniciales "${getInitials(name)}" según tu nombre`;
@@ -5223,7 +5258,7 @@ function openEditProfileModal() {
       try {
         tempAvatarUrl = await compressImageForUpload(file);
         avatarPreview.innerHTML = renderAvatarHtml(nameInput.value || user.name, tempAvatarUrl, 'profile');
-        avatarHint.textContent = 'Foto de perfil seleccionada';
+        syncAvatarFallback();
       } catch (error) {
         tempAvatarUrl = '';
         avatarInput.value = '';
@@ -5233,17 +5268,53 @@ function openEditProfileModal() {
     };
   }
 
-  document.getElementById('edit-profile-save-btn').onclick = async () => {
+  removeAvatarButton?.addEventListener('click', () => {
+    if (!tempAvatarUrl) return;
+    tempAvatarUrl = '';
+    if (avatarInput) avatarInput.value = '';
+    syncAvatarFallback();
+  });
+
+  syncAvatarFallback();
+
+  const saveProfile = async (event) => {
+    event?.preventDefault();
     const name = document.getElementById('edit-name-input').value.trim();
     const email = document.getElementById('edit-email-input').value.trim();
-    if (!name) return;
+    const saveButton = document.getElementById('edit-profile-save-btn');
+    if (!name) {
+      showToast('Escribe tu nombre para continuar', 'error');
+      nameInput.focus();
+      return;
+    }
 
-    const res = await api.updateProfile({ name, email, avatarUrl: tempAvatarUrl });
-    state.currentUser = res.user;
-    DOM.modalEditProfile.classList.add('hidden');
-    renderProfile();
-    renderHeader();
-    showToast('Perfil actualizado');
+    saveButton.disabled = true;
+    saveButton.classList.add('opacity-70', 'cursor-wait');
+    saveButton.textContent = 'Guardando…';
+    try {
+      const res = await api.updateProfile({ name, email, avatarUrl: tempAvatarUrl });
+      state.currentUser = res.user;
+      DOM.modalEditProfile.classList.add('hidden');
+      renderProfile();
+      renderHeader();
+      showToast('Perfil actualizado');
+    } catch (error) {
+      showToast(error.message || 'No se pudo actualizar el perfil', 'error');
+    } finally {
+      saveButton.disabled = false;
+      saveButton.classList.remove('opacity-70', 'cursor-wait');
+      saveButton.textContent = 'Guardar Cambios';
+    }
+  };
+
+  // Delegate the click from the modal container. This remains reliable after
+  // the modal content is replaced and prevents the save action from becoming
+  // detached when a profile photo is selected.
+  DOM.modalEditProfile.onclick = (event) => {
+    const target = event.target;
+    if (target instanceof Element && target.closest('#edit-profile-save-btn')) {
+      void saveProfile(event);
+    }
   };
 }
 
