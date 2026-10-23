@@ -853,7 +853,7 @@ def toggle_fixed_obligation(item_id):
         available_cash = _available_cash_for_user(user_id)
         amount = float(obligation.get("amount") or 0)
         if amount > available_cash:
-            return jsonify({"error": f"No tienes suficiente dinero disponible para pagar este gasto fijo. Te quedan ${available_cash:,.0f} COP"}), 400
+            return jsonify({"error": f"Saldo insuficiente. Disponible: ${available_cash:,.0f} COP"}), 400
     res = db.toggle_pay_fixed_obligation(user_id, item_id)
     if not res:
         return jsonify({"error": "Obligación no encontrada"}), 404

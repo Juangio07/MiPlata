@@ -606,7 +606,7 @@ export const api = {
       const isPaid = obligation.status !== 'paid';
       const availableCash = getDemoAvailableCash();
       if (isPaid && Number(obligation.amount) > availableCash) {
-        throw new Error(`No tienes suficiente dinero disponible para pagar este gasto fijo. Te quedan $${availableCash.toLocaleString('es-CO')} COP`);
+        throw new Error(`Saldo insuficiente. Disponible: $${availableCash.toLocaleString('es-CO')} COP`);
       }
       obligation.status = isPaid ? 'paid' : 'pending';
       obligation.paidDate = isPaid ? demoToday() : null;

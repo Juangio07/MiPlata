@@ -66,7 +66,7 @@ class AuthApiTests(unittest.TestCase):
                         response = self.client.post("/api/fixed-obligations/fixed-1/toggle")
 
         self.assertEqual(response.status_code, 400)
-        self.assertIn("suficiente dinero disponible", response.get_json()["error"])
+        self.assertIn("Saldo insuficiente", response.get_json()["error"])
         toggle.assert_not_called()
 
     def test_bootstrap_requires_authentication(self):

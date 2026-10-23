@@ -819,7 +819,7 @@ async function handleProtected(route, request, user) {
         const amount = number(rows[0].amount);
         const availableCash = await availableCashForUser(userId);
         if (amount > availableCash) {
-          return json({ error: `No tienes suficiente dinero disponible para pagar este gasto fijo. Te quedan $${availableCash.toLocaleString('es-CO')} COP` }, 400);
+          return json({ error: `Saldo insuficiente. Disponible: $${availableCash.toLocaleString('es-CO')} COP` }, 400);
         }
       }
       await restRequest('fixed_obligations', { method: 'PATCH', params: { id: `eq.${id}`, user_id: `eq.${userId}` }, body: { status: paid ? 'paid' : 'pending', paid_date: paid ? dateOnly(null, true) : null } });

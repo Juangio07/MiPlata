@@ -32,6 +32,7 @@ import {
   getDynamicGreetingStatus,
   getTimeSlotInfo 
 } from './insights.js';
+import { isGoalCompleted, getGoalCompletionDate } from './goal-history.js';
 
 // Global Application State
 const state = {
@@ -856,6 +857,7 @@ function removeLocalSavingsGoal(id) {
 function applyLocalGoalContribution(goalId, amount, type, response = {}) {
   const goal = state.savingsGoals.find((item) => item.id === goalId);
   if (!goal) return;
+  const previousAmount = Number(goal.currentAmount) || 0;
   const result = response.result || {};
   const contribution = {
     id: result.contributionId || `contrib_local_${Date.now()}`,
@@ -869,10 +871,16 @@ function applyLocalGoalContribution(goalId, amount, type, response = {}) {
   };
   const newAmount = Number(result.newAmount);
   state.goalContributions = [contribution, ...state.goalContributions.filter((item) => item.id !== contribution.id)];
+  const finalAmount = Number.isFinite(newAmount) ? newAmount : previousAmount + contribution.amount;
   state.savingsGoals = state.savingsGoals.map((item) => item.id === goalId
-    ? { ...item, currentAmount: Number.isFinite(newAmount) ? newAmount : (Number(item.currentAmount) || 0) + contribution.amount }
+    ? { ...item, currentAmount: finalAmount }
     : item);
   registerLocalMutation(contribution);
+  return {
+    goalName: goal.name,
+    completed: !isGoalCompleted({ ...goal, currentAmount: previousAmount })
+      && isGoalCompleted({ ...goal, currentAmount: finalAmount }),
+  };
 }
 
 function setupMonthlyRolloverWatcher() {
@@ -2950,7 +2958,7 @@ function renderObligations() {
         const isPaying = obligation?.status !== 'paid';
         const availableCash = computeMetrics().availableCash;
         if (isPaying && Number(obligation?.amount) > availableCash) {
-          showToast(`No tienes suficiente dinero disponible para pagar este gasto fijo. Te quedan ${formatCOP(availableCash, true)} COP`, 'error');
+          showToast(`Saldo insuficiente. Disponible: ${formatCOP(availableCash, true)}`, 'error');
           return;
         }
       try {
@@ -3242,11 +3250,39 @@ function renderGoalMedia(goal, imageClass = 'w-full h-full object-cover', fallba
   return `<img src="${safeUrl}" alt="${String(goal?.name || 'Imagen de meta').replace(/"/g, '&quot;')}" loading="lazy" decoding="async" class="${imageClass}" onerror="this.classList.add('hidden'); this.nextElementSibling.classList.remove('hidden');" /><span class="hidden w-full h-full items-center justify-center">${fallbackIcon}</span>`;
 }
 
+function showGoalCompletionCelebration(goalName) {
+  const existingCelebration = document.getElementById('goal-completion-celebration');
+  existingCelebration?.remove();
+
+  const celebration = document.createElement('div');
+  celebration.id = 'goal-completion-celebration';
+  celebration.className = 'modal-backdrop';
+  celebration.innerHTML = `
+    <div class="modal-content max-w-sm text-center">
+      <div class="w-16 h-16 mx-auto rounded-full bg-[#c7f7e3] text-[#006c49] flex items-center justify-center animate-pulse">
+        ${getIconSvg('checkCircle2', 'w-9 h-9')}
+      </div>
+      <p class="text-[11px] uppercase tracking-wider font-bold text-[#006c49] mt-5">Meta cumplida</p>
+      <h3 class="text-xl font-extrabold text-[#0b1c30] mt-1">¡Lo lograste!</h3>
+      <p class="text-sm text-slate-600 mt-2">Completaste “${String(goalName || 'tu meta').replace(/"/g, '&quot;')}”.</p>
+      <button type="button" class="w-full h-11 mt-5 rounded-full bg-[#0058bc] text-white font-semibold cursor-pointer">Continuar</button>
+    </div>
+  `;
+  document.body.appendChild(celebration);
+
+  const close = () => celebration.remove();
+  celebration.querySelector('button')?.addEventListener('click', close, { once: true });
+  window.setTimeout(close, 3200);
+}
+
 function renderGoals() {
   const metrics = computeMetrics();
   const totalPercent = metrics.totalSavingsTarget > 0 ? Math.min(100, Math.round((metrics.totalSavings / metrics.totalSavingsTarget) * 100)) : 0;
-  const activeGoals = state.savingsGoals.filter((goal) => goal.currentAmount < goal.targetAmount);
-  const activeGoal = activeGoals[0] || state.savingsGoals[0];
+  const activeGoals = state.savingsGoals.filter((goal) => !isGoalCompleted(goal));
+  const completedGoals = state.savingsGoals
+    .filter((goal) => isGoalCompleted(goal))
+    .map((goal) => ({ ...goal, completedDate: getGoalCompletionDate(goal, state.goalContributions) }));
+  const activeGoal = activeGoals[0];
   const remaining = activeGoal ? Math.max(0, activeGoal.targetAmount - activeGoal.currentAmount) : 0;
   const availableForGoals = Math.max(0, metrics.availableCash);
   const suggestedContribution = activeGoal
@@ -3256,12 +3292,16 @@ function renderGoals() {
         availableForGoals > 0 ? Math.max(1000, Math.round((availableForGoals * 0.15) / 10000) * 10000) : 0,
       )
     : 0;
-  const tipTitle = activeGoal ? `Impulso para "${activeGoal.name}"` : 'Crea tu primera meta';
+  const tipTitle = activeGoal
+    ? `Impulso para "${activeGoal.name}"`
+    : completedGoals.length ? 'Sigue construyendo tus logros' : 'Crea tu primera meta';
   const tip = activeGoal
     ? suggestedContribution > 0
       ? `Tienes ${formatCOP(availableForGoals)} disponibles. Puedes aportar ${formatCOP(suggestedContribution, true)} sin superar tu saldo disponible.`
       : 'No tienes dinero disponible para aportar a una meta en este momento.'
-    : 'Crea una meta para empezar a reservar dinero de forma automática.';
+    : completedGoals.length
+      ? `Ya cumpliste ${completedGoals.length === 1 ? 'una meta' : `${completedGoals.length} metas`}. Crea una nueva para continuar avanzando sin descuidar tu saldo disponible.`
+      : 'Crea una meta para empezar a reservar dinero de forma automática.';
 
   DOM.tabMetas.innerHTML = `
     <div class="mockup-shell flex flex-col w-full px-4 pt-4 pb-28 gap-5 animate-in fade-in duration-200">
@@ -3295,6 +3335,22 @@ function renderGoals() {
           }).join('') : `<div class="rounded-3xl bg-white p-6 text-center border border-slate-200/80"><p class="text-sm font-semibold">No tienes metas activas</p><p class="text-xs text-slate-500 mt-1">Crea una meta para comenzar a ahorrar.</p></div>`}
         </div>
       </section>
+      ${completedGoals.length ? `
+      <section class="flex flex-col gap-2">
+        <div class="flex items-center justify-between px-1"><h2 class="text-lg font-bold">Metas cumplidas</h2><span class="text-sm font-semibold text-[#006c49]">${completedGoals.length} lograda${completedGoals.length === 1 ? '' : 's'}</span></div>
+        <div class="flex flex-col gap-3">
+          ${completedGoals.map((goal) => `
+            <article class="rounded-3xl bg-[#f2fff9] p-4 shadow-sm border border-[#b9efd8]">
+              <div class="flex items-center gap-3 min-w-0">
+                <div class="${goal.imageUrl ? 'w-14 h-14 flex items-center justify-center shrink-0 overflow-hidden' : 'w-14 h-14 rounded-2xl flex items-center justify-center shrink-0'}" style="${goal.imageUrl ? '' : `background:${goal.color}20;color:${goal.color}`}" >${renderGoalMedia(goal, 'w-full h-full object-contain', 'w-6 h-6')}</div>
+                <div class="min-w-0 flex-1"><h3 class="font-semibold text-base truncate">${goal.name}</h3><p class="text-xs text-[#006c49] mt-0.5">${goal.completedDate ? `Cumplida el ${formatGoalDeadline(goal.completedDate)}` : 'Objetivo alcanzado'}</p></div>
+                <span class="shrink-0 rounded-full bg-[#c7f7e3] px-3 py-1 text-xs font-bold text-[#006c49]">100%</span>
+              </div>
+              <div class="flex items-center justify-between gap-3 mt-3 text-sm"><span><strong>${formatCOP(goal.currentAmount)}</strong> <span class="text-slate-500">de ${formatCOP(goal.targetAmount)} COP</span></span><span class="font-semibold text-[#006c49]">${getIconSvg('check', 'w-4 h-4 inline mr-1')}Completada</span></div>
+            </article>
+          `).join('')}
+        </div>
+      </section>` : ''}
       <div class="rounded-3xl bg-[#eef3ff] border border-[#cfe0ff] p-4 flex gap-3"><div class="w-14 h-14 rounded-2xl bg-white flex items-center justify-center text-[#0058bc] shrink-0 shadow-sm">${getIconSvg('lightbulb', 'w-7 h-7')}</div><div class="min-w-0"><div class="flex items-center gap-2 flex-wrap"><p class="text-sm font-bold text-[#0058bc]">Consejo Inteligente</p><span class="text-[11px] text-slate-500">• Basado en tus datos</span></div><p class="text-sm font-semibold text-[#0b1c30] mt-1">${tipTitle}</p><p class="text-sm text-slate-600 leading-relaxed mt-1">${tip}</p></div></div>
       <section class="flex flex-col gap-2"><div class="flex items-center justify-between px-1"><h2 class="text-lg font-bold">Últimos Aportes</h2><span class="text-sm font-semibold text-[#0058bc]">Registro protegido</span></div><div class="rounded-3xl bg-white px-4 shadow-sm border border-slate-200/80 divide-y divide-slate-100">${state.goalContributions.length ? state.goalContributions.slice(0, 3).map((c) => `<div class="flex items-center justify-between gap-3 py-3"><div class="flex items-center gap-3 min-w-0"><div class="w-11 h-11 rounded-full bg-[#c7f7e3] text-[#006c49] flex items-center justify-center shrink-0">${getIconSvg('wallet', 'w-5 h-5')}</div><div class="min-w-0"><p class="text-sm font-semibold truncate">${c.goalName}</p><p class="text-xs text-slate-500 mt-0.5">${c.date} • ${c.type}</p></div></div><div class="text-right shrink-0"><span class="text-base font-bold text-[#006c49]">+${formatCOP(c.amount)}</span><small class="block text-[10px] text-slate-500">COP</small></div></div>`).join('') : `<p class="py-5 text-center text-sm text-slate-500">Aún no hay aportes registrados.</p>`}</div></section>
     </div>
@@ -5155,16 +5211,18 @@ function openAporteModal(goalId) {
       return;
     }
 
+    let contributionResult;
     try {
       const result = await api.contributeToGoal(goalId, amt, 'Manual');
-      applyLocalGoalContribution(goalId, amt, 'Manual', result);
+      contributionResult = applyLocalGoalContribution(goalId, amt, 'Manual', result);
     } catch (error) {
       showToast(error.message || 'No se pudo registrar el aporte', 'error');
       return;
     }
     DOM.modalAporteGoal.classList.add('hidden');
     renderActiveView();
-    showToast(`¡Aporte de ${formatCOP(amt)} registrado para ${goal.name}!`);
+    if (contributionResult?.completed) showGoalCompletionCelebration(contributionResult.goalName);
+    else showToast(`¡Aporte de ${formatCOP(amt)} registrado para ${goal.name}!`);
   };
 }
 

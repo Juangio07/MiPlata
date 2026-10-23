@@ -1,4 +1,4 @@
-const CACHE_NAME = 'miplata-static-v99';
+const CACHE_NAME = 'miplata-static-v101';
 const APP_SHELL = [
   '/css/tailwind.generated.css?v=20261020-mutation-fast-v1',
   '/css/style.min.css?v=20261021-monthly-pdf-design-v3',
@@ -6,7 +6,7 @@ const APP_SHELL = [
   '/js/demo-login-performance.js?v=20261021-demo-login-v4',
   '/js/network-guard.js?v=20261021-network-v1',
   '/js/auth-bootstrap-guard.js?v=20261022-auth-data-first-v3',
-  '/js/app.bundle.delete-fix.js?v=20261022-delete-speed-v1',
+  '/js/app.bundle.delete-fix.js?v=20261022-goal-completion-v2',
   '/assets/optimized/Logo.png',
 ];
 
