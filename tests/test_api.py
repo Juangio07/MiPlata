@@ -154,7 +154,7 @@ class AuthApiTests(unittest.TestCase):
                 },
             )
         self.assertEqual(response.status_code, 409)
-        self.assertIn("ya está registrado", response.get_json()["error"])
+        self.assertIn("Correo ya registrado", response.get_json()["error"])
 
     def test_register_rejects_oversized_avatar(self):
         response = self.client.post(

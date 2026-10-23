@@ -507,7 +507,7 @@ def auth_register():
             ))
         except sb.SupabaseError as error:
             if _is_duplicate_email_error(error):
-                return jsonify({"error": "Este correo ya está registrado. Inicia sesión o usa otro correo."}), 409
+                return jsonify({"error": "Correo ya registrado."}), 409
             return jsonify({"error": "No se pudo crear la cuenta. Intenta nuevamente."}), 502
 
     existing = db.get_user_by_email(email)

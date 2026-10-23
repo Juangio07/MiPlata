@@ -202,6 +202,7 @@ function openDeleteConfirmationModal({ title, message, successMessage, errorMess
     const button = event.currentTarget;
     button.disabled = true;
     button.classList.add('opacity-60', 'cursor-wait');
+    button.textContent = 'Eliminando…';
     try {
       await onConfirm();
       close();
@@ -209,6 +210,7 @@ function openDeleteConfirmationModal({ title, message, successMessage, errorMess
     } catch (error) {
       button.disabled = false;
       button.classList.remove('opacity-60', 'cursor-wait');
+      button.textContent = 'Sí, eliminar';
       showToast(error.message || errorMessage, 'error');
     }
   };
@@ -3391,7 +3393,7 @@ function renderProfile() {
               <span class="text-xs font-bold text-slate-500">COP</span>
             </div>
             <p class="text-[11px] text-slate-600 mt-0.5">
-               ${budgetAdjustment.isAdjusted ? `Ajustado al ingreso registrado de ${formatCOP(budgetAdjustment.effectiveIncome)} bajo la regla 50/30/20:` : 'Distribuido bajo la regla inteligente MiPlata 50/30/20:'}
+               ${budgetAdjustment.isAdjusted ? 'Basado en el límite mensual asignado bajo la regla 50/30/20:' : 'Distribuido bajo la regla inteligente MiPlata 50/30/20:'}
             </p>
           </div>
 

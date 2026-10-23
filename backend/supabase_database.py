@@ -358,8 +358,22 @@ def update_user(user_id, updates):
 def delete_user(user_id):
     # Explicit deletes keep this safe even if a project's FK cascade differs
     # from the migration file.
-    for table in ("goal_contributions", "transactions", "fixed_obligations", "savings_goals", "category_budgets", "profiles"):
-        sb.rest_request(table, method="DELETE", params={"user_id" if table != "profiles" else "id": f"eq.{user_id}"})
+    child_tables = (
+        "goal_contributions",
+        "transactions",
+        "fixed_obligations",
+        "savings_goals",
+        "category_budgets",
+    )
+
+    def delete_child_table(table):
+        sb.rest_request(table, method="DELETE", params={"user_id": f"eq.{user_id}"})
+
+    # These tables are independent children. Delete them concurrently, then
+    # remove the profile after their foreign-key references are gone.
+    with ThreadPoolExecutor(max_workers=len(child_tables)) as pool:
+        list(pool.map(delete_child_table, child_tables))
+    sb.rest_request("profiles", method="DELETE", params={"id": f"eq.{user_id}"})
 
 
 def get_transactions(user_id, month_key=None, timeout=None):

@@ -594,9 +594,12 @@ async function userBootstrap(userId) {
 }
 
 async function deleteUserData(userId) {
-  for (const table of ['goal_contributions', 'transactions', 'fixed_obligations', 'savings_goals', 'category_budgets', 'profiles']) {
-    await restRequest(table, { method: 'DELETE', params: { [table === 'profiles' ? 'id' : 'user_id']: `eq.${userId}` } });
-  }
+  const childTables = ['goal_contributions', 'transactions', 'fixed_obligations', 'savings_goals', 'category_budgets'];
+  await Promise.all(childTables.map((table) => restRequest(table, {
+    method: 'DELETE',
+    params: { user_id: `eq.${userId}` },
+  })));
+  await restRequest('profiles', { method: 'DELETE', params: { id: `eq.${userId}` } });
 }
 
 async function handleAuth(route, request) {
@@ -692,7 +695,7 @@ async function handleAuth(route, request) {
       return json(sessionResponse(auth, profile, `¡Bienvenido a MiPlata, ${name.split(' ')[0]}! Todo listo y limpio en 0 para comenzar.`));
     } catch (error) {
       if (isDuplicateEmailError(error)) {
-        return json({ error: 'Este correo ya está registrado. Inicia sesión o usa otro correo.' }, 409);
+        return json({ error: 'Correo ya registrado.' }, 409);
       }
       return json({ error: 'No se pudo crear la cuenta. Intenta nuevamente.' }, 502);
     }

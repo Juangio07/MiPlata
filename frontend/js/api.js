@@ -424,7 +424,7 @@ export const api = {
       body: JSON.stringify({ name, email, password, monthlySalary, avatarUrl }),
     }, false);
     if (res.status === 409) {
-      throw new Error('Este correo ya está registrado. Inicia sesión o usa otro correo.');
+      throw new Error('Correo ya registrado.');
     }
     if (!res.ok) throw new Error(await readError(res, 'Error al crear cuenta'));
     const data = await res.json();
@@ -475,7 +475,12 @@ export const api = {
     const res = await request('/api/user/profile', { method: 'PUT', body: JSON.stringify(updates) });
     if (!res.ok) throw new Error(await readError(res, 'Error al actualizar perfil'));
     const data = await res.json();
-    if (data.user) localStorage.setItem('miplata_user_cache', JSON.stringify(data.user));
+    if (data.user) {
+      localStorage.setItem('miplata_user_cache', JSON.stringify(data.user));
+      // Profile mutations must not be overwritten by the previous bootstrap
+      // snapshot when refreshAllData loads the updated state.
+      localStorage.removeItem(BOOTSTRAP_CACHE_KEY);
+    }
     return data;
   },
 
