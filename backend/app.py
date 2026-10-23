@@ -3,8 +3,11 @@ import io
 import csv
 import math
 import re
+import time
+from copy import deepcopy
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
+from threading import Lock
 from flask import Flask, request, jsonify, send_from_directory, send_file, make_response
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -39,11 +42,22 @@ SUPABASE_ENABLED = bool(
 if SUPABASE_ENABLED:
     import supabase_client as sb
     import supabase_database as db
+    import database as local_db
 else:
     import database as db
+    local_db = db
 
 app = Flask(__name__, static_folder=FRONTEND_DIR)
 app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024
+MAX_EMBEDDED_IMAGE_DATA_URL_LENGTH = 600000
+
+# Demo data is a shared, read-only seed. The browser keeps demo interactions
+# in memory, so rebuilding the same Supabase rows on every login only adds
+# latency and creates unnecessary concurrent writes. Cache the verified seed
+# per process/month and initialize it only when it is missing.
+_demo_bootstrap_cache = None
+_demo_bootstrap_cache_key = None
+_demo_bootstrap_lock = Lock()
 
 DEFAULT_CORS_ORIGINS = {
     "http://127.0.0.1:5000",
@@ -76,6 +90,10 @@ def add_cors_headers(response):
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     if request.path.startswith("/api/"):
         response.headers["Cache-Control"] = "no-store"
+    elif request.path == "/" or request.path.endswith(".html"):
+        # Always revalidate the app shell so browsers do not keep an older
+        # JavaScript bundle after a local restart or deployment.
+        response.headers["Cache-Control"] = "no-store, max-age=0"
     elif request.path.startswith(("/js/", "/css/", "/assets/")):
         response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
     return response
@@ -122,6 +140,91 @@ def _session_response(auth_data, profile, message):
         if auth_data.get(key) is not None
     }
     return {"user": profile, "session": session, **session, "message": message}
+
+
+def _profile_from_auth_user(auth_user, fallback_email="", monthly_salary=0):
+    """Build a minimal profile when Supabase data is temporarily unavailable.
+
+    Authentication has already succeeded at this point. Returning the
+    identity from Auth lets the browser keep the session and retry the data
+    bootstrap instead of turning a transient profile-read failure into a
+    failed login.
+    """
+    metadata = auth_user.get("user_metadata") or {}
+    return {
+        "id": auth_user.get("id"),
+        "name": metadata.get("name") or "MiPlata",
+        "email": auth_user.get("email") or fallback_email,
+        "password": None,
+        "avatarUrl": metadata.get("avatar_url") or "",
+        "plan": "Plan Personal Activo",
+        "memberSince": "",
+        "isLocalOnly": False,
+        "monthlySalary": monthly_salary or 0,
+        "initialBalance": 0,
+        "monthlyBudgetLimit": monthly_salary or 0,
+        "budgetRule": {"needs": 50, "wants": 30, "savings": 20},
+        "alert80Percent": True,
+        "autoAdjustVariable": True,
+        "currency": "COP",
+        "quickKeypad": True,
+        "resetDay": 1,
+        "smartCategorization": True,
+    }
+
+
+def _auth_request_with_retry(operation):
+    """Retry only transient Supabase auth connection failures.
+
+    Invalid credentials and provider HTTP errors must be returned immediately;
+    only transport failures (which have no HTTP status) are safe to retry.
+    """
+    try:
+        return operation()
+    except sb.SupabaseError as error:
+        if error.status is not None:
+            raise
+        time.sleep(0.15)
+        return operation()
+
+
+def _minimal_bootstrap(profile):
+    return {
+        "user": profile,
+        "transactions": [],
+        "fixedObligations": [],
+        "savingsGoals": [],
+        "goalContributions": [],
+        "categoryBudgets": [],
+        "availableMonths": [],
+    }
+
+
+def _local_demo_bootstrap(auth_user_id):
+    """Build the demo seed locally so demo entry does not wait on Supabase reads."""
+    local_db.init_db()
+    local_db.ensure_demo_user()
+    local_user = local_db.get_user_by_id(local_db.DEMO_USER_ID)
+    if not local_user:
+        raise RuntimeError("No se pudo preparar la semilla demo local")
+
+    local_user = deepcopy(local_user)
+    local_user["id"] = auth_user_id
+    current_month = local_db.get_current_month_key()
+    bootstrap = {
+        "user": local_user,
+        "transactions": local_db.get_transactions(local_db.DEMO_USER_ID, current_month),
+        "fixedObligations": local_db.get_fixed_obligations(local_db.DEMO_USER_ID),
+        "savingsGoals": local_db.get_savings_goals(local_db.DEMO_USER_ID),
+        "goalContributions": local_db.get_goal_contributions(local_db.DEMO_USER_ID, current_month),
+        "categoryBudgets": local_db.get_category_budgets(local_db.DEMO_USER_ID),
+        "availableMonths": local_db.get_record_months(local_db.DEMO_USER_ID),
+    }
+    for key in ("transactions", "fixedObligations", "savingsGoals", "goalContributions", "categoryBudgets"):
+        for row in bootstrap[key]:
+            if isinstance(row, dict) and "userId" in row:
+                row["userId"] = auth_user_id
+    return bootstrap
 
 
 def _is_valid_email(email):
@@ -171,15 +274,22 @@ def _is_duplicate_email_error(error):
 
 
 def _available_cash_for_user(user_id):
-    """Return cash that can still be reserved for a savings goal.
+    """Return the current available balance for a savings goal.
 
-    Savings contributions are reservations, not expenses, so they must be
-    included in this calculation without creating a transaction.
+    Only recorded expenses and current-month goal contributions reduce this
+    balance. Pending fixed obligations are not deducted until the user pays
+    them and the linked expense transaction is created.
     """
-    user = db.get_user_by_id(user_id) or {}
     current_month = datetime.now().strftime("%Y-%m")
-    transactions = db.get_transactions(user_id) or []
-    goals = db.get_savings_goals(user_id) or []
+    if SUPABASE_ENABLED:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            transactions_future = pool.submit(db.get_transactions, user_id, current_month)
+            contributions_future = pool.submit(db.get_goal_contributions, user_id, current_month)
+            transactions = transactions_future.result() or []
+            contributions = contributions_future.result() or []
+    else:
+        transactions = db.get_transactions(user_id, current_month) or []
+        contributions = db.get_goal_contributions(user_id, current_month) or []
 
     total_income = sum(
         float(transaction.get("amount") or 0)
@@ -193,9 +303,8 @@ def _available_cash_for_user(user_id):
         if transaction.get("type") == "gasto"
         and str(transaction.get("date") or "").startswith(current_month)
     )
-    total_savings = sum(float(goal.get("currentAmount") or 0) for goal in goals)
-    initial_balance = float(user.get("initialBalance") or 0)
-    return max(0, initial_balance + total_income - total_expenses - total_savings)
+    total_savings = sum(float(contribution.get("amount") or 0) for contribution in contributions)
+    return max(0, total_income - total_expenses - total_savings)
 
 # --- Static Frontend Serving ---
 @app.route("/")
@@ -229,25 +338,46 @@ def auth_demo():
         demo_password = "MiPlataDemo2026!"
         try:
             try:
-                sb.auth_admin_create_user(demo_email, demo_password, "Fixelar")
-            except sb.SupabaseError as error:
-                # A second click should reuse the same demo account.
-                if error.status not in (400, 409, 422):
+                # Existing demo accounts can sign in directly. Creating an
+                # Auth user first made every demo access perform an admin API
+                # request, even when the account was already configured.
+                auth_data = _auth_request_with_retry(
+                    lambda: sb.auth_sign_in(demo_email, demo_password)
+                )
+            except sb.SupabaseError as sign_in_error:
+                if sign_in_error.status not in (400, 404):
                     raise
-            auth_data = sb.auth_sign_in(demo_email, demo_password)
+                try:
+                    sb.auth_admin_create_user(demo_email, demo_password, "Fixelar")
+                except sb.SupabaseError as create_error:
+                    # Another request may have created the shared account in
+                    # the meantime; the sign-in below is the source of truth.
+                    if create_error.status not in (400, 409, 422):
+                        raise
+                auth_data = _auth_request_with_retry(
+                    lambda: sb.auth_sign_in(demo_email, demo_password)
+                )
             auth_user = auth_data.get("user") or {}
-            profile = db.initialize_registered_user(
-                auth_user.get("id"),
-                "Fixelar",
-                demo_email,
-                2000000,
-                "",
-                apply_default_preferences=False,
-            )
-            db.ensure_demo_data(auth_user.get("id"))
+            try:
+                # Demo interactions are intentionally session-only in the
+                # browser. Use the local seed for the initial screen so every
+                # visitor gets the demo immediately, even when a Supabase
+                # table read is temporarily slow or unavailable.
+                bootstrap = _local_demo_bootstrap(auth_user.get("id"))
+                profile = bootstrap["user"]
+            except Exception as error:
+                app.logger.warning("Local demo bootstrap failed: %s", error)
+                profile = _profile_from_auth_user(auth_user, demo_email, 2000000)
+                try:
+                    bootstrap = get_demo_bootstrap(auth_user.get("id"), known_user=profile)
+                except sb.SupabaseError as bootstrap_error:
+                    # Authentication succeeded. Keep the session usable even
+                    # if the secondary demo-data read is unavailable.
+                    app.logger.warning("Demo bootstrap failed: %s", bootstrap_error)
+                    bootstrap = _minimal_bootstrap(profile)
             return jsonify({
                 **_session_response(auth_data, profile, "Sesión de demostración iniciada"),
-                "bootstrap": get_bootstrap_payload(auth_user.get("id")),
+                "bootstrap": bootstrap,
             })
         except sb.SupabaseError as error:
             return jsonify({"error": str(error)}), 502
@@ -271,19 +401,22 @@ def auth_login():
         if not email or not password:
             return jsonify({"error": "Correo y contraseña son requeridos"}), 400
         try:
-            auth_data = sb.auth_sign_in(email.strip().lower(), password)
-            auth_user = auth_data.get("user") or {}
-            metadata = auth_user.get("user_metadata") or {}
-            profile = db.ensure_user_defaults(
-                auth_user.get("id"),
-                metadata.get("name") or "MiPlata",
-                auth_user.get("email") or email.strip().lower(),
-                None,
-                metadata.get("avatar_url") or "",
+            auth_data = _auth_request_with_retry(
+                lambda: sb.auth_sign_in(email.strip().lower(), password)
             )
+            auth_user = auth_data.get("user") or {}
+            # Do not make a second Supabase REST request before responding to
+            # the login. The browser loads the complete profile and current
+            # data through /api/bootstrap immediately in the background. This
+            # keeps the first screen responsive on slower mobile connections.
+            profile = _profile_from_auth_user(auth_user, email.strip().lower())
             return jsonify(_session_response(auth_data, profile, f"¡Bienvenido de nuevo, {profile['name'].split()[0]}!"))
         except sb.SupabaseError as error:
-            return jsonify({"error": "Correo o contraseña incorrectos"}), 401 if error.status in (400, 401) else 502
+            if error.status in (400, 401):
+                return jsonify({
+                    "error": "Correo o contraseña incorrectos."
+                }), 400
+            return jsonify({"error": "No se pudo iniciar sesión. Intenta nuevamente."}), 502
 
     user = db.get_user_by_email(email)
     if user and password and user.get("password") == password:
@@ -344,6 +477,8 @@ def auth_register():
     password = str(data.get("password") or "")
     monthly_salary = data.get("monthlySalary", 0)
     avatar_url = data.get("avatarUrl", "")
+    if str(avatar_url or "").startswith("data:") and len(str(avatar_url)) > MAX_EMBEDDED_IMAGE_DATA_URL_LENGTH:
+        return jsonify({"error": "La imagen es demasiado grande. Elige una imagen más pequeña"}), 400
 
     if not name:
         return jsonify({"error": "El nombre es requerido"}), 400
@@ -368,11 +503,11 @@ def auth_register():
             return jsonify(_session_response(
                 auth_data,
                 profile,
-                f"¡Bienvenido a MiPlata, {name.split()[0]}! Todo listo y limpio en 0 para comenzar.",
+                f"¡Cuenta creada, {name.split()[0]}!",
             ))
         except sb.SupabaseError as error:
             if _is_duplicate_email_error(error):
-                return jsonify({"error": "Este correo ya está registrado. Inicia sesión o usa otro correo."}), 409
+                return jsonify({"error": "Correo ya registrado."}), 409
             return jsonify({"error": "No se pudo crear la cuenta. Intenta nuevamente."}), 502
 
     existing = db.get_user_by_email(email)
@@ -380,7 +515,7 @@ def auth_register():
         return jsonify({"error": "Ya existe una cuenta con este correo"}), 409
 
     user = db.create_user(name, email, password, monthly_salary, avatar_url)
-    return jsonify({"user": user, "message": f"¡Bienvenido a MiPlata, {user['name'].split()[0]}! Todo listo y limpio en 0 para comenzar."})
+    return jsonify({"user": user, "message": f"¡Cuenta creada, {user['name'].split()[0]}!"})
 
 @app.route("/api/auth/logout", methods=["POST"])
 def auth_logout():
@@ -420,30 +555,94 @@ def get_user():
     user = db.get_user_by_id(user_id)
     return jsonify({"user": user})
 
-def get_bootstrap_payload(user_id):
+def get_bootstrap_payload(user_id, known_user=None):
     current_month = db.get_current_month_key()
     # Supabase calls are independent reads. Keep one browser request while
     # fetching them concurrently so slower mobile connections do not wait for
     # each table one after another. Only the active month is sent here; older
     # months are loaded on demand from the report endpoint.
+    def safe_read(label, reader, default):
+        try:
+            return reader() or default
+        except Exception as error:
+            app.logger.warning("Bootstrap read %s failed: %s", label, error)
+            return default
+
     if SUPABASE_ENABLED:
+        bootstrap_timeout = getattr(sb, "SUPABASE_BOOTSTRAP_TIMEOUT", 3.5)
         with ThreadPoolExecutor(max_workers=7) as pool:
-            user_future = pool.submit(db.get_user_by_id, user_id)
-            transactions_future = pool.submit(db.get_transactions, user_id, current_month)
-            fixed_future = pool.submit(db.get_fixed_obligations, user_id)
-            goals_future = pool.submit(db.get_savings_goals, user_id)
-            contributions_future = pool.submit(db.get_goal_contributions, user_id, current_month)
-            budgets_future = pool.submit(db.get_category_budgets, user_id)
-            months_future = pool.submit(db.get_record_months, user_id)
-            user = user_future.result()
+            user_future = None if known_user is not None else pool.submit(
+                safe_read, "perfil", lambda: db.get_user_by_id(user_id, timeout=bootstrap_timeout), None
+            )
+            transactions_future = pool.submit(
+                safe_read,
+                "movimientos",
+                lambda: db.get_transactions(user_id, current_month, timeout=bootstrap_timeout),
+                [],
+            )
+            fixed_future = pool.submit(
+                safe_read,
+                "gastos fijos",
+                lambda: db.get_fixed_obligations(user_id, timeout=bootstrap_timeout),
+                [],
+            )
+            goals_future = pool.submit(
+                safe_read,
+                "metas",
+                lambda: db.get_savings_goals(
+                    user_id,
+                    sync_current_amount=False,
+                    timeout=bootstrap_timeout,
+                ),
+                [],
+            )
+            contributions_future = pool.submit(
+                safe_read,
+                "aportes",
+                lambda: db.get_goal_contributions(user_id, timeout=bootstrap_timeout),
+                None,
+            )
+            budgets_future = pool.submit(
+                safe_read,
+                "presupuestos",
+                lambda: db.get_category_budgets(user_id, timeout=bootstrap_timeout),
+                [],
+            )
+            months_future = pool.submit(
+                safe_read,
+                "meses",
+                lambda: db.get_record_months(user_id, timeout=bootstrap_timeout),
+                [],
+            )
+            user = known_user if known_user is not None else user_future.result()
             transactions = transactions_future.result()
             fixed_obligations = fixed_future.result()
             savings_goals = goals_future.result()
-            goal_contributions = contributions_future.result()
+            all_goal_contributions = contributions_future.result()
+            goal_contributions = [
+                contribution
+                for contribution in (all_goal_contributions or [])
+                if str(contribution.get("date") or "").startswith(current_month)
+            ]
+            if all_goal_contributions:
+                goal_totals = {}
+                for contribution in all_goal_contributions:
+                    goal_id = str(contribution.get("goalId") or "")
+                    if goal_id:
+                        goal_totals[goal_id] = goal_totals.get(goal_id, 0) + float(
+                            contribution.get("amount") or 0
+                        )
+                savings_goals = [
+                    {
+                        **goal,
+                        "currentAmount": goal_totals.get(str(goal.get("id")), goal.get("currentAmount", 0)),
+                    }
+                    for goal in savings_goals
+                ]
             category_budgets = budgets_future.result()
             available_months = months_future.result()
     else:
-        user = db.get_user_by_id(user_id)
+        user = known_user if known_user is not None else db.get_user_by_id(user_id)
         transactions = db.get_transactions(user_id, current_month)
         fixed_obligations = db.get_fixed_obligations(user_id)
         savings_goals = db.get_savings_goals(user_id)
@@ -461,6 +660,51 @@ def get_bootstrap_payload(user_id):
         "availableMonths": sorted(set([current_month, *(available_months or [])]), reverse=True),
     }
 
+
+def _demo_bootstrap_is_ready(bootstrap):
+    return bool(bootstrap) and all(
+        bootstrap.get(key)
+        for key in (
+            "transactions",
+            "fixedObligations",
+            "savingsGoals",
+            "goalContributions",
+            "categoryBudgets",
+        )
+    )
+
+
+def get_demo_bootstrap(user_id, known_user=None):
+    """Return the shared demo seed without rebuilding it on every login."""
+    global _demo_bootstrap_cache, _demo_bootstrap_cache_key
+
+    cache_key = (str(user_id), db.get_current_month_key())
+    with _demo_bootstrap_lock:
+        if _demo_bootstrap_cache_key == cache_key and _demo_bootstrap_cache:
+            return deepcopy(_demo_bootstrap_cache)
+
+        bootstrap = get_bootstrap_payload(user_id, known_user=known_user)
+        if not _demo_bootstrap_is_ready(bootstrap):
+            try:
+                db.ensure_demo_data(user_id)
+                bootstrap = get_bootstrap_payload(user_id, known_user=known_user)
+            except sb.SupabaseError as error:
+                # Do not turn a successful demo authentication into a 502 just
+                # because one secondary seed/read is temporarily unavailable.
+                # Keep the last coherent seed when available; otherwise return
+                # a usable, explicitly empty bootstrap for a later retry.
+                app.logger.warning("Demo seed refresh failed: %s", error)
+                if _demo_bootstrap_cache:
+                    return deepcopy(_demo_bootstrap_cache)
+                bootstrap = bootstrap or _minimal_bootstrap(known_user)
+
+        if not bootstrap.get("user") and known_user:
+            bootstrap["user"] = known_user
+
+        _demo_bootstrap_cache_key = cache_key
+        _demo_bootstrap_cache = deepcopy(bootstrap)
+        return deepcopy(bootstrap)
+
 @app.route("/api/bootstrap", methods=["GET"])
 def bootstrap():
     user_id = get_current_user_id_from_req()
@@ -474,6 +718,9 @@ def update_profile():
     if not user_id:
         return jsonify({"error": "No autorizado"}), 401
     data = request.get_json() or {}
+    avatar_url = str(data.get("avatarUrl") or "")
+    if avatar_url.startswith("data:") and len(avatar_url) > MAX_EMBEDDED_IMAGE_DATA_URL_LENGTH:
+        return jsonify({"error": "La imagen es demasiado grande. Elige una imagen más pequeña"}), 400
     updated = db.update_user(user_id, data)
     return jsonify({"user": updated, "message": "Perfil actualizado"})
 
@@ -503,6 +750,9 @@ def delete_account():
     user_id = get_current_user_id_from_req()
     if not user_id:
         return jsonify({"error": "No autorizado"}), 401
+    account = get_auth_user_from_req() if SUPABASE_ENABLED else db.get_user_by_id(user_id)
+    if ((account or {}).get("email") or "").strip().lower() == "demo@miplata.app":
+        return jsonify({"error": "La cuenta demo está protegida y no se puede eliminar"}), 403
     db.delete_user(user_id)
     if SUPABASE_ENABLED:
         try:
@@ -597,6 +847,13 @@ def toggle_fixed_obligation(item_id):
     user_id = get_current_user_id_from_req()
     if not user_id:
         return jsonify({"error": "No autorizado"}), 401
+    obligations = db.get_fixed_obligations(user_id) or []
+    obligation = next((item for item in obligations if str(item.get("id")) == str(item_id)), None)
+    if obligation and obligation.get("status") != "paid":
+        available_cash = _available_cash_for_user(user_id)
+        amount = float(obligation.get("amount") or 0)
+        if amount > available_cash:
+            return jsonify({"error": f"Saldo insuficiente. Disponible: ${available_cash:,.0f} COP"}), 400
     res = db.toggle_pay_fixed_obligation(user_id, item_id)
     if not res:
         return jsonify({"error": "Obligación no encontrada"}), 404
@@ -618,6 +875,9 @@ def add_savings_goal():
     if not user_id:
         return jsonify({"error": "No autorizado"}), 401
     data = request.get_json() or {}
+    image_url = str(data.get("imageUrl") or "")
+    if image_url.startswith("data:") and len(image_url) > MAX_EMBEDDED_IMAGE_DATA_URL_LENGTH:
+        return jsonify({"error": "La imagen es demasiado grande. Elige una imagen más pequeña"}), 400
     target_amount = _parse_amount(data.get("targetAmount"), allow_zero=False)
     if not str(data.get("name") or "").strip() or target_amount is None:
         return jsonify({"error": "El nombre y el valor objetivo de la meta son requeridos"}), 400
@@ -633,6 +893,9 @@ def update_savings_goal(goal_id):
     if not user_id:
         return jsonify({"error": "No autorizado"}), 401
     data = request.get_json() or {}
+    image_url = str(data.get("imageUrl") or "")
+    if image_url.startswith("data:") and len(image_url) > MAX_EMBEDDED_IMAGE_DATA_URL_LENGTH:
+        return jsonify({"error": "La imagen es demasiado grande. Elige una imagen más pequeña"}), 400
     if "deadline" in data and _is_past_goal_month(data.get("deadline")):
         return jsonify({"error": "La fecha límite debe ser el mes actual o un mes futuro"}), 400
     db.update_savings_goal(user_id, goal_id, data)

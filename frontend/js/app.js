@@ -4,7 +4,7 @@
  * Faithfully matches original MiPla design, features, and workflows
  */
 
-import { api } from './api.js';
+import { api, isDemoUser } from './api.js';
 import { 
   formatCOP, 
   formatCompactCOP, 
@@ -32,6 +32,7 @@ import {
   getDynamicGreetingStatus,
   getTimeSlotInfo 
 } from './insights.js';
+import { isGoalCompleted, getGoalCompletionDate } from './goal-history.js';
 
 // Global Application State
 const state = {
@@ -71,8 +72,21 @@ const state = {
   activeTipIndex: 0,
 };
 
+// Only ordinary, variable expenses participate in the monthly category
+// budgets. Fixed obligations and goal contributions have their own modules
+// and must not trigger a category-budget alert.
+const CATEGORY_BUDGET_CATEGORIES = [
+  'Alimentación',
+  'Compras',
+  'Educación',
+  'Entretenimiento',
+  'Transporte',
+];
+
 let lastLoadedMonthKey = getCurrentMonthKey();
 let monthlyRolloverTimer = null;
+let mutationReconcileTimer = null;
+let localMutationVersion = 0;
 
 // Initial DOM Selectors
 const DOM = {
@@ -118,6 +132,30 @@ const DOM = {
   toastText: document.getElementById('toast-text'),
 };
 
+window.addEventListener('miplata:auth-expired', () => {
+  state.currentUser = null;
+  state.transactions = [];
+  state.fixedObligations = [];
+  state.savingsGoals = [];
+  state.goalContributions = [];
+  state.categoryBudgets = [];
+  state.availableMonths = [];
+  state.monthlyReports = {};
+  [
+    DOM.modalQuickAdd,
+    DOM.modalSearch,
+    DOM.modalFixedObligation,
+    DOM.modalSavingsGoal,
+    DOM.modalAporteGoal,
+    DOM.modalEditTransaction,
+    DOM.modalEditProfile,
+    DOM.modalEditBudget,
+    DOM.modalConfirmDelete,
+  ].forEach((modal) => modal?.classList.add('hidden'));
+  renderApp();
+  showToast('Tu sesión expiró. Ingresa nuevamente para continuar.', 'error');
+});
+
 // Toast Helper
 let toastTimeout = null;
 export function showToast(message, type = 'success') {
@@ -136,6 +174,47 @@ export function showToast(message, type = 'success') {
   toastTimeout = setTimeout(() => {
     DOM.toastContainer.classList.add('hidden');
   }, 3200);
+}
+
+function openDeleteConfirmationModal({ title, message, successMessage, errorMessage, onConfirm }) {
+  DOM.modalConfirmDelete.classList.remove('hidden');
+  DOM.modalConfirmDelete.innerHTML = `
+    <div class="bg-white rounded-3xl p-6 max-w-sm w-full shadow-2xl flex flex-col gap-4 text-center">
+      <div class="w-12 h-12 rounded-full bg-rose-100 text-rose-600 flex items-center justify-center mx-auto">
+        ${getIconSvg('alertTriangle', 'w-6 h-6')}
+      </div>
+      <div>
+        <h3 id="delete-confirm-title" class="font-bold text-base text-[#0b1c30]"></h3>
+        <p id="delete-confirm-message" class="text-xs text-slate-500 mt-1"></p>
+      </div>
+      <div class="flex items-center gap-2 pt-2">
+        <button id="btn-cancel-delete" type="button" class="flex-1 py-2 rounded-xl bg-slate-100 text-slate-700 text-xs font-semibold cursor-pointer">Cancelar</button>
+        <button id="btn-confirm-delete" type="button" class="flex-1 py-2 rounded-xl bg-rose-600 text-white text-xs font-semibold cursor-pointer">Sí, eliminar</button>
+      </div>
+    </div>
+  `;
+
+  document.getElementById('delete-confirm-title').textContent = title;
+  document.getElementById('delete-confirm-message').textContent = message;
+
+  const close = () => DOM.modalConfirmDelete.classList.add('hidden');
+  document.getElementById('btn-cancel-delete').onclick = close;
+  document.getElementById('btn-confirm-delete').onclick = async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    button.classList.add('opacity-60', 'cursor-wait');
+    button.textContent = 'Eliminando…';
+    try {
+      await onConfirm();
+      close();
+      showToast(successMessage);
+    } catch (error) {
+      button.disabled = false;
+      button.classList.remove('opacity-60', 'cursor-wait');
+      button.textContent = 'Sí, eliminar';
+      showToast(error.message || errorMessage, 'error');
+    }
+  };
 }
 
 // Avatar Helper
@@ -284,13 +363,13 @@ function normalizeRecordTimestamp(value) {
 
 function getRecordSortParts(record) {
   const date = String(record.date || '').slice(0, 10);
-  const time = String(record.time || '').slice(0, 8);
+  const time = String(record.time || '').trim();
   const dayTimestamp = /^\d{4}-\d{2}-\d{2}$/.test(date)
     ? Date.parse(`${date}T00:00:00`)
     : 0;
-  const hasTime = /^\d{2}:\d{2}/.test(time);
+  const hasTime = /^\d{1,2}:\d{2}(?::\d{2})?(?:\s*[AP]M)?$/i.test(time);
   const explicitTimestamp = hasTime && dayTimestamp
-    ? Date.parse(`${date}T${time}`)
+    ? (Date.parse(`${date}T${time}`) || Date.parse(`${date} ${time}`))
     : 0;
   const createdAt = normalizeRecordTimestamp(record.createdAt);
   const createdAtDate = createdAt ? new Date(createdAt).toISOString().slice(0, 10) : '';
@@ -299,8 +378,27 @@ function getRecordSortParts(record) {
   return {
     dayTimestamp: dayTimestamp || executionTimestamp,
     executionTimestamp,
+    explicitTimestamp,
     createdAt,
   };
+}
+
+function compareRecordsByRecency(left, right) {
+  const leftParts = getRecordSortParts(left);
+  const rightParts = getRecordSortParts(right);
+  const dayOrder = rightParts.dayTimestamp - leftParts.dayTimestamp;
+  if (dayOrder) return dayOrder;
+
+  // When movements share the same date, the actual creation moment is the
+  // most reliable indicator of which one was registered last. The displayed
+  // time can be missing or arrive in different formats depending on the data
+  // source, so keep it as a fallback instead of the primary tie-breaker.
+  const leftActivity = leftParts.createdAt || leftParts.explicitTimestamp || leftParts.executionTimestamp;
+  const rightActivity = rightParts.createdAt || rightParts.explicitTimestamp || rightParts.executionTimestamp;
+  return rightActivity - leftActivity
+    || rightParts.executionTimestamp - leftParts.executionTimestamp
+    || rightParts.createdAt - leftParts.createdAt
+    || String(right.id || '').localeCompare(String(left.id || ''));
 }
 
 function getRecordIcon(tx, className = 'w-5 h-5') {
@@ -354,13 +452,7 @@ function getMonthlyRecords(monthKey) {
   return [
     ...transactions,
     ...getGoalContributionRecords(monthKey, contributions),
-  ].sort((a, b) => {
-    const left = getRecordSortParts(a);
-    const right = getRecordSortParts(b);
-    return right.dayTimestamp - left.dayTimestamp
-      || right.executionTimestamp - left.executionTimestamp
-      || right.createdAt - left.createdAt;
-  });
+  ].sort(compareRecordsByRecency);
 }
 
 function getConfiguredMonthlyIncome(user = state.currentUser) {
@@ -419,10 +511,13 @@ function getBudgetAdjustment(monthKey = state.selectedMonth, user = state.curren
 
 function getEffectiveCategoryBudgets(monthKey = state.selectedMonth) {
   const adjustment = getBudgetAdjustment(monthKey);
-  return state.categoryBudgets.map((budget) => ({
-    ...budget,
-    limit: Math.max(0, Math.round((Number(budget.limit) || 0) * adjustment.categoryScale)),
-  }));
+  return state.categoryBudgets
+    .filter((budget) => CATEGORY_BUDGET_CATEGORIES.includes(budget.category))
+    .sort((left, right) => CATEGORY_BUDGET_CATEGORIES.indexOf(left.category) - CATEGORY_BUDGET_CATEGORIES.indexOf(right.category))
+    .map((budget) => ({
+      ...budget,
+      limit: Math.max(0, Math.round((Number(budget.limit) || 0) * adjustment.categoryScale)),
+    }));
 }
 
 function computeMetrics() {
@@ -457,15 +552,18 @@ function computeMetrics() {
     .filter((transaction) => transaction.isGoalContribution)
     .reduce((sum, transaction) => sum + transaction.amount, 0);
 
-  const baseBalance = currentUser?.initialBalance || 0;
-  // Pending fixed obligations remain visible as "Por Pagar" and do not reduce
-  // this balance until they are actually paid and recorded as an expense.
   // Goal contributions are virtual expense records in monthTransactions, so
-  // subtracting the accumulated goal balance here would count them twice.
-  const availableCash = Math.max(0, baseBalance + totalIncome - totalExpenses);
+  // they are already included in totalExpenses. The same real available
+  // balance is used by the dashboard, goal contributions and smart advice.
+  // Pending fixed obligations do not reduce this value until they are paid
+  // and their expense is registered.
+  const availableCash = Math.max(0, totalIncome - totalExpenses);
 
   const budgetAdjustment = getBudgetAdjustment(selectedMonth, currentUser);
-  const monthlyBudgetLimit = budgetAdjustment.monthlyBudgetLimit;
+  // The monthly dashboard budget represents the money actually received in
+  // the selected month. The profile limit remains available for planning and
+  // the 50/30/20 rules, but it must not inflate the real remaining balance.
+  const monthlyBudgetLimit = totalIncome > 0 ? totalIncome : 0;
   const monthlyBudgetSpent = totalExpenses;
   const monthlyBudgetRemaining = Math.max(0, monthlyBudgetLimit - monthlyBudgetSpent);
   const monthlyBudgetPercent = monthlyBudgetLimit > 0 ? Math.min(100, Math.round((monthlyBudgetSpent / monthlyBudgetLimit) * 100)) : 0;
@@ -535,12 +633,16 @@ function handleInsightAlertAction(button) {
 
   if (focusTarget === 'balance') {
     const focusBalance = () => {
-      document.getElementById('dashboard-balance-card')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      const balanceCard = document.getElementById('dashboard-balance-card');
+      if (!balanceCard) return;
+      balanceCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      balanceCard.classList.add('ring-2', 'ring-blue-200');
+      window.setTimeout(() => balanceCard.classList.remove('ring-2', 'ring-blue-200'), 1200);
     };
 
     if (state.activeTab !== 'inicio') {
-      switchTab(targetTab);
-      requestAnimationFrame(focusBalance);
+      switchTab('inicio');
+      requestAnimationFrame(() => window.setTimeout(focusBalance, 0));
     } else {
       focusBalance();
     }
@@ -602,19 +704,183 @@ function syncGoalAmountsWithContributions(goals, contributions) {
   }));
 }
 
-async function refreshAllData() {
+async function refreshAllData(expectedMutationVersion = null) {
   try {
     const data = await api.getBootstrap();
     if (!data?.user) {
       state.currentUser = null;
+      renderApp();
       return false;
     }
+    if (expectedMutationVersion !== null && expectedMutationVersion !== localMutationVersion) return false;
     lastLoadedMonthKey = getCurrentMonthKey();
     return applyBootstrapData(data);
   } catch (err) {
     console.error('Error fetching data from backend', err);
     return false;
   }
+}
+
+function registerLocalMutation(...records) {
+  localMutationVersion += 1;
+  state.monthlyReports = {};
+  const monthKeys = new Set([getCurrentMonthKey(), ...(state.availableMonths || [])]);
+  records.flat().forEach((record) => {
+    const monthKey = String(record?.date || '').slice(0, 7);
+    if (/^\d{4}-\d{2}$/.test(monthKey)) monthKeys.add(monthKey);
+  });
+  state.availableMonths = [...monthKeys].sort((left, right) => right.localeCompare(left));
+  // Demo data is intentionally session-scoped. Its API client already keeps
+  // mutations in memory, so reconciling with the seed would undo the user's
+  // changes before the page is reloaded or the session ends.
+  if (isDemoAccountState()) return;
+  scheduleMutationReconcile();
+}
+
+function scheduleMutationReconcile() {
+  if (mutationReconcileTimer) window.clearTimeout(mutationReconcileTimer);
+  const expectedMutationVersion = localMutationVersion;
+  mutationReconcileTimer = window.setTimeout(async () => {
+    mutationReconcileTimer = null;
+    const refreshed = await refreshAllData(expectedMutationVersion);
+    if (refreshed) renderActiveView();
+    else if (expectedMutationVersion !== localMutationVersion) scheduleMutationReconcile();
+  }, 1500);
+}
+
+function applyLocalTransaction(tx, response = {}) {
+  const transaction = {
+    ...tx,
+    id: response.id || tx.id || `tx_local_${Date.now()}`,
+    userId: state.currentUser?.id,
+    amount: Number(tx.amount) || 0,
+    createdAt: tx.createdAt || Date.now(),
+  };
+  state.transactions = [...state.transactions.filter((item) => item.id !== transaction.id), transaction];
+  registerLocalMutation(transaction);
+  return transaction;
+}
+
+function updateLocalTransaction(id, updates) {
+  state.transactions = state.transactions.map((item) => item.id === id ? { ...item, ...updates } : item);
+  registerLocalMutation();
+}
+
+function upsertLocalFixedObligation(item, id = null) {
+  const obligation = {
+    ...item,
+    id: id || item.id || `fix_local_${Date.now()}`,
+    userId: state.currentUser?.id,
+    amount: Number(item.amount) || 0,
+    paidDate: item.paidDate || null,
+  };
+  state.fixedObligations = [...state.fixedObligations.filter((entry) => entry.id !== obligation.id), obligation];
+  registerLocalMutation();
+  return obligation;
+}
+
+function updateLocalFixedObligation(id, updates) {
+  state.fixedObligations = state.fixedObligations.map((item) => item.id === id ? { ...item, ...updates } : item);
+  registerLocalMutation();
+}
+
+function removeLocalFixedObligation(id) {
+  state.fixedObligations = state.fixedObligations.filter((item) => item.id !== id);
+  state.transactions = state.transactions.filter((item) => item.fixedObligationId !== id);
+  registerLocalMutation();
+}
+
+function applyLocalFixedToggle(id, result = {}) {
+  const obligation = state.fixedObligations.find((item) => item.id === id);
+  if (!obligation) return;
+  const isPaid = Boolean(result.isPaid);
+  const paidDate = isPaid ? getTodayISODate() : null;
+  state.fixedObligations = state.fixedObligations.map((item) => item.id === id
+    ? { ...item, status: isPaid ? 'paid' : 'pending', paidDate }
+    : item);
+  if (isPaid && !state.transactions.some((item) => item.fixedObligationId === id)) {
+    state.transactions = [...state.transactions, {
+      id: result.transactionId || `tx_fix_${id}_local_${Date.now()}`,
+      userId: state.currentUser?.id,
+      type: 'gasto',
+      amount: Number(obligation.amount) || 0,
+      category: obligation.category,
+      description: `${obligation.name} (Gasto Fijo)`,
+      date: paidDate,
+      time: getCurrentTimeString(),
+      accountMethod: 'Fijo Mensual',
+      isRecurring: true,
+      fixedObligationId: id,
+      createdAt: Date.now(),
+    }];
+  } else if (!isPaid) {
+    state.transactions = state.transactions.filter((item) => item.fixedObligationId !== id);
+  }
+  registerLocalMutation();
+}
+
+function upsertLocalSavingsGoal(goal, id = null) {
+  const savedGoal = {
+    ...goal,
+    id: id || goal.id || `goal_local_${Date.now()}`,
+    userId: state.currentUser?.id,
+    targetAmount: Number(goal.targetAmount) || 0,
+    currentAmount: Number(goal.currentAmount) || 0,
+    imageUrl: goal.imageUrl || '',
+  };
+  state.savingsGoals = [...state.savingsGoals.filter((item) => item.id !== savedGoal.id), savedGoal];
+  registerLocalMutation();
+  return savedGoal;
+}
+
+function updateLocalSavingsGoal(id, updates) {
+  state.savingsGoals = state.savingsGoals.map((item) => item.id === id ? { ...item, ...updates } : item);
+  registerLocalMutation();
+}
+
+function isDemoAccountState() {
+  return isDemoUser(state.currentUser)
+    || String(state.currentUser?.name || '').trim().toLowerCase() === 'fixelar';
+}
+
+function removeLocalSavingsGoal(id) {
+  state.savingsGoals = state.savingsGoals.filter((item) => item.id !== id);
+  state.goalContributions = state.goalContributions.filter((item) => item.goalId !== id);
+  if (isDemoAccountState()) {
+    localMutationVersion += 1;
+    state.monthlyReports = {};
+    return;
+  }
+  registerLocalMutation();
+}
+
+function applyLocalGoalContribution(goalId, amount, type, response = {}) {
+  const goal = state.savingsGoals.find((item) => item.id === goalId);
+  if (!goal) return;
+  const previousAmount = Number(goal.currentAmount) || 0;
+  const result = response.result || {};
+  const contribution = {
+    id: result.contributionId || `contrib_local_${Date.now()}`,
+    userId: state.currentUser?.id,
+    goalId,
+    goalName: goal.name,
+    amount: Number(amount) || 0,
+    date: getTodayISODate(),
+    type,
+    timestamp: Date.now(),
+  };
+  const newAmount = Number(result.newAmount);
+  state.goalContributions = [contribution, ...state.goalContributions.filter((item) => item.id !== contribution.id)];
+  const finalAmount = Number.isFinite(newAmount) ? newAmount : previousAmount + contribution.amount;
+  state.savingsGoals = state.savingsGoals.map((item) => item.id === goalId
+    ? { ...item, currentAmount: finalAmount }
+    : item);
+  registerLocalMutation(contribution);
+  return {
+    goalName: goal.name,
+    completed: !isGoalCompleted({ ...goal, currentAmount: previousAmount })
+      && isGoalCompleted({ ...goal, currentAmount: finalAmount }),
+  };
 }
 
 function setupMonthlyRolloverWatcher() {
@@ -740,15 +1006,15 @@ function renderActiveView() {
 function renderSystemAlertCard(alert) {
   const alertIcon = alert.icon || (alert.type === 'danger' ? 'alertTriangle' : alert.type === 'warning' ? 'alertCircle' : 'info');
   const iconTone = alert.type === 'danger'
-    ? 'bg-[#ffe1e7] text-[#f3194d]'
+    ? 'bg-orange-100 text-amber-700'
     : alert.type === 'warning'
-    ? 'bg-[#fff0d7] text-[#b45309]'
-    : 'bg-[#dce8ff] text-[#0058bc]';
+    ? 'bg-blue-100 text-blue-600'
+    : 'bg-blue-100 text-blue-600';
   const messageTone = alert.type === 'danger'
-    ? 'text-[#f3194d]'
+    ? 'text-amber-700'
     : alert.type === 'warning'
-    ? 'text-[#b45309]'
-    : 'text-[#0058bc]';
+    ? 'text-blue-600'
+    : 'text-blue-600';
   const description = alert.description || alert.message || '';
 
   return `
@@ -757,10 +1023,10 @@ function renderSystemAlertCard(alert) {
         <div class="w-12 h-12 rounded-full ${iconTone} flex items-center justify-center shrink-0">${getIconSvg(alertIcon, 'w-5 h-5')}</div>
         <div class="min-w-0">
           <p class="text-sm font-semibold text-[#0b1c30]">${alert.title}</p>
-          <p class="text-[11px] font-semibold ${messageTone}">${description}</p>
+          <p class="text-sm font-bold ${messageTone}">${description}</p>
         </div>
       </div>
-      <button data-tab="${alert.actionTab || 'gastos'}" data-focus="${alert.actionFocus || ''}" class="insight-alert-action rounded-full bg-white px-4 py-2 text-sm font-semibold text-[#0058bc] border border-slate-200 shadow-sm cursor-pointer hover:bg-[#eef3ff] whitespace-nowrap">
+      <button data-tab="${alert.actionTab || 'gastos'}" data-focus="${alert.actionFocus || ''}" class="insight-alert-action shrink-0 rounded-full bg-white px-4 py-2 text-sm font-semibold text-[#0058bc] border border-slate-200 shadow-sm cursor-pointer hover:bg-[#eef3ff] whitespace-nowrap">
         ${alert.actionLabel || 'Ver'}
       </button>
     </div>
@@ -1276,7 +1542,7 @@ function renderDashboard() {
           <div class="flex items-center gap-3 min-w-0">
             <div class="w-12 h-12 rounded-full bg-[#ffe1e7] text-[#f3194d] flex items-center justify-center shrink-0">${getIconSvg('bellRing', 'w-5 h-5')}</div>
             <div class="min-w-0">
-              <p class="text-sm font-semibold text-[#0b1c30]">${pending.length} ${pending.length === 1 ? 'fijo' : 'fijos'} por pagar</p>
+              <p class="text-sm font-semibold text-[#0b1c30]">${pending.length} ${pending.length === 1 ? 'gasto fijo' : 'gastos fijos'} por pagar</p>
               <p class="text-sm font-bold text-[#f3194d]">${formatCOP(metrics.fixedCommitted)} COP este mes</p>
             </div>
           </div>
@@ -1543,8 +1809,8 @@ function renderPastMonthSummaryView(monthKey) {
             ${getIconSvg('calendar', 'w-4 h-4')}
           </div>
           <div class="min-w-0">
-            <p class="text-xs font-bold text-[#0058bc] truncate">Mes Cerrado • ${monthLabel}</p>
-            <p class="text-[11px] text-slate-500 truncate">Visualizando balance consolidado e histórico</p>
+            <p class="text-xs font-bold text-[#0058bc] truncate"><span class="screen-report-title">${monthLabel}</span><span class="print-report-title" style="display:none">${monthLabel}</span></p>
+            <p class="text-[11px] text-slate-500 truncate">Balance consolidado</p>
           </div>
         </div>
 
@@ -1850,7 +2116,9 @@ function renderPastMonthSummaryView(monthKey) {
 // VIEW 2: INGRESOS
 // -------------------------------------------------------------
 function renderIncomes() {
-  const allIncomes = state.transactions.filter((t) => t.type === 'ingreso');
+  const allIncomes = state.transactions
+    .filter((t) => t.type === 'ingreso')
+    .sort(compareRecordsByRecency);
   const totalIncome = allIncomes.reduce((sum, t) => sum + t.amount, 0);
   const salary = state.currentUser?.monthlySalary || state.currentUser?.monthlyBudgetLimit || 0;
 
@@ -2058,9 +2326,19 @@ function renderExpenses() {
   const metrics = computeMetrics();
   const effectiveCategoryBudgets = getEffectiveCategoryBudgets(state.selectedMonth);
 
-  // Compute category spent map
+  // Category budgets cover only normal expenses. Fixed payments and goal
+  // contributions remain visible in the general expense total/history, but
+  // they are tracked separately and cannot consume a normal category limit.
+  const budgetExpenseTxs = expenseTxs.filter((transaction) => (
+    !transaction.fixedObligationId
+    && String(transaction.accountMethod || '').trim().toLowerCase() !== 'fijo mensual'
+    && !transaction.isGoalContribution
+    && CATEGORY_BUDGET_CATEGORIES.includes(transaction.category)
+  ));
+
+  // Compute category spent map from the same source used by the alert/cards.
   const categorySpentMap = {};
-  expenseTxs.forEach((t) => {
+  budgetExpenseTxs.forEach((t) => {
     categorySpentMap[t.category] = (categorySpentMap[t.category] || 0) + t.amount;
   });
 
@@ -2073,7 +2351,8 @@ function renderExpenses() {
       topName = cat;
     }
   });
-  const topPercent = totalExpenses > 0 ? Math.round((topAmount / totalExpenses) * 100) : 0;
+  const budgetExpenseTotal = budgetExpenseTxs.reduce((sum, transaction) => sum + transaction.amount, 0);
+  const topPercent = budgetExpenseTotal > 0 ? Math.round((topAmount / budgetExpenseTotal) * 100) : 0;
 
   // Categories exceeding limit
   const exceededCategories = effectiveCategoryBudgets.filter(
@@ -2206,7 +2485,6 @@ function renderExpenses() {
 
         <div class="grid grid-cols-1 gap-2">
           ${effectiveCategoryBudgets
-            .slice(0, 4)
             .map((catBudget) => {
               const spent = categorySpentMap[catBudget.category] || 0;
               const percent = catBudget.limit > 0 ? Math.round((spent / catBudget.limit) * 100) : 0;
@@ -2357,11 +2635,10 @@ function renderExpenses() {
                             <p class="text-[11px] text-slate-500 truncate">${tx.date} • ${tx.category}</p>
                           </div>
                         </div>
-                        <div class="flex items-center gap-2 shrink-0">
-                          <span class="text-xs sm:text-sm font-bold ${tx.type === 'ingreso' ? 'text-[#006c49]' : 'text-[#0b1c30]'} tabular-nums">
+                        <div class="w-28 text-right shrink-0">
+                          <span class="block text-xs sm:text-sm font-bold whitespace-nowrap ${tx.type === 'ingreso' ? 'text-[#006c49]' : 'text-[#0b1c30]'} tabular-nums">
                             ${tx.type === 'ingreso' ? '+' : '-'}${formatCOP(tx.amount)}
                           </span>
-                          ${tx.isGoalContribution ? '' : getIconSvg('chevronRight', 'w-4 h-4 text-slate-300')}
                         </div>
                       </div>
                     `
@@ -2677,10 +2954,21 @@ function renderObligations() {
   DOM.tabObligaciones.querySelectorAll('.obligation-toggle-btn').forEach((btn) => {
     btn.onclick = async (e) => {
       e.stopPropagation();
-      const res = await api.togglePayFixedObligation(btn.dataset.payId);
-      await refreshAllData();
-      renderObligations();
-      showToast(res.message);
+        const obligation = state.fixedObligations.find((item) => item.id === btn.dataset.payId);
+        const isPaying = obligation?.status !== 'paid';
+        const availableCash = computeMetrics().availableCash;
+        if (isPaying && Number(obligation?.amount) > availableCash) {
+          showToast(`Saldo insuficiente. Disponible: ${formatCOP(availableCash, true)}`, 'error');
+          return;
+        }
+      try {
+        const res = await api.togglePayFixedObligation(btn.dataset.payId);
+        applyLocalFixedToggle(btn.dataset.payId, res.result);
+        renderObligations();
+        showToast(res.message);
+      } catch (error) {
+        showToast(error.message || 'No se pudo actualizar el gasto fijo', 'error');
+      }
     };
   });
 
@@ -2719,24 +3007,44 @@ function renderGoalsLegacy() {
     const remaining = activeIncompleteGoal.targetAmount - activeIncompleteGoal.currentAmount;
     const salary = metrics.effectiveMonthlyIncome || state.currentUser?.monthlySalary || state.currentUser?.monthlyBudgetLimit || metrics.totalIncome || 0;
     const savingsRulePercent = (state.currentUser?.budgetRule?.savings || 20) / 100;
-    const realisticMonthlySavings = salary > 0 ? Math.round(salary * savingsRulePercent) : Math.max(50000, Math.round(metrics.availableCash * 0.2));
-    const realisticQuincenalCap = Math.max(50000, Math.round(realisticMonthlySavings / 2 / 10000) * 10000);
+    const availableForGoals = Math.max(0, metrics.availableCash);
+    const realisticMonthlySavings = salary > 0
+      ? Math.min(Math.round(salary * savingsRulePercent), availableForGoals)
+      : Math.round(availableForGoals * 0.2);
+    const realisticQuincenalCap = Math.min(
+      availableForGoals,
+      Math.max(1000, Math.round(realisticMonthlySavings / 2 / 10000) * 10000),
+    );
     const suggestedQuincenal = Math.min(remaining, realisticQuincenalCap);
-    const quincenasNeeded = Math.max(1, Math.ceil(remaining / suggestedQuincenal));
-    const mesesNeeded = Math.ceil(quincenasNeeded / 2);
+    const quincenasNeeded = suggestedQuincenal > 0 ? Math.max(1, Math.ceil(remaining / suggestedQuincenal)) : 0;
+    const mesesNeeded = quincenasNeeded > 0 ? Math.ceil(quincenasNeeded / 2) : 0;
     const tiempoTexto =
-      quincenasNeeded === 1
+      quincenasNeeded === 0
+        ? 'cuando tengas dinero disponible'
+        : quincenasNeeded === 1
         ? 'en tu próxima quincena'
         : mesesNeeded === 1
         ? 'en aproximadamente 1 mes (2 quincenas)'
         : `en aproximadamente ${mesesNeeded} meses (${quincenasNeeded} quincenas)`;
 
-    if (metrics.availableCash >= 50000) {
-      const suggested = Math.min(remaining, Math.max(50000, Math.round((metrics.availableCash * 0.15) / 10000) * 10000), realisticQuincenalCap);
+    if (availableForGoals > 0) {
+      const suggested = Math.min(
+        remaining,
+        availableForGoals,
+        Math.max(1000, Math.round((availableForGoals * 0.15) / 10000) * 10000),
+        realisticQuincenalCap || availableForGoals,
+      );
       return {
         tag: 'Consejo Inteligente',
         title: `Impulso para "${activeIncompleteGoal.name}"`,
-        message: `Cuentas con ${formatCOP(metrics.availableCash)} libres hoy. Si apartas ${formatCOP(suggested, true)} (acorde a tu capacidad mensual), tu meta avanzará con rapidez sin comprometer tus gastos fijos.`,
+        message: `Tienes ${formatCOP(availableForGoals)} disponibles. Puedes aportar ${formatCOP(suggested, true)} sin superar tu saldo disponible.`,
+      };
+    }
+    if (availableForGoals === 0) {
+      return {
+        tag: 'Consejo Inteligente',
+        title: `Plan para "${activeIncompleteGoal.name}"`,
+        message: 'No tienes dinero disponible para aportar a una meta en este momento.',
       };
     }
     const salaryPercentNote = salary > 0 ? ` (el ${Math.round((suggestedQuincenal / salary) * 200)}% de tu quincena)` : '';
@@ -2942,17 +3250,58 @@ function renderGoalMedia(goal, imageClass = 'w-full h-full object-cover', fallba
   return `<img src="${safeUrl}" alt="${String(goal?.name || 'Imagen de meta').replace(/"/g, '&quot;')}" loading="lazy" decoding="async" class="${imageClass}" onerror="this.classList.add('hidden'); this.nextElementSibling.classList.remove('hidden');" /><span class="hidden w-full h-full items-center justify-center">${fallbackIcon}</span>`;
 }
 
+function showGoalCompletionCelebration(goalName) {
+  const existingCelebration = document.getElementById('goal-completion-celebration');
+  existingCelebration?.remove();
+
+  const celebration = document.createElement('div');
+  celebration.id = 'goal-completion-celebration';
+  celebration.className = 'modal-backdrop';
+  celebration.innerHTML = `
+    <div class="modal-content max-w-sm text-center">
+      <div class="w-16 h-16 mx-auto rounded-full bg-[#c7f7e3] text-[#006c49] flex items-center justify-center animate-pulse">
+        ${getIconSvg('checkCircle2', 'w-9 h-9')}
+      </div>
+      <p class="text-[11px] uppercase tracking-wider font-bold text-[#006c49] mt-5">Meta cumplida</p>
+      <h3 class="text-xl font-extrabold text-[#0b1c30] mt-1">¡Lo lograste!</h3>
+      <p class="text-sm text-slate-600 mt-2">Completaste “${String(goalName || 'tu meta').replace(/"/g, '&quot;')}”.</p>
+      <button type="button" class="w-full h-11 mt-5 rounded-full bg-[#0058bc] text-white font-semibold cursor-pointer">Continuar</button>
+    </div>
+  `;
+  document.body.appendChild(celebration);
+
+  const close = () => celebration.remove();
+  celebration.querySelector('button')?.addEventListener('click', close, { once: true });
+  window.setTimeout(close, 3200);
+}
+
 function renderGoals() {
   const metrics = computeMetrics();
   const totalPercent = metrics.totalSavingsTarget > 0 ? Math.min(100, Math.round((metrics.totalSavings / metrics.totalSavingsTarget) * 100)) : 0;
-  const activeGoals = state.savingsGoals.filter((goal) => goal.currentAmount < goal.targetAmount);
-  const activeGoal = activeGoals[0] || state.savingsGoals[0];
+  const activeGoals = state.savingsGoals.filter((goal) => !isGoalCompleted(goal));
+  const completedGoals = state.savingsGoals
+    .filter((goal) => isGoalCompleted(goal))
+    .map((goal) => ({ ...goal, completedDate: getGoalCompletionDate(goal, state.goalContributions) }));
+  const activeGoal = activeGoals[0];
   const remaining = activeGoal ? Math.max(0, activeGoal.targetAmount - activeGoal.currentAmount) : 0;
-  const suggestedContribution = activeGoal ? Math.min(remaining, 500000) : 0;
-  const tipTitle = activeGoal ? `Impulso para "${activeGoal.name}"` : 'Crea tu primera meta';
+  const availableForGoals = Math.max(0, metrics.availableCash);
+  const suggestedContribution = activeGoal
+    ? Math.min(
+        remaining,
+        availableForGoals,
+        availableForGoals > 0 ? Math.max(1000, Math.round((availableForGoals * 0.15) / 10000) * 10000) : 0,
+      )
+    : 0;
+  const tipTitle = activeGoal
+    ? `Impulso para "${activeGoal.name}"`
+    : completedGoals.length ? 'Sigue construyendo tus logros' : 'Crea tu primera meta';
   const tip = activeGoal
-    ? `Cuentas con ${formatCOP(metrics.availableCash)} libres hoy. Si apartas ${formatCOP(suggestedContribution, true)} (acorde a tu capacidad mensual), tu meta avanzará con rapidez sin comprometer tus gastos fijos.`
-    : 'Crea una meta para empezar a reservar dinero de forma automática.';
+    ? suggestedContribution > 0
+      ? `Tienes ${formatCOP(availableForGoals)} disponibles. Puedes aportar ${formatCOP(suggestedContribution, true)} sin superar tu saldo disponible.`
+      : 'No tienes dinero disponible para aportar a una meta en este momento.'
+    : completedGoals.length
+      ? `Ya cumpliste ${completedGoals.length === 1 ? 'una meta' : `${completedGoals.length} metas`}. Crea una nueva para continuar avanzando sin descuidar tu saldo disponible.`
+      : 'Crea una meta para empezar a reservar dinero de forma automática.';
 
   DOM.tabMetas.innerHTML = `
     <div class="mockup-shell flex flex-col w-full px-4 pt-4 pb-28 gap-5 animate-in fade-in duration-200">
@@ -2986,6 +3335,22 @@ function renderGoals() {
           }).join('') : `<div class="rounded-3xl bg-white p-6 text-center border border-slate-200/80"><p class="text-sm font-semibold">No tienes metas activas</p><p class="text-xs text-slate-500 mt-1">Crea una meta para comenzar a ahorrar.</p></div>`}
         </div>
       </section>
+      ${completedGoals.length ? `
+      <section class="flex flex-col gap-2">
+        <div class="flex items-center justify-between px-1"><h2 class="text-lg font-bold">Metas cumplidas</h2><span class="text-sm font-semibold text-[#006c49]">${completedGoals.length} lograda${completedGoals.length === 1 ? '' : 's'}</span></div>
+        <div class="flex flex-col gap-3">
+          ${completedGoals.map((goal) => `
+            <article class="rounded-3xl bg-[#f2fff9] p-4 shadow-sm border border-[#b9efd8]">
+              <div class="flex items-center gap-3 min-w-0">
+                <div class="${goal.imageUrl ? 'w-14 h-14 flex items-center justify-center shrink-0 overflow-hidden' : 'w-14 h-14 rounded-2xl flex items-center justify-center shrink-0'}" style="${goal.imageUrl ? '' : `background:${goal.color}20;color:${goal.color}`}" >${renderGoalMedia(goal, 'w-full h-full object-contain', 'w-6 h-6')}</div>
+                <div class="min-w-0 flex-1"><h3 class="font-semibold text-base truncate">${goal.name}</h3><p class="text-xs text-[#006c49] mt-0.5">${goal.completedDate ? `Cumplida el ${formatGoalDeadline(goal.completedDate)}` : 'Objetivo alcanzado'}</p></div>
+                <span class="shrink-0 rounded-full bg-[#c7f7e3] px-3 py-1 text-xs font-bold text-[#006c49]">100%</span>
+              </div>
+              <div class="flex items-center justify-between gap-3 mt-3 text-sm"><span><strong>${formatCOP(goal.currentAmount)}</strong> <span class="text-slate-500">de ${formatCOP(goal.targetAmount)} COP</span></span><span class="font-semibold text-[#006c49]">${getIconSvg('check', 'w-4 h-4 inline mr-1')}Completada</span></div>
+            </article>
+          `).join('')}
+        </div>
+      </section>` : ''}
       <div class="rounded-3xl bg-[#eef3ff] border border-[#cfe0ff] p-4 flex gap-3"><div class="w-14 h-14 rounded-2xl bg-white flex items-center justify-center text-[#0058bc] shrink-0 shadow-sm">${getIconSvg('lightbulb', 'w-7 h-7')}</div><div class="min-w-0"><div class="flex items-center gap-2 flex-wrap"><p class="text-sm font-bold text-[#0058bc]">Consejo Inteligente</p><span class="text-[11px] text-slate-500">• Basado en tus datos</span></div><p class="text-sm font-semibold text-[#0b1c30] mt-1">${tipTitle}</p><p class="text-sm text-slate-600 leading-relaxed mt-1">${tip}</p></div></div>
       <section class="flex flex-col gap-2"><div class="flex items-center justify-between px-1"><h2 class="text-lg font-bold">Últimos Aportes</h2><span class="text-sm font-semibold text-[#0058bc]">Registro protegido</span></div><div class="rounded-3xl bg-white px-4 shadow-sm border border-slate-200/80 divide-y divide-slate-100">${state.goalContributions.length ? state.goalContributions.slice(0, 3).map((c) => `<div class="flex items-center justify-between gap-3 py-3"><div class="flex items-center gap-3 min-w-0"><div class="w-11 h-11 rounded-full bg-[#c7f7e3] text-[#006c49] flex items-center justify-center shrink-0">${getIconSvg('wallet', 'w-5 h-5')}</div><div class="min-w-0"><p class="text-sm font-semibold truncate">${c.goalName}</p><p class="text-xs text-slate-500 mt-0.5">${c.date} • ${c.type}</p></div></div><div class="text-right shrink-0"><span class="text-base font-bold text-[#006c49]">+${formatCOP(c.amount)}</span><small class="block text-[10px] text-slate-500">COP</small></div></div>`).join('') : `<p class="py-5 text-center text-sm text-slate-500">Aún no hay aportes registrados.</p>`}</div></section>
     </div>
@@ -3003,7 +3368,11 @@ function renderProfile() {
   if (!user) return;
 
   const budgetAdjustment = getBudgetAdjustment(getCurrentMonthKey(), user);
-  const salary = budgetAdjustment.monthlyBudgetLimit || user.monthlyBudgetLimit || user.monthlySalary || 5800000;
+  // Keep the displayed assigned limit aligned with the value editable in the
+  // modal. The automatic variable-income adjustment remains available for
+  // monthly/category calculations, but must not replace the configured base
+  // limit shown to the user.
+  const salary = user.monthlyBudgetLimit || user.monthlySalary || 5800000;
   const needs = Math.round(salary * ((user.budgetRule?.needs || 50) / 100));
   const wants = Math.round(salary * ((user.budgetRule?.wants || 30) / 100));
   const savings = Math.round(salary * ((user.budgetRule?.savings || 20) / 100));
@@ -3080,7 +3449,7 @@ function renderProfile() {
               <span class="text-xs font-bold text-slate-500">COP</span>
             </div>
             <p class="text-[11px] text-slate-600 mt-0.5">
-               ${budgetAdjustment.isAdjusted ? `Ajustado al ingreso registrado de ${formatCOP(budgetAdjustment.effectiveIncome)} bajo la regla 50/30/20:` : 'Distribuido bajo la regla inteligente MiPlata 50/30/20:'}
+               ${budgetAdjustment.isAdjusted ? 'Basado en el límite mensual asignado bajo la regla 50/30/20:' : 'Distribuido bajo la regla inteligente MiPlata 50/30/20:'}
             </p>
           </div>
 
@@ -3235,10 +3604,24 @@ function renderProfile() {
           <span>Cerrar sesión</span>
         </button>
 
+        ${isDemoUser(user)
+          ? `
+        <div class="w-full rounded-2xl bg-slate-50 border border-slate-200/80 px-4 py-3 flex items-center gap-2.5 text-slate-500" aria-label="Cuenta demo protegida">
+          <div class="w-8 h-8 rounded-full bg-white border border-slate-200 flex items-center justify-center shrink-0">
+            ${getIconSvg('lock', 'w-3.5 h-3.5')}
+          </div>
+          <div class="min-w-0">
+            <p class="text-xs font-semibold text-slate-700">Cuenta demo protegida</p>
+            <p class="text-[11px] text-slate-500">No se puede eliminar ni borrar sus datos compartidos</p>
+          </div>
+        </div>
+        `
+          : `
         <button id="btn-delete-account" class="w-full h-11 rounded-full text-rose-600 hover:bg-rose-50 flex items-center justify-center gap-1.5 text-xs font-medium active:scale-95 transition-all cursor-pointer">
           ${getIconSvg('trash2', 'w-3.5 h-3.5')}
           <span>Eliminar cuenta y datos locales</span>
         </button>
+        `}
 
       </div>
 
@@ -3284,31 +3667,19 @@ function renderProfile() {
     showToast('Sesión cerrada');
   };
 
-  document.getElementById('btn-delete-account').onclick = () => {
-    DOM.modalConfirmDelete.classList.remove('hidden');
-    DOM.modalConfirmDelete.innerHTML = `
-      <div class="bg-white rounded-3xl p-6 max-w-sm w-full shadow-2xl flex flex-col gap-4 text-center">
-        <div class="w-12 h-12 rounded-full bg-rose-100 text-rose-600 flex items-center justify-center mx-auto">
-          ${getIconSvg('alertTriangle', 'w-6 h-6')}
-        </div>
-        <div>
-          <h3 class="font-bold text-base text-[#0b1c30]">¿Eliminar cuenta y datos?</h3>
-          <p class="text-xs text-slate-500 mt-1">Esta acción borrará todas tus transacciones, metas y gastos fijos de forma irreversible.</p>
-        </div>
-        <div class="flex items-center gap-2 pt-2">
-          <button id="btn-cancel-delete" class="flex-1 py-2 rounded-xl bg-slate-100 text-slate-700 text-xs font-semibold cursor-pointer">Cancelar</button>
-          <button id="btn-confirm-delete" class="flex-1 py-2 rounded-xl bg-rose-600 text-white text-xs font-semibold cursor-pointer">Sí, eliminar</button>
-        </div>
-      </div>
-    `;
-    document.getElementById('btn-cancel-delete').onclick = () => DOM.modalConfirmDelete.classList.add('hidden');
-    document.getElementById('btn-confirm-delete').onclick = async () => {
-      await api.deleteAccount();
-      state.currentUser = null;
-      DOM.modalConfirmDelete.classList.add('hidden');
-      renderApp();
-      showToast('Cuenta eliminada');
-    };
+  const deleteAccountButton = document.getElementById('btn-delete-account');
+  if (deleteAccountButton) deleteAccountButton.onclick = () => {
+    openDeleteConfirmationModal({
+      title: '¿Eliminar cuenta y datos?',
+      message: 'Esta acción borrará todas tus transacciones, metas y gastos fijos de forma irreversible.',
+      successMessage: 'Cuenta eliminada',
+      errorMessage: 'No se pudo eliminar la cuenta',
+      onConfirm: async () => {
+        await api.deleteAccount();
+        state.currentUser = null;
+        renderApp();
+      },
+    });
   };
 }
 
@@ -3697,7 +4068,10 @@ function renderAuth() {
         renderApp();
         showToast(res.message);
       } catch (err) {
-        showToast('Error al conectar con la demo', 'error');
+        showToast(
+          err?.message || 'No se pudo conectar con MiPlata. Intenta nuevamente.',
+          'error',
+        );
       }
     };
   }
@@ -3760,15 +4134,17 @@ function renderAuth() {
       syncSalaryOptionState();
     };
 
-    avatarInput.onchange = (e) => {
+    avatarInput.onchange = async (e) => {
       const file = e.target.files?.[0];
       if (!file) return;
-      const reader = new FileReader();
-      reader.onload = (evt) => {
-        registerAvatarUrl = evt.target.result;
+      try {
+        registerAvatarUrl = await compressImageForUpload(file);
         avatarPreview.innerHTML = renderAvatarHtml(regName.value || 'Tu', registerAvatarUrl, 'lg');
-      };
-      reader.readAsDataURL(file);
+      } catch (error) {
+        registerAvatarUrl = '';
+        avatarInput.value = '';
+        showToast(error.message || 'No se pudo cargar la imagen', 'error');
+      }
     };
 
     formReg.onsubmit = async (e) => {
@@ -3846,9 +4222,20 @@ function renderAuth() {
       try {
         const res = await api.login(email, pass);
         state.currentUser = res.user;
-        await refreshAllData();
+        showToast('Cargando tus datos…', 'info');
+
+        // The login response is held until the first bootstrap is available
+        // by auth-bootstrap-guard.js. Keep this source entry point aligned:
+        // do not reveal a blank or stale dashboard between both requests.
+        const refreshed = await refreshAllData();
+        if (!refreshed || !state.currentUser) {
+          state.currentUser = null;
+          renderApp();
+          showToast('No se pudieron cargar tus datos. Intenta nuevamente.', 'error');
+          return;
+        }
         renderApp();
-        showToast(res.message);
+        showToast(res.message, 'success');
       } catch (err) {
         showToast(err.message, 'error');
       }
@@ -3936,7 +4323,7 @@ function renderQuickAddModalContent() {
   const numVal = parseInt(rawValue, 10) || 0;
 
   const expenseCategories = [
-    { name: 'Alimentación', label: 'Comida', icon: 'forkKnife' },
+    { name: 'Alimentación', label: 'Comida', icon: 'pizzaSlice' },
     { name: 'Transporte', label: 'Transporte', icon: 'car' },
     { name: 'Compras', label: 'Compras', icon: 'shoppingBag' },
     { name: 'Servicios', label: 'Servicios', icon: 'zap' },
@@ -3957,39 +4344,39 @@ function renderQuickAddModalContent() {
   const categories = type === 'ingreso' ? incomeCategories : expenseCategories;
 
   DOM.modalQuickAdd.innerHTML = `
-    <div class="quick-add-page w-full max-w-[460px] h-[100dvh] min-h-0 bg-[#f8f9ff] overflow-y-auto no-scrollbar px-3 sm:px-4 pt-3 sm:pt-5 pb-6">
-      <div class="flex items-center justify-between mb-4 sm:mb-5">
+    <div class="quick-add-page qa-form-shell bg-white rounded-[26px] p-6 max-w-md w-full min-w-0 max-h-[calc(100vh-24px)] overflow-y-auto overflow-x-hidden no-scrollbar shadow-2xl border border-slate-100">
+      <div class="qa-header flex items-center justify-between mb-4 sm:mb-5">
         <button id="qa-close-btn" aria-label="Volver" class="w-9 h-9 flex items-center justify-center text-[#0058bc] cursor-pointer">${getIconSvg('arrowLeft', 'w-7 h-7')}</button>
         <div class="flex items-center gap-2"><img src="assets/optimized/Logo.png" alt="MiPlata" width="160" height="160" decoding="async" class="w-10 h-10 rounded-xl" /><h1 class="text-xl font-semibold">Nuevo Registro</h1></div>
         ${renderAvatarHtml(state.currentUser?.name, state.currentUser?.avatarUrl, 'sm')}
       </div>
-      <div class="h-1.5 w-12 rounded-full bg-[#dce8ff] mx-auto mb-3 sm:mb-4"></div>
+      <div class="qa-drag-handle h-1.5 w-12 rounded-full bg-[#dce8ff] mx-auto mb-3 sm:mb-4"></div>
 
-      <div class="flex items-center bg-[#dce8ff] p-1 rounded-full mb-4 sm:mb-6">
+      <div class="qa-type-switch flex items-center bg-[#dce8ff] p-1 rounded-full mb-4 sm:mb-6">
         <button id="qa-type-gasto" class="flex-1 py-2.5 sm:py-3 rounded-full text-sm sm:text-base font-semibold transition-all cursor-pointer ${type === 'gasto' ? 'bg-white text-[#0b1c30] shadow-sm' : 'text-slate-600'}">Gasto</button>
         <button id="qa-type-ingreso" class="flex-1 py-2.5 sm:py-3 rounded-full text-sm sm:text-base font-semibold transition-all cursor-pointer ${type === 'ingreso' ? 'bg-white text-[#0b1c30] shadow-sm' : 'text-slate-600'}">Ingreso</button>
       </div>
 
-      <div class="text-center mb-4 sm:mb-5"><div class="flex items-baseline justify-center gap-1"><span class="text-4xl sm:text-5xl font-extrabold text-[#0b1c30] tabular-nums"><span class="text-slate-300">$</span>${formatCOP(numVal).replace('$', '')}</span><span class="text-base sm:text-xl font-medium text-slate-500">COP</span></div><p class="mt-2 text-xs sm:text-sm font-semibold text-[#0058bc]"><span class="inline-block w-3 h-3 rounded-full bg-[#006c49] mr-1"></span>${type === 'ingreso' ? 'Registrando ingreso inmediato' : 'Registrando egreso inmediato'}</p></div>
+      <div class="qa-amount-display text-center mb-4 sm:mb-5"><div class="flex items-baseline justify-center gap-1"><span class="qa-amount-value text-4xl sm:text-5xl font-extrabold text-[#0b1c30] tabular-nums"><span class="text-slate-300">$</span>${formatCOP(numVal).replace('$', '')}</span><span class="text-base sm:text-xl font-medium text-slate-500">COP</span></div><p class="qa-amount-status mt-2 text-xs sm:text-sm font-semibold text-[#0058bc]"><span class="inline-block w-3 h-3 rounded-full bg-[#006c49] mr-1"></span>${type === 'ingreso' ? 'Registrando ingreso inmediato' : 'Registrando egreso inmediato'}</p></div>
 
-      <div class="flex items-center justify-between mb-2.5 sm:mb-3"><h2 class="text-base sm:text-lg font-semibold uppercase tracking-wide text-slate-600">Categoría</h2><span id="qa-selected-category" class="text-base sm:text-lg font-semibold text-[#0058bc]">${category}</span></div>
-      <div id="qa-categories-scroll" class="qa-categories-scroll flex gap-2.5 sm:gap-3 overflow-x-auto no-scrollbar pb-1.5 sm:pb-2 mb-4 sm:mb-5" role="listbox" aria-label="Categorías de ${type === 'ingreso' ? 'ingreso' : 'gasto'}">
-        ${categories.map((c) => `<button type="button" data-cat="${c.name}" role="option" aria-selected="${category === c.name}" class="qa-cat-btn shrink-0 w-[68px] sm:w-[76px] flex flex-col items-center gap-1.5 sm:gap-2 cursor-pointer"><span class="w-[60px] h-[60px] sm:w-[68px] sm:h-[68px] rounded-3xl flex items-center justify-center ${category === c.name ? 'bg-[#0058bc] text-white shadow-md' : 'bg-[#dce8ff] text-slate-600'}">${getIconSvg(c.icon, 'w-6 h-6 sm:w-7 sm:h-7')}</span><span class="text-[11px] sm:text-sm whitespace-nowrap ${category === c.name ? 'text-[#0058bc] font-semibold' : 'text-slate-700'}">${c.label}</span></button>`).join('')}
+      <div class="qa-category-heading flex items-center justify-between mb-2.5 sm:mb-3"><h2 class="text-base sm:text-lg font-semibold uppercase tracking-wide text-slate-600">Categoría</h2><span id="qa-selected-category" class="text-base sm:text-lg font-semibold text-[#0058bc]">${category}</span></div>
+      <div id="qa-categories-scroll" class="qa-category-scroller qa-categories-scroll flex gap-2.5 sm:gap-3 overflow-x-auto no-scrollbar pb-1.5 sm:pb-2 mb-4 sm:mb-5" role="listbox" aria-label="Categorías de ${type === 'ingreso' ? 'ingreso' : 'gasto'}">
+        ${categories.map((c) => `<button type="button" data-cat="${c.name}" role="option" aria-selected="${category === c.name}" class="qa-cat-btn shrink-0 w-[68px] sm:w-[76px] flex flex-col items-center gap-1.5 sm:gap-2 cursor-pointer"><span class="qa-cat-icon w-[60px] h-[60px] sm:w-[68px] sm:h-[68px] rounded-3xl flex items-center justify-center ${category === c.name ? 'bg-[#0058bc] text-white shadow-md' : 'bg-[#dce8ff] text-slate-600'}">${getIconSvg(c.icon, 'w-6 h-6 sm:w-7 sm:h-7')}</span><span class="qa-cat-label text-[11px] sm:text-sm whitespace-nowrap ${category === c.name ? 'text-[#0058bc] font-semibold' : 'text-slate-700'}">${c.label}</span></button>`).join('')}
       </div>
-      <p id="qa-smart-category-hint" aria-live="polite" class="text-[11px] text-[#0058bc] font-medium text-center -mt-3 mb-3 ${smartSuggestion ? '' : 'invisible'}">${smartSuggestion ? `Sugerencia automática: ${smartSuggestion}` : 'Sugerencia automática'}</p>
+      <p id="qa-smart-category-hint" aria-hidden="true" style="display: none !important;" class="qa-smart-hint qa-smart-hint-hidden text-[11px] text-[#0058bc] font-medium text-center -mt-3 mb-3 ${smartSuggestion ? '' : 'invisible'}">${smartSuggestion ? `Sugerencia automática: ${smartSuggestion}` : 'Sugerencia automática'}</p>
 
-      <div class="rounded-3xl bg-white p-3.5 sm:p-4 shadow-sm border border-slate-100 mb-4 sm:mb-6">
+      <div class="qa-details-card rounded-3xl bg-white p-3.5 sm:p-4 shadow-sm border border-slate-100 mb-4 sm:mb-6">
         <div class="flex items-center gap-3"><span class="w-10 h-10 rounded-full bg-[#dce8ff] text-slate-600 flex items-center justify-center">${getIconSvg('fileText', 'w-5 h-5')}</span><input id="qa-description-input" type="text" placeholder="${type === 'ingreso' ? 'Concepto del ingreso' : 'Café y empanada Juan Valdez'}" value="${description}" class="qa-description-input flex-1 min-w-0 text-lg bg-transparent focus:outline-none focus:ring-0" /></div>
         <div class="flex items-center justify-between mt-5 pt-4 border-t border-slate-100"><div class="flex items-center gap-3"><span class="w-10 h-10 rounded-full bg-[#dce8ff] text-slate-600 flex items-center justify-center">${getIconSvg('calendar', 'w-5 h-5')}</span><div><p class="text-sm font-semibold text-slate-500">Fecha</p><p class="text-base font-semibold">${formatQuickAddDateLabel(date)}</p></div></div><div class="relative"><button id="qa-change-date-btn" type="button" class="rounded-full bg-[#dce8ff] px-3 py-2 text-sm font-semibold text-[#0058bc] cursor-pointer">Cambiar</button><input id="qa-date-input" type="date" value="${date}" aria-label="Cambiar fecha del registro" class="absolute inset-0 h-full w-full opacity-0 pointer-events-none" /></div></div>
       </div>
 
-      <div class="keypad-grid gap-2.5 sm:gap-3 mb-5 sm:mb-6">
+      <div class="qa-keypad keypad-grid gap-2.5 sm:gap-3 mb-5 sm:mb-6">
         <button data-key="1" class="keypad-btn bg-white border-0 shadow-sm h-16 sm:h-[72px] rounded-full">1</button><button data-key="2" class="keypad-btn bg-white border-0 shadow-sm h-16 sm:h-[72px] rounded-full">2</button><button data-key="3" class="keypad-btn bg-white border-0 shadow-sm h-16 sm:h-[72px] rounded-full">3</button>
         <button data-key="4" class="keypad-btn bg-white border-0 shadow-sm h-16 sm:h-[72px] rounded-full">4</button><button data-key="5" class="keypad-btn bg-white border-0 shadow-sm h-16 sm:h-[72px] rounded-full">5</button><button data-key="6" class="keypad-btn bg-white border-0 shadow-sm h-16 sm:h-[72px] rounded-full">6</button>
         <button data-key="7" class="keypad-btn bg-white border-0 shadow-sm h-16 sm:h-[72px] rounded-full">7</button><button data-key="8" class="keypad-btn bg-white border-0 shadow-sm h-16 sm:h-[72px] rounded-full">8</button><button data-key="9" class="keypad-btn bg-white border-0 shadow-sm h-16 sm:h-[72px] rounded-full">9</button>
         <button data-key="000" class="keypad-btn bg-[#eef3ff] border-0 text-[#0058bc] h-16 sm:h-[72px] rounded-full">+000</button><button data-key="0" class="keypad-btn bg-white border-0 shadow-sm h-16 sm:h-[72px] rounded-full">0</button><button data-key="backspace" class="keypad-btn bg-[#eef3ff] border-0 h-16 sm:h-[72px] rounded-full">${getIconSvg('deleteKey', 'w-7 h-7')}</button>
       </div>
-      <button id="qa-submit-btn" class="w-full h-14 sm:h-16 rounded-full ${numVal > 0 ? 'bg-[#0058bc]' : 'bg-slate-300 pointer-events-none'} text-white font-bold text-lg sm:text-xl shadow-md cursor-pointer flex items-center justify-center gap-2">${getIconSvg('checkCircle2', 'w-6 h-6 sm:w-7 sm:h-7')}<span>Guardar ${type === 'ingreso' ? 'Ingreso' : 'Gasto'}</span></button>
+      <button id="qa-submit-btn" class="qa-submit-button w-full h-14 sm:h-16 rounded-full ${numVal > 0 ? 'bg-[#0058bc]' : 'bg-slate-300 pointer-events-none'} text-white font-bold text-lg sm:text-xl shadow-md cursor-pointer flex items-center justify-center gap-2">${getIconSvg('checkCircle2', 'w-6 h-6 sm:w-7 sm:h-7')}<span>Guardar ${type === 'ingreso' ? 'Ingreso' : 'Gasto'}</span></button>
     </div>
   `;
 
@@ -4033,8 +4420,8 @@ function renderQuickAddModalContent() {
       button.setAttribute('aria-selected', String(isSelected));
       const icon = button.querySelector('span:first-child');
       const label = button.querySelector('span:last-child');
-      if (icon) icon.className = `w-[60px] h-[60px] sm:w-[68px] sm:h-[68px] rounded-3xl flex items-center justify-center ${isSelected ? 'bg-[#0058bc] text-white shadow-md' : 'bg-[#dce8ff] text-slate-600'}`;
-      if (label) label.className = `text-[11px] sm:text-sm whitespace-nowrap ${isSelected ? 'text-[#0058bc] font-semibold' : 'text-slate-700'}`;
+      if (icon) icon.className = `qa-cat-icon w-[60px] h-[60px] sm:w-[68px] sm:h-[68px] rounded-3xl flex items-center justify-center ${isSelected ? 'bg-[#0058bc] text-white shadow-md' : 'bg-[#dce8ff] text-slate-600'}`;
+      if (label) label.className = `qa-cat-label text-[11px] sm:text-sm whitespace-nowrap ${isSelected ? 'text-[#0058bc] font-semibold' : 'text-slate-700'}`;
     });
   };
 
@@ -4117,9 +4504,13 @@ function renderQuickAddModalContent() {
         isRecurring: false,
       };
 
-      await api.addTransaction(tx);
-
-      await refreshAllData();
+      try {
+        const result = await api.addTransaction(tx);
+        applyLocalTransaction(tx, result);
+      } catch (error) {
+        showToast(error.message || 'No se pudo guardar el movimiento', 'error');
+        return;
+      }
       DOM.modalQuickAdd.classList.add('hidden');
       state.quickAdd.isOpen = false;
       document.documentElement.classList.remove('quick-add-open');
@@ -4197,8 +4588,7 @@ function openEditTransactionModal(tx) {
 
     try {
       await api.updateTransaction(tx.id, { description: desc });
-
-      await refreshAllData();
+      updateLocalTransaction(tx.id, { description: desc });
       DOM.modalEditTransaction.classList.add('hidden');
       renderActiveView();
       showToast('Movimiento actualizado');
@@ -4330,44 +4720,56 @@ function openAddOrEditObligationModal(obligation = null) {
 
     if (!name || amount <= 0) return;
 
-    if (isEdit) {
-      await api.updateFixedObligation(obligation.id, {
-        name,
-        amount,
-        dueDay,
-        category,
-        reminderDaysBefore,
-        notes: `Vence Día ${dueDay} del mes`,
-      });
-      showToast('Obligación actualizada');
-    } else {
-      await api.addFixedObligation({
-        name,
-        amount,
-        dueDay,
-        category,
-        reminderDaysBefore,
-        status: 'pending',
-        notes: `Vence Día ${dueDay} del mes`,
-      });
-      showToast('Gasto fijo agregado');
-    }
+    try {
+      if (isEdit) {
+        const updates = {
+          name,
+          amount,
+          dueDay,
+          category,
+          reminderDaysBefore,
+          notes: `Vence Día ${dueDay} del mes`,
+        };
+        await api.updateFixedObligation(obligation.id, updates);
+        updateLocalFixedObligation(obligation.id, updates);
+        showToast('Obligación actualizada');
+      } else {
+        const item = {
+          name,
+          amount,
+          dueDay,
+          category,
+          reminderDaysBefore,
+          status: 'pending',
+          notes: `Vence Día ${dueDay} del mes`,
+        };
+        const result = await api.addFixedObligation(item);
+        upsertLocalFixedObligation(item, result.id);
+        showToast('Gasto fijo agregado');
+      }
 
-    await refreshAllData();
-    DOM.modalFixedObligation.classList.add('hidden');
-    renderActiveView();
+      DOM.modalFixedObligation.classList.add('hidden');
+      renderActiveView();
+    } catch (error) {
+      showToast(error.message || 'No se pudo guardar el gasto fijo', 'error');
+    }
   };
 
   const deleteBtn = document.getElementById('ob-delete-btn');
   if (deleteBtn && isEdit) {
-    deleteBtn.onclick = async () => {
-      if (confirm('¿Deseas eliminar este gasto fijo?')) {
-        await api.deleteFixedObligation(obligation.id);
-        await refreshAllData();
-        DOM.modalFixedObligation.classList.add('hidden');
-        renderActiveView();
-        showToast('Obligación eliminada');
-      }
+    deleteBtn.onclick = () => {
+      openDeleteConfirmationModal({
+        title: '¿Eliminar gasto fijo?',
+        message: 'Esta acción eliminará el gasto fijo y su registro asociado de forma permanente.',
+        successMessage: 'Obligación eliminada',
+        errorMessage: 'No se pudo eliminar el gasto fijo',
+        onConfirm: async () => {
+          await api.deleteFixedObligation(obligation.id);
+          removeLocalFixedObligation(obligation.id);
+          DOM.modalFixedObligation.classList.add('hidden');
+          renderActiveView();
+        },
+      });
     };
   }
 }
@@ -4404,6 +4806,60 @@ function formatGoalDeadline(value) {
   if (!normalized) return String(value || '');
   const [, year, month] = normalized.match(/^(\d{4})-(\d{2})-/) || [];
   return year && month ? `${SPANISH_MONTHS[Number(month) - 1] || month} ${year}` : String(value || '');
+}
+
+const GOAL_IMAGE_DATA_URL_LIMIT = 600000;
+
+function compressImageForUpload(file) {
+  if (!file || !String(file.type || '').startsWith('image/')) {
+    return Promise.reject(new Error('Selecciona una imagen válida'));
+  }
+
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('No se pudo leer la imagen'));
+    reader.onload = () => {
+      const image = new Image();
+      image.onerror = () => reject(new Error('No se pudo procesar la imagen'));
+      image.onload = () => {
+        const originalWidth = image.naturalWidth || image.width;
+        const originalHeight = image.naturalHeight || image.height;
+        if (!originalWidth || !originalHeight) {
+          reject(new Error('La imagen no tiene un tamaño válido'));
+          return;
+        }
+
+        const maxDimensions = [1000, 800, 650, 500];
+        let compressed = '';
+        for (const maxDimension of maxDimensions) {
+          const scale = Math.min(1, maxDimension / originalWidth, maxDimension / originalHeight);
+          const canvas = document.createElement('canvas');
+          canvas.width = Math.max(1, Math.round(originalWidth * scale));
+          canvas.height = Math.max(1, Math.round(originalHeight * scale));
+          const context = canvas.getContext('2d');
+          if (!context) {
+            reject(new Error('El navegador no permite procesar la imagen'));
+            return;
+          }
+          context.drawImage(image, 0, 0, canvas.width, canvas.height);
+
+          compressed = canvas.toDataURL('image/webp', 0.78);
+          if (!compressed.startsWith('data:image/webp')) {
+            compressed = canvas.toDataURL('image/jpeg', 0.78);
+          }
+          if (compressed.length <= GOAL_IMAGE_DATA_URL_LIMIT) break;
+        }
+
+        if (compressed.length > GOAL_IMAGE_DATA_URL_LIMIT) {
+          reject(new Error('La imagen es demasiado grande. Elige una imagen más pequeña'));
+          return;
+        }
+        resolve(compressed);
+      };
+      image.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
 }
 
 function isGoalDeadlineBeforeCurrentMonth(year, month) {
@@ -4530,16 +4986,18 @@ function openAddOrEditGoalModal(goal = null) {
   const previewDiv = document.getElementById('goal-img-preview');
   const removeImageBtn = document.getElementById('goal-remove-image');
   if (fileInput) {
-    fileInput.onchange = (e) => {
+    fileInput.onchange = async (e) => {
       const file = e.target.files?.[0];
       if (!file) return;
-      const reader = new FileReader();
-      reader.onload = (evt) => {
-        customGoalImage = evt.target.result;
+      try {
+        customGoalImage = await compressImageForUpload(file);
         previewDiv.innerHTML = `<img src="${customGoalImage}" class="max-w-full max-h-full object-contain" />`;
         removeImageBtn?.classList.remove('hidden');
-      };
-      reader.readAsDataURL(file);
+      } catch (error) {
+        customGoalImage = '';
+        fileInput.value = '';
+        showToast(error.message || 'No se pudo cargar la imagen', 'error');
+      }
     };
   }
 
@@ -4627,17 +5085,19 @@ function openAddOrEditGoalModal(goal = null) {
 
     try {
       if (isEdit) {
-        await api.updateSavingsGoal(goal.id, {
+        const updates = {
           name,
           targetAmount,
           deadline,
           icon,
           color: colors[icon] || '#006c49',
           imageUrl: customGoalImage,
-        });
+        };
+        await api.updateSavingsGoal(goal.id, updates);
+        updateLocalSavingsGoal(goal.id, updates);
         showToast(`Meta "${name}" actualizada`);
       } else {
-        await api.addSavingsGoal({
+        const newGoal = {
           name,
           targetAmount,
           currentAmount: 0,
@@ -4645,11 +5105,12 @@ function openAddOrEditGoalModal(goal = null) {
           icon,
           color: colors[icon] || '#006c49',
           imageUrl: customGoalImage,
-        });
+        };
+        const result = await api.addSavingsGoal(newGoal);
+        upsertLocalSavingsGoal(newGoal, result.id);
         showToast(`Meta "${name}" creada`);
       }
 
-      await refreshAllData();
       DOM.modalSavingsGoal.classList.add('hidden');
       renderActiveView();
     } catch (error) {
@@ -4659,14 +5120,23 @@ function openAddOrEditGoalModal(goal = null) {
 
   const deleteBtn = document.getElementById('goal-delete-btn');
   if (deleteBtn && isEdit) {
-    deleteBtn.onclick = async () => {
-      if (confirm(`¿Deseas eliminar la meta "${goal.name}"?`)) {
-        await api.deleteSavingsGoal(goal.id);
-        await refreshAllData();
-        DOM.modalSavingsGoal.classList.add('hidden');
-        renderActiveView();
-        showToast('Meta eliminada');
-      }
+    deleteBtn.onclick = () => {
+      openDeleteConfirmationModal({
+        title: '¿Eliminar meta?',
+        message: `Esta acción eliminará la meta "${goal.name}" y sus aportes asociados de forma permanente.`,
+        successMessage: 'Meta eliminada',
+        errorMessage: 'No se pudo eliminar la meta',
+        onConfirm: async () => {
+          // The API client applies demo mutations only to its in-memory
+          // runtime; real accounts persist the same request in the backend.
+          // Keeping both layers in sync prevents deleted contributions from
+          // reducing the available cash used by the next goal contribution.
+          await api.deleteSavingsGoal(goal.id);
+          removeLocalSavingsGoal(goal.id);
+          DOM.modalSavingsGoal.classList.add('hidden');
+          renderActiveView();
+        },
+      });
     };
   }
 }
@@ -4693,10 +5163,10 @@ function openAporteModal(goalId) {
 
       <div class="mt-7 text-center">
         <label class="block text-sm font-semibold tracking-wide text-[#6b7d98]">MONTO A RESERVAR</label>
-        <div class="flex items-baseline justify-center gap-3 mt-2 text-[#0058bc]">
-          <span class="text-[34px] font-bold leading-none">$</span>
-          <input id="aporte-input" type="text" inputmode="numeric" value="100.000" placeholder="100.000" class="w-44 bg-transparent text-center text-[38px] font-extrabold leading-none tabular-nums focus:outline-none" />
-          <span class="text-sm font-semibold text-[#6b7d98]">COP</span>
+        <div class="flex items-center justify-center gap-2 mt-2 w-full min-w-0 text-[#0058bc]">
+          <span class="shrink-0 text-[34px] font-bold leading-none">$</span>
+          <input id="aporte-input" type="text" inputmode="numeric" value="100.000" placeholder="100.000" class="min-w-0 flex-1 max-w-xs bg-transparent text-center text-3xl sm:text-[38px] font-extrabold leading-tight tabular-nums focus:outline-none" />
+          <span class="shrink-0 text-sm font-semibold text-[#6b7d98]">COP</span>
         </div>
       </div>
 
@@ -4734,17 +5204,25 @@ function openAporteModal(goalId) {
     const amt = parseRawNumber(aporteInput.value);
     if (amt <= 0) return;
 
-    const availableCash = computeMetrics().availableCash;
-    if (amt > availableCash) {
-      showToast(`No tienes suficiente dinero disponible. Te quedan ${formatCOP(availableCash, true)}.`, 'error');
+    const metrics = computeMetrics();
+    const availableForGoals = metrics.availableCash;
+    if (amt > availableForGoals) {
+      showToast(`No puedes aportar más de ${formatCOP(availableForGoals, true)} disponibles.`, 'error');
       return;
     }
 
-    await api.contributeToGoal(goalId, amt, 'Manual');
-    await refreshAllData();
+    let contributionResult;
+    try {
+      const result = await api.contributeToGoal(goalId, amt, 'Manual');
+      contributionResult = applyLocalGoalContribution(goalId, amt, 'Manual', result);
+    } catch (error) {
+      showToast(error.message || 'No se pudo registrar el aporte', 'error');
+      return;
+    }
     DOM.modalAporteGoal.classList.add('hidden');
     renderActiveView();
-    showToast(`¡Aporte de ${formatCOP(amt)} registrado para ${goal.name}!`);
+    if (contributionResult?.completed) showGoalCompletionCelebration(contributionResult.goalName);
+    else showToast(`¡Aporte de ${formatCOP(amt)} registrado para ${goal.name}!`);
   };
 }
 
@@ -4768,11 +5246,17 @@ function openEditProfileModal() {
 
       <div class="flex flex-col items-center gap-3 mb-7">
         <div id="profile-modal-avatar-preview">${renderAvatarHtml(user.name, tempAvatarUrl, 'profile')}</div>
-        <label class="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-[#eef4ff] text-[#0058bc] text-sm font-semibold cursor-pointer active:scale-95 transition-all">
-          ${getIconSvg('camera', 'w-4 h-4')}
-          <span>Subir foto</span>
-          <input id="input-profile-avatar" type="file" accept="image/*" class="sr-only" />
-        </label>
+        <div class="flex flex-wrap items-center justify-center gap-2">
+          <label class="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-[#eef4ff] text-[#0058bc] text-sm font-semibold cursor-pointer active:scale-95 transition-all">
+            ${getIconSvg('camera', 'w-4 h-4')}
+            <span>Subir foto</span>
+            <input id="input-profile-avatar" type="file" accept="image/*" class="sr-only" />
+          </label>
+          <button id="remove-profile-avatar-btn" type="button" aria-label="Quitar foto de perfil" ${tempAvatarUrl ? '' : 'disabled'} class="inline-flex items-center gap-2 px-4 py-2 rounded-full text-sm font-semibold transition-all ${tempAvatarUrl ? 'bg-[#fff0f2] text-[#e61e4d] cursor-pointer active:scale-95' : 'bg-[#f1f5fa] text-[#a5b4c7] cursor-not-allowed'}">
+            ${getIconSvg('x', 'w-4 h-4')}
+            <span>Quitar foto</span>
+          </button>
+        </div>
         <p id="profile-avatar-hint" class="text-xs text-[#8da0bd] text-center">${tempAvatarUrl ? 'Foto de perfil seleccionada' : `Mostrando iniciales "${getInitials(user.name)}" según tu nombre`}</p>
       </div>
 
@@ -4789,7 +5273,7 @@ function openEditProfileModal() {
 
         <div class="grid grid-cols-2 gap-3 pt-3">
           <button id="edit-profile-cancel-btn" class="h-12 rounded-full bg-[#eff4f8] text-[#50627b] font-semibold text-sm active:scale-95 transition-all cursor-pointer">Cancelar</button>
-          <button id="edit-profile-save-btn" class="h-12 rounded-full bg-[#0058bc] text-white font-bold text-sm shadow-md hover:bg-[#004bb0] active:scale-95 transition-all cursor-pointer">Guardar Cambios</button>
+          <button id="edit-profile-save-btn" type="button" aria-label="Guardar perfil" class="h-12 rounded-full bg-[#0058bc] text-white font-bold text-sm shadow-md hover:bg-[#004bb0] active:scale-95 transition-all cursor-pointer">Guardar Cambios</button>
         </div>
       </div>
     </div>
@@ -4803,9 +5287,20 @@ function openEditProfileModal() {
   const avatarPreview = document.getElementById('profile-modal-avatar-preview');
   const nameInput = document.getElementById('edit-name-input');
   const avatarHint = document.getElementById('profile-avatar-hint');
+  const removeAvatarButton = document.getElementById('remove-profile-avatar-btn');
 
   const syncAvatarFallback = () => {
     const name = nameInput.value.trim() || user.name;
+    if (removeAvatarButton) {
+      removeAvatarButton.disabled = !tempAvatarUrl;
+      removeAvatarButton.classList.toggle('bg-[#fff0f2]', Boolean(tempAvatarUrl));
+      removeAvatarButton.classList.toggle('text-[#e61e4d]', Boolean(tempAvatarUrl));
+      removeAvatarButton.classList.toggle('cursor-pointer', Boolean(tempAvatarUrl));
+      removeAvatarButton.classList.toggle('active:scale-95', Boolean(tempAvatarUrl));
+      removeAvatarButton.classList.toggle('bg-[#f1f5fa]', !tempAvatarUrl);
+      removeAvatarButton.classList.toggle('text-[#a5b4c7]', !tempAvatarUrl);
+      removeAvatarButton.classList.toggle('cursor-not-allowed', !tempAvatarUrl);
+    }
     if (!tempAvatarUrl) {
       avatarPreview.innerHTML = renderAvatarHtml(name, '', 'profile');
       avatarHint.textContent = `Mostrando iniciales "${getInitials(name)}" según tu nombre`;
@@ -4817,30 +5312,69 @@ function openEditProfileModal() {
   nameInput.oninput = syncAvatarFallback;
 
   if (avatarInput) {
-    avatarInput.onchange = (e) => {
+    avatarInput.onchange = async (e) => {
       const file = e.target.files?.[0];
       if (!file) return;
-      const reader = new FileReader();
-      reader.onload = (evt) => {
-        tempAvatarUrl = evt.target.result;
+      try {
+        tempAvatarUrl = await compressImageForUpload(file);
         avatarPreview.innerHTML = renderAvatarHtml(nameInput.value || user.name, tempAvatarUrl, 'profile');
-        avatarHint.textContent = 'Foto de perfil seleccionada';
-      };
-      reader.readAsDataURL(file);
+        syncAvatarFallback();
+      } catch (error) {
+        tempAvatarUrl = '';
+        avatarInput.value = '';
+        syncAvatarFallback();
+        showToast(error.message || 'No se pudo cargar la imagen', 'error');
+      }
     };
   }
 
-  document.getElementById('edit-profile-save-btn').onclick = async () => {
+  removeAvatarButton?.addEventListener('click', () => {
+    if (!tempAvatarUrl) return;
+    tempAvatarUrl = '';
+    if (avatarInput) avatarInput.value = '';
+    syncAvatarFallback();
+  });
+
+  syncAvatarFallback();
+
+  const saveProfile = async (event) => {
+    event?.preventDefault();
     const name = document.getElementById('edit-name-input').value.trim();
     const email = document.getElementById('edit-email-input').value.trim();
-    if (!name) return;
+    const saveButton = document.getElementById('edit-profile-save-btn');
+    if (!name) {
+      showToast('Escribe tu nombre para continuar', 'error');
+      nameInput.focus();
+      return;
+    }
 
-    const res = await api.updateProfile({ name, email, avatarUrl: tempAvatarUrl });
-    state.currentUser = res.user;
-    DOM.modalEditProfile.classList.add('hidden');
-    renderProfile();
-    renderHeader();
-    showToast('Perfil actualizado');
+    saveButton.disabled = true;
+    saveButton.classList.add('opacity-70', 'cursor-wait');
+    saveButton.textContent = 'Guardando…';
+    try {
+      const res = await api.updateProfile({ name, email, avatarUrl: tempAvatarUrl });
+      state.currentUser = res.user;
+      DOM.modalEditProfile.classList.add('hidden');
+      renderProfile();
+      renderHeader();
+      showToast('Perfil actualizado');
+    } catch (error) {
+      showToast(error.message || 'No se pudo actualizar el perfil', 'error');
+    } finally {
+      saveButton.disabled = false;
+      saveButton.classList.remove('opacity-70', 'cursor-wait');
+      saveButton.textContent = 'Guardar Cambios';
+    }
+  };
+
+  // Delegate the click from the modal container. This remains reliable after
+  // the modal content is replaced and prevents the save action from becoming
+  // detached when a profile photo is selected.
+  DOM.modalEditProfile.onclick = (event) => {
+    const target = event.target;
+    if (target instanceof Element && target.closest('#edit-profile-save-btn')) {
+      void saveProfile(event);
+    }
   };
 }
 
@@ -4887,6 +5421,7 @@ function openCategoryBudgetModal(categoryBudget) {
     try {
       await api.updateCategoryBudget(categoryBudget.category, limit);
       categoryBudget.limit = limit;
+      registerLocalMutation();
       closeModal();
       renderExpenses();
       showToast(`Límite de ${categoryBudget.category} actualizado`);
@@ -4900,13 +5435,13 @@ function openCategoryBudgetModal(categoryBudget) {
 function openEditBudgetModal() {
   const user = state.currentUser;
   if (!user) return;
-  const currentSalary = user.monthlySalary || user.monthlyBudgetLimit || 5800000;
+  const currentLimit = user.monthlyBudgetLimit || user.monthlySalary || 0;
 
   DOM.modalEditBudget.classList.remove('hidden');
   DOM.modalEditBudget.innerHTML = `
     <div class="bg-white rounded-3xl p-5 sm:p-6 max-w-sm w-full shadow-2xl flex flex-col gap-3.5 border border-slate-100">
       <div class="flex items-center justify-between pb-1 border-b border-slate-100">
-        <h3 class="font-bold text-sm text-[#0b1c30]">Ajustar Salario Mensual</h3>
+        <h3 class="font-bold text-sm text-[#0b1c30]">Modificar Límite Mensual</h3>
         <button id="edit-budget-close" type="button" aria-label="Cerrar ajuste de salario" class="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 cursor-pointer">
           ${getIconSvg('x', 'w-4 h-4')}
         </button>
@@ -4916,12 +5451,12 @@ function openEditBudgetModal() {
         <p class="text-xs text-slate-500">Este valor se utiliza para calcular automáticamente tu regla 50/30/20 y límites del mes.</p>
         
         <div>
-          <label class="text-xs font-bold text-[#0b1c30]">Salario mensual (COP)</label>
-          <input id="edit-salary-input" type="text" value="${currentSalary.toLocaleString('es-CO')}" class="w-full mt-1 px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-xs font-bold text-slate-800 tabular-nums focus:outline-none focus:ring-2 focus:ring-[#0058bc]" />
+          <label class="text-xs font-bold text-[#0b1c30]">Límite mensual (COP)</label>
+          <input id="edit-salary-input" type="text" value="${currentLimit.toLocaleString('es-CO')}" class="w-full mt-1 px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-xs font-bold text-slate-800 tabular-nums focus:outline-none focus:ring-2 focus:ring-[#0058bc]" />
         </div>
 
         <button id="edit-budget-save-btn" class="w-full py-2.5 mt-2 rounded-xl bg-[#0058bc] text-white font-bold text-xs shadow-md hover:bg-[#004bb0] active:scale-95 transition-all cursor-pointer">
-          Guardar Salario
+          Guardar límite
         </button>
       </div>
     </div>
@@ -4936,12 +5471,14 @@ function openEditBudgetModal() {
   };
 
   document.getElementById('edit-budget-save-btn').onclick = async () => {
-    const salary = parseInt(salaryInput.value.replace(/\D/g, ''), 10) || 0;
-    const res = await api.updateProfile({ monthlySalary: salary, monthlyBudgetLimit: salary });
+    const limit = parseInt(salaryInput.value.replace(/\D/g, ''), 10) || 0;
+    const res = await api.updateProfile({ monthlyBudgetLimit: limit });
     state.currentUser = res.user;
+    await refreshAllData();
+    state.currentUser = state.currentUser || res.user;
     DOM.modalEditBudget.classList.add('hidden');
-    renderActiveView();
-    showToast('Salario mensual actualizado');
+    renderApp();
+    showToast('Límite mensual actualizado');
   };
 }
 

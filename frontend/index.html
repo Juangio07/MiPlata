@@ -16,8 +16,8 @@
     <link rel="preload" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" as="style" onload="this.onload=null;this.rel='stylesheet'">
     <noscript><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet"></noscript>
     <link rel="stylesheet" href="css/tailwind.generated.css?v=20261019-mobile-v1" />
-    <link rel="stylesheet" href="css/style.min.css?v=20261019-mobile-v1" />
-    <link rel="stylesheet" href="css/quick-add.css?v=20261019-mobile-v1" />
+    <link rel="stylesheet" href="css/style.min.css?v=20261021-monthly-pdf-design-v3" />
+    <link rel="stylesheet" href="css/quick-add.css?v=20261020-quick-add-mobile-v15" />
   </head>
   <body class="bg-[#f8f9ff] text-[#0b1c30] antialiased selection:bg-[#d8e2ff] selection:text-[#001a41]">
     <!-- App Root Wrapper -->
@@ -173,12 +173,15 @@
     </div>
 
     <!-- Application Script Entrypoint -->
-    <link rel="modulepreload" href="js/app.bundle.min.js?v=20261019-mobile-v1" />
-    <script type="module" src="js/app.bundle.min.js?v=20261019-mobile-v1"></script>
+    <script src="js/network-guard.js?v=20261021-network-v1"></script>
+    <script type="module" src="js/demo-login-performance.js?v=20261021-demo-login-v4"></script>
+    <script src="js/auth-bootstrap-guard.js?v=20261022-auth-data-first-v3"></script>
+    <link rel="modulepreload" href="js/app.bundle.delete-fix.js?v=20261022-goal-completion-v2" />
+    <script type="module" src="js/app.bundle.delete-fix.js?v=20261022-goal-completion-v2"></script>
     <script>
       if ('serviceWorker' in navigator && location.protocol !== 'file:') {
         window.addEventListener('load', () => {
-          navigator.serviceWorker.register('/sw.js', { updateViaCache: 'none' }).catch(() => {
+          navigator.serviceWorker.register('/sw.js?v=20261022-auth-data-first-v3', { updateViaCache: 'none' }).catch(() => {
             // La aplicación sigue funcionando aunque el caché offline no esté disponible.
           });
         });

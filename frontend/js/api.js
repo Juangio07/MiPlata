@@ -9,10 +9,45 @@
 const API_BASE = '';
 const SESSION_KEY = 'miplata_supabase_session';
 const BOOTSTRAP_CACHE_KEY = 'miplata_bootstrap_cache';
-const DEMO_EMAIL = 'demo@miplata.app';
+export const DEMO_EMAIL = 'demo@miplata.app';
 const API_TIMEOUT_MS = 15000;
 const GET_RETRY_DELAY_MS = 250;
+const AUTH_NETWORK_RETRY_PATHS = new Set([
+  '/api/auth/login',
+  '/api/auth/demo',
+]);
+const SESSION_EXPIRY_SKEW_SECONDS = 45;
+const MAX_EMBEDDED_IMAGE_DATA_URL_LENGTH = 600000;
 const inFlightMutations = new Map();
+
+function validateImagePayload(payload) {
+  const imageUrl = String(payload?.imageUrl || '');
+  if (imageUrl.startsWith('data:') && imageUrl.length > MAX_EMBEDDED_IMAGE_DATA_URL_LENGTH) {
+    throw new Error('La imagen es demasiado grande. Elige una imagen más pequeña');
+  }
+}
+
+function isNetworkFailure(error) {
+  if (error?.code === 'MIPLATA_NETWORK_ERROR') return true;
+  const message = String(error?.message || '');
+  return error instanceof TypeError
+    || /failed to fetch|networkerror|load failed/i.test(message);
+}
+
+function createNetworkError() {
+  const error = new Error(
+    'No se pudo conectar con MiPlata. Verifica que el servidor esté activo e inténtalo de nuevo.',
+  );
+  error.code = 'MIPLATA_NETWORK_ERROR';
+  return error;
+}
+
+function normalizeNetworkError(error) {
+  if (error?.name === 'AbortError') {
+    return new Error('El servidor tardó demasiado en responder. Intenta nuevamente.');
+  }
+  return isNetworkFailure(error) ? createNetworkError() : error;
+}
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = API_TIMEOUT_MS) {
   const controller = new AbortController();
@@ -20,10 +55,7 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = API_TIMEOUT_MS) {
   try {
     return await fetch(url, { ...options, signal: controller.signal });
   } catch (error) {
-    if (error?.name === 'AbortError') {
-      throw new Error('El servidor tardó demasiado en responder. Intenta nuevamente.');
-    }
-    throw error;
+    throw normalizeNetworkError(error);
   } finally {
     window.clearTimeout(timeoutId);
   }
@@ -34,12 +66,30 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = API_TIMEOUT_MS) {
 // that disappears when the page is reloaded or the session is closed.
 let demoRuntime = null;
 
-function isDemoUser(user) {
-  return String(user?.email || '').trim().toLowerCase() === DEMO_EMAIL;
+export function isDemoUser(user) {
+  return String(user?.email || '').trim().toLowerCase() === DEMO_EMAIL
+    || String(user?.name || '').trim().toLowerCase() === 'fixelar';
 }
 
 function clone(value) {
   return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
+}
+
+function readCachedBootstrap() {
+  try {
+    return JSON.parse(localStorage.getItem(BOOTSTRAP_CACHE_KEY) || 'null');
+  } catch (_error) {
+    return null;
+  }
+}
+
+function hasActiveDemoSession() {
+  try {
+    const currentUser = JSON.parse(localStorage.getItem('miplata_user_cache') || 'null');
+    return String(currentUser?.email || '').trim().toLowerCase() === DEMO_EMAIL;
+  } catch (_error) {
+    return false;
+  }
 }
 
 function syncDemoGoalAmounts(goals, contributions) {
@@ -61,6 +111,20 @@ function createDemoId(prefix) {
 
 function demoToday() {
   return new Date().toISOString().slice(0, 10);
+}
+
+function getDemoAvailableCash() {
+  if (!isDemoRuntimeActive()) return 0;
+  const income = demoRuntime.transactions
+    .filter((transaction) => transaction.type === 'ingreso')
+    .reduce((total, transaction) => total + (Number(transaction.amount) || 0), 0);
+  const expenses = demoRuntime.transactions
+    .filter((transaction) => transaction.type === 'gasto')
+    .reduce((total, transaction) => total + (Number(transaction.amount) || 0), 0);
+  const contributions = demoRuntime.goalContributions
+    .filter((contribution) => String(contribution.date || '').startsWith(demoToday().slice(0, 7)))
+    .reduce((total, contribution) => total + (Number(contribution.amount) || 0), 0);
+  return Math.max(0, income - expenses - contributions);
 }
 
 function activateDemoRuntime(data) {
@@ -86,6 +150,10 @@ function activateDemoRuntime(data) {
 }
 
 function isDemoRuntimeActive() {
+  if (!demoRuntime) {
+    const cachedBootstrap = readCachedBootstrap();
+    if (cachedBootstrap?.user && isDemoUser(cachedBootstrap.user)) activateDemoRuntime(cachedBootstrap);
+  }
   return Boolean(demoRuntime?.isDemo);
 }
 
@@ -146,7 +214,10 @@ async function refreshSession() {
         if (!res.ok) return false;
         const data = await res.json();
         if (!data.session?.access_token) return false;
-        saveSession(data.session);
+        // Supabase normally rotates the refresh token, but keeping the old
+        // one as a fallback prevents a valid session from becoming unusable
+        // when a response omits that field.
+        saveSession({ ...session, ...data.session });
         return true;
       })
       .catch(() => false)
@@ -157,8 +228,17 @@ async function refreshSession() {
   return refreshPromise;
 }
 
-async function request(path, options = {}, retry = true) {
-  const headers = { ...getHeaders(), ...(options.headers || {}) };
+function sessionNeedsRefresh(session) {
+  const expiresAt = Number(session?.expires_at || 0);
+  if (!expiresAt) return false;
+  return expiresAt <= Math.floor(Date.now() / 1000) + SESSION_EXPIRY_SKEW_SECONDS;
+}
+
+function notifySessionExpired() {
+  window.dispatchEvent(new CustomEvent('miplata:auth-expired'));
+}
+
+async function request(path, options = {}, retry = true, networkAttempt = 0) {
   const method = String(options.method || 'GET').toUpperCase();
   const lockKey = retry && method !== 'GET' && method !== 'HEAD'
     ? `${method}:${path}:${options.body || ''}`
@@ -167,19 +247,46 @@ async function request(path, options = {}, retry = true) {
 
   const execute = async () => {
     try {
-      const res = await fetchWithTimeout(`${API_BASE}${path}`, { ...options, headers });
+      const session = readSession();
+      if (retry && session?.access_token && sessionNeedsRefresh(session)) {
+        const refreshed = await refreshSession();
+        if (!refreshed) {
+          clearSession();
+          notifySessionExpired();
+          return new Response(JSON.stringify({ error: 'Tu sesión expiró. Ingresa nuevamente.' }), {
+            status: 401,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+      }
+
+      const requestHeaders = { ...getHeaders(), ...(options.headers || {}) };
+      const res = await fetchWithTimeout(`${API_BASE}${path}`, { ...options, headers: requestHeaders });
       if (res.status === 401 && retry && path !== '/api/auth/refresh') {
         const refreshed = await refreshSession();
-        if (refreshed) return request(path, options, false);
+        if (refreshed) {
+          const retryResponse = await request(path, options, false);
+          if (retryResponse.status !== 401) return retryResponse;
+        }
         clearSession();
+        notifySessionExpired();
       }
       return res;
     } catch (error) {
-      if (retry && method === 'GET') {
+      const normalizedError = normalizeNetworkError(error);
+      if (
+        networkAttempt === 0
+        && AUTH_NETWORK_RETRY_PATHS.has(path)
+        && isNetworkFailure(normalizedError)
+      ) {
         await new Promise((resolve) => window.setTimeout(resolve, GET_RETRY_DELAY_MS));
-        return request(path, options, false);
+        return request(path, options, retry, 1);
       }
-      throw error;
+      if (retry && method === 'GET' && networkAttempt === 0) {
+        await new Promise((resolve) => window.setTimeout(resolve, GET_RETRY_DELAY_MS));
+        return request(path, options, false, 1);
+      }
+      throw normalizedError;
     }
   };
 
@@ -195,6 +302,7 @@ async function request(path, options = {}, retry = true) {
 
 async function readError(res, fallback) {
   const data = await res.json().catch(() => ({}));
+  if (res.status === 401) return 'Tu sesión expiró. Ingresa nuevamente para continuar.';
   return data.error || fallback;
 }
 
@@ -216,12 +324,24 @@ function storeAuthResponse(data) {
 
 export const api = {
   async getBootstrap() {
+    const cachedDemo = readCachedBootstrap();
     if (!readSession()?.access_token) {
       clearSession();
       return null;
     }
     const demoData = getDemoBootstrap();
     if (demoData) return demoData;
+
+    // The demo account is intentionally session-only. When the page is
+    // reloaded, restore its seed from the last verified bootstrap instead of
+    // sending demo mutations to the backend while the local server is
+    // unavailable or the demo token has expired. A normal account never
+    // enters this branch because its cached user is not the demo account.
+    if (hasActiveDemoSession() && cachedDemo?.user && isDemoUser(cachedDemo.user)) {
+      const restoredDemo = activateDemoRuntime(cachedDemo);
+      if (restoredDemo) return getDemoBootstrap();
+    }
+
     const res = await request('/api/bootstrap');
     if (res.status === 401) return null;
     if (!res.ok) throw new Error(await readError(res, 'No se pudo cargar la aplicación'));
@@ -281,20 +401,30 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ email, password }),
     }, false);
-    if (!res.ok) throw new Error(await readError(res, 'Credenciales incorrectas'));
+    if (!res.ok) {
+      if (res.status === 401) {
+        throw new Error('Correo o contraseña incorrectos.');
+      }
+      throw new Error(await readError(res, 'Credenciales incorrectas'));
+    }
     const data = await res.json();
     demoRuntime = null;
     storeAuthResponse(data);
+    const cached = readCachedBootstrap();
+    if (cached?.user?.id && cached.user.id === data?.user?.id) {
+      data.bootstrap = cached;
+    }
     return data;
   },
 
   async register(name, email, password, monthlySalary, avatarUrl) {
+    validateImagePayload({ imageUrl: avatarUrl });
     const res = await request('/api/auth/register', {
       method: 'POST',
       body: JSON.stringify({ name, email, password, monthlySalary, avatarUrl }),
     }, false);
     if (res.status === 409) {
-      throw new Error('Este correo ya está registrado. Inicia sesión o usa otro correo.');
+      throw new Error('Correo ya registrado.');
     }
     if (!res.ok) throw new Error(await readError(res, 'Error al crear cuenta'));
     const data = await res.json();
@@ -331,6 +461,7 @@ export const api = {
   },
 
   async updateProfile(updates) {
+    validateImagePayload(updates);
     if (isDemoRuntimeActive()) {
       demoRuntime.user = { ...demoRuntime.user, ...clone(updates) };
       if (updates.budgetRule) {
@@ -344,7 +475,12 @@ export const api = {
     const res = await request('/api/user/profile', { method: 'PUT', body: JSON.stringify(updates) });
     if (!res.ok) throw new Error(await readError(res, 'Error al actualizar perfil'));
     const data = await res.json();
-    if (data.user) localStorage.setItem('miplata_user_cache', JSON.stringify(data.user));
+    if (data.user) {
+      localStorage.setItem('miplata_user_cache', JSON.stringify(data.user));
+      // Profile mutations must not be overwritten by the previous bootstrap
+      // snapshot when refreshAllData loads the updated state.
+      localStorage.removeItem(BOOTSTRAP_CACHE_KEY);
+    }
     return data;
   },
 
@@ -374,8 +510,7 @@ export const api = {
 
   async deleteAccount() {
     if (isDemoRuntimeActive()) {
-      clearSession();
-      return { message: 'La cuenta demo no se puede eliminar' };
+      return { protected: true, message: 'La cuenta demo está protegida y no se puede eliminar' };
     }
     const res = await request('/api/user', { method: 'DELETE' });
     if (!res.ok) throw new Error(await readError(res, 'Error al eliminar cuenta'));
@@ -469,12 +604,18 @@ export const api = {
       const obligation = demoRuntime.fixedObligations.find((item) => item.id === id);
       if (!obligation) throw new Error('Obligación no encontrada');
       const isPaid = obligation.status !== 'paid';
+      const availableCash = getDemoAvailableCash();
+      if (isPaid && Number(obligation.amount) > availableCash) {
+        throw new Error(`Saldo insuficiente. Disponible: $${availableCash.toLocaleString('es-CO')} COP`);
+      }
       obligation.status = isPaid ? 'paid' : 'pending';
       obligation.paidDate = isPaid ? demoToday() : null;
       const linked = demoRuntime.transactions.some((item) => item.fixedObligationId === id);
+      let transactionId = demoRuntime.transactions.find((item) => item.fixedObligationId === id)?.id || null;
       if (isPaid && !linked) {
+        transactionId = createDemoId(`tx_fix_${id}`);
         demoRuntime.transactions.push({
-          id: createDemoId(`tx_fix_${id}`),
+          id: transactionId,
           userId: demoRuntime.user.id,
           type: 'gasto',
           amount: Number(obligation.amount) || 0,
@@ -491,7 +632,7 @@ export const api = {
         demoRuntime.transactions = demoRuntime.transactions.filter((item) => item.fixedObligationId !== id);
       }
       return {
-        result: { status: obligation.status, isPaid },
+        result: { status: obligation.status, isPaid, transactionId },
         message: isPaid ? 'Marcado como pagado e integrado a gastos.' : 'Gasto fijo desmarcado (vuelve a pendiente).',
       };
     }
@@ -509,6 +650,7 @@ export const api = {
   },
 
   async addSavingsGoal(goal) {
+    validateImagePayload(goal);
     if (isDemoRuntimeActive()) {
       const id = goal.id || createDemoId('goal_demo');
       demoRuntime.savingsGoals.push({
@@ -526,6 +668,7 @@ export const api = {
   },
 
   async updateSavingsGoal(id, updates) {
+    validateImagePayload(updates);
     if (isDemoRuntimeActive()) {
       const goal = demoRuntime.savingsGoals.find((item) => item.id === id);
       if (goal) {
@@ -543,6 +686,7 @@ export const api = {
   async deleteSavingsGoal(id) {
     if (isDemoRuntimeActive()) {
       demoRuntime.savingsGoals = demoRuntime.savingsGoals.filter((item) => item.id !== id);
+      demoRuntime.goalContributions = demoRuntime.goalContributions.filter((item) => item.goalId !== id);
       return { message: 'Meta de ahorro eliminada' };
     }
     const res = await request(`/api/savings-goals/${id}`, { method: 'DELETE' });
@@ -554,10 +698,18 @@ export const api = {
     if (isDemoRuntimeActive()) {
       const goal = demoRuntime.savingsGoals.find((item) => item.id === goalId);
       if (!goal) throw new Error('Meta no encontrada');
+      const numericAmount = Number(amount);
+      if (!Number.isFinite(numericAmount) || numericAmount <= 0) {
+        throw new Error('El monto debe ser mayor a 0');
+      }
+      const availableCash = getDemoAvailableCash();
+      if (numericAmount > availableCash) {
+        throw new Error(`No tienes suficiente dinero disponible. Te quedan $${availableCash.toLocaleString('es-CO')} COP`);
+      }
       const contributedAmount = demoRuntime.goalContributions
         .filter((contribution) => contribution.goalId === goalId)
         .reduce((total, contribution) => total + (Number(contribution.amount) || 0), 0);
-      const newAmount = contributedAmount + (Number(amount) || 0);
+      const newAmount = contributedAmount + numericAmount;
       goal.currentAmount = newAmount;
       const contributionId = createDemoId('contrib_demo');
       demoRuntime.goalContributions.unshift({
@@ -565,7 +717,7 @@ export const api = {
         userId: demoRuntime.user.id,
         goalId,
         goalName: goal.name,
-        amount: Number(amount) || 0,
+        amount: numericAmount,
         date: demoToday(),
         type,
         timestamp: Date.now(),

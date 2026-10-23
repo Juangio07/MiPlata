@@ -129,27 +129,16 @@ export function getFinancialAlerts(data) {
       alerts.push({
         id: 'alert_budget_80',
         type: 'warning',
-        title: `Alerta preventiva: ${monthlyBudgetPercent}% de presupuesto usado`,
-        description: `Has consumido ${formatCOP(monthlyBudgetSpent)} de tu presupuesto mensual. Te quedan ${formatCOP(monthlyBudgetRemaining, true)} disponibles.`,
+        title: `Presupuesto usado al ${monthlyBudgetPercent}%`,
+        description: `Disponible: ${formatCOP(monthlyBudgetRemaining, true)}.`,
         actionLabel: 'Controlar gastos',
         actionTab: 'gastos',
       });
     }
   }
 
-  // 2. Cashflow / Deficit Alert
-  if (totalIncome > 0 && totalExpenses + fixedCommitted > totalIncome) {
-    const deficit = totalExpenses + fixedCommitted - totalIncome;
-    alerts.push({
-      id: 'alert_cashflow_negative',
-      type: 'danger',
-      title: 'Compromisos superan ingresos del mes',
-      description: `Tus gastos acumulados más compromisos fijos (${formatCOP(totalExpenses + fixedCommitted)}) exceden lo recibido por ${formatCOP(deficit, true)}.`,
-      actionLabel: 'Ver balance',
-      actionTab: 'inicio',
-      actionFocus: 'balance',
-    });
-  } else if (totalIncome === 0 && totalExpenses > 0) {
+  // 2. Income registration and available-money alerts
+  if (totalIncome === 0 && totalExpenses > 0) {
     alerts.push({
       id: 'alert_no_income_registered',
       type: 'info',
@@ -157,16 +146,6 @@ export function getFinancialAlerts(data) {
       description: `Tienes ${formatCOP(totalExpenses)} en gastos. Registra tus ingresos recibidos para calcular con exactitud tu dinero disponible real.`,
       actionLabel: 'Registrar ingreso',
       actionTab: 'ingresos',
-    });
-  } else if (totalIncome > 0 && availableCash === 0 && (totalExpenses > 0 || fixedCommitted > 0)) {
-    alerts.push({
-      id: 'alert_zero_available',
-      type: 'warning',
-      icon: 'wallet',
-      title: 'Dinero disponible en $0 COP',
-      description: 'Todos tus ingresos del mes están comprometidos en gastos ya pagados o cuotas pendientes.',
-      actionLabel: 'Ver compromisos',
-      actionTab: 'obligaciones',
     });
   }
 
@@ -188,21 +167,39 @@ export function getFinancialTips(data) {
 
   const rawTips = [];
 
-  const salary = effectiveMonthlyIncome || currentUser?.monthlySalary || currentUser?.monthlyBudgetLimit || totalIncome || 0;
+  // Smart advice follows the limit selected in Profile. The recorded income
+  // continues to control available cash, but changing the limit must also
+  // recalculate the amounts suggested by these tips.
+  const salary = currentUser?.monthlyBudgetLimit || effectiveMonthlyIncome || currentUser?.monthlySalary || totalIncome || 0;
   const savingsRulePercent = (currentUser?.budgetRule?.savings || 20) / 100;
   const needsRulePercent = (currentUser?.budgetRule?.needs || 50) / 100;
   const wantsRulePercent = (currentUser?.budgetRule?.wants || 30) / 100;
 
-  const realisticMonthlySavingsCap = salary > 0
-    ? Math.round(salary * savingsRulePercent)
-    : Math.max(50000, Math.round(availableCash * 0.2));
-  const realisticQuincenalCap = Math.max(50000, Math.round((realisticMonthlySavingsCap / 2) / 10000) * 10000);
+  const suggestedNeeds = salary > 0 ? Math.round(salary * needsRulePercent) : 0;
+  const suggestedWants = salary > 0 ? Math.round(salary * wantsRulePercent) : 0;
+  const idealSavings = salary > 0 ? Math.round(salary * savingsRulePercent) : 0;
+  // Savings are capped by the 50/30/20 plan and reduced when fixed
+  // commitments leave less room. This keeps the advice from treating the
+  // entire salary as money that can be saved.
+  const maximumSavingsAfterCommitments = salary > 0
+    ? Math.max(0, salary - fixedTotal - suggestedWants)
+    : 0;
+  const plannedMonthlySavings = salary > 0
+    ? Math.min(idealSavings, maximumSavingsAfterCommitments)
+    : Math.round(Math.max(0, availableCash) * 0.2);
+
+  // The amount recommended for a goal can never be greater than the current
+  // available cash. Pending fixed obligations are not deducted until they
+  // are actually paid and recorded as expenses.
+  const goalCash = Math.max(0, availableCash);
+  const realisticMonthlySavingsCap = plannedMonthlySavings;
+  const realisticQuincenalCap = realisticMonthlySavingsCap > 0
+    ? Math.min(goalCash, Math.max(1000, Math.round((realisticMonthlySavingsCap / 2) / 10000) * 10000))
+    : 0;
 
   // PILLAR 1: 50/30/20 Rule
   if (salary > 0) {
-    const suggestedNeeds = Math.round(salary * needsRulePercent);
-    const suggestedWants = Math.round(salary * wantsRulePercent);
-    const suggestedSavings = Math.round(salary * savingsRulePercent);
+    const suggestedSavings = plannedMonthlySavings;
     const quincenalSavingsIdeal = Math.round((suggestedSavings / 2) / 10000) * 10000;
 
     if (fixedTotal > 0 && fixedTotal <= suggestedNeeds) {
@@ -276,15 +273,16 @@ export function getFinancialTips(data) {
     const remaining = incompleteGoal.targetAmount - incompleteGoal.currentAmount;
     const suggestedBoost = Math.min(
       remaining,
-      Math.max(50000, Math.round((availableCash * 0.12) / 10000) * 10000),
-      realisticQuincenalCap
+      goalCash,
+      Math.max(1000, Math.round((goalCash * 0.12) / 10000) * 10000),
+      realisticQuincenalCap || goalCash,
     );
-    if (availableCash >= 50000 && suggestedBoost >= 50000) {
+    if (goalCash >= 50000 && suggestedBoost >= 50000) {
       rawTips.push({
         id: 'tip_goal_boost',
         tag: 'Impulso a Metas',
         title: `Acelera tu meta "${incompleteGoal.name}"`,
-        message: `Tienes ${formatCOP(availableCash)} libres hoy. Si apartas ${formatCOP(suggestedBoost, true)}, tu meta alcanzará el ${Math.round(((incompleteGoal.currentAmount + suggestedBoost) / incompleteGoal.targetAmount) * 100)}% sin desbalancear tus compromisos fijos del mes.`,
+        message: `Tienes ${formatCOP(goalCash)} disponibles. Si apartas ${formatCOP(suggestedBoost, true)}, tu meta alcanzará el ${Math.round(((incompleteGoal.currentAmount + suggestedBoost) / incompleteGoal.targetAmount) * 100)}% sin superar tu saldo disponible.`,
         actionLabel: 'Aportar ahora',
         actionTab: 'metas',
         iconType: 'goal',
@@ -294,7 +292,7 @@ export function getFinancialTips(data) {
 
   // Additional rotating advice keeps the home carousel useful even when the
   // person has few movements recorded. Every message is calculated from the
-  // configured salary, budget rule, commitments, cash and savings goals.
+  // configured limit, budget rule, commitments, cash and savings goals.
   const daysInMonth = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).getDate();
   const daysRemaining = Math.max(1, daysInMonth - new Date().getDate() + 1);
   const availableForVariableSpending = Math.max(0, salary - fixedTotal - realisticMonthlySavingsCap);
@@ -306,7 +304,7 @@ export function getFinancialTips(data) {
   const nextGoal = savingsGoals.find((goal) => goal.currentAmount < goal.targetAmount);
   const nextGoalRemaining = nextGoal ? Math.max(0, nextGoal.targetAmount - nextGoal.currentAmount) : 0;
   const nextGoalMonthly = nextGoal
-    ? Math.max(50000, Math.ceil((nextGoalRemaining / 6) / 10000) * 10000)
+    ? Math.min(goalCash, Math.max(1000, Math.ceil((nextGoalRemaining / 6) / 10000) * 10000))
     : realisticMonthlySavingsCap;
 
   const additionalTips = [
@@ -348,7 +346,9 @@ export function getFinancialTips(data) {
       tag: 'Plan de ahorro',
       title: nextGoal ? `Programa tu próxima meta: "${nextGoal.name}"` : 'Convierte tu ahorro en una meta',
       message: nextGoal
-        ? `Te faltan ${formatCOP(nextGoalRemaining, true)}. Si separas alrededor de ${formatCOP(nextGoalMonthly, true)} al mes, avanzarás de forma constante sin usar el dinero destinado a tus compromisos.`
+        ? nextGoalMonthly > 0
+          ? `Te faltan ${formatCOP(nextGoalRemaining, true)}. Si separas alrededor de ${formatCOP(nextGoalMonthly, true)} al mes, avanzarás de forma constante sin superar tu saldo disponible.`
+          : `Te faltan ${formatCOP(nextGoalRemaining, true)}, pero ahora no tienes saldo disponible para aportar.`
         : `Con un sueldo de ${formatCOP(salary, true)}, apartar ${formatCOP(realisticMonthlySavingsCap, true)} al mes puede convertirse en una meta concreta y medible.`,
       actionLabel: 'Ver metas',
       actionTab: 'metas',
