@@ -721,6 +721,24 @@ async function refreshAllData(expectedMutationVersion = null) {
   }
 }
 
+function persistLocalBootstrapCache() {
+  if (!state.currentUser?.id || isDemoAccountState()) return;
+
+  try {
+    localStorage.setItem('miplata_bootstrap_cache', JSON.stringify({
+      user: state.currentUser,
+      transactions: state.transactions,
+      fixedObligations: state.fixedObligations,
+      savingsGoals: state.savingsGoals,
+      goalContributions: state.goalContributions,
+      categoryBudgets: state.categoryBudgets,
+      availableMonths: state.availableMonths,
+    }));
+  } catch (_error) {
+    // The live in-memory state remains authoritative if browser storage is full.
+  }
+}
+
 function registerLocalMutation(...records) {
   localMutationVersion += 1;
   state.monthlyReports = {};
@@ -734,18 +752,10 @@ function registerLocalMutation(...records) {
   // mutations in memory, so reconciling with the seed would undo the user's
   // changes before the page is reloaded or the session ends.
   if (isDemoAccountState()) return;
-  scheduleMutationReconcile();
-}
-
-function scheduleMutationReconcile() {
-  if (mutationReconcileTimer) window.clearTimeout(mutationReconcileTimer);
-  const expectedMutationVersion = localMutationVersion;
-  mutationReconcileTimer = window.setTimeout(async () => {
-    mutationReconcileTimer = null;
-    const refreshed = await refreshAllData(expectedMutationVersion);
-    if (refreshed) renderActiveView();
-    else if (expectedMutationVersion !== localMutationVersion) scheduleMutationReconcile();
-  }, 1500);
+  // The mutation response has already been accepted by the backend. Keep the
+  // local state visible immediately instead of replacing it with a potentially
+  // stale or partial bootstrap response a moment later.
+  persistLocalBootstrapCache();
 }
 
 function applyLocalTransaction(tx, response = {}) {
@@ -4609,7 +4619,7 @@ function openAddOrEditObligationModal(obligation = null) {
   const selectedCategory = inferFixedObligationCategory(isEdit ? obligation.category : 'Servicios públicos', isEdit ? obligation.name : '');
 
   DOM.modalFixedObligation.innerHTML = `
-    <div class="bg-white rounded-t-[28px] sm:rounded-[28px] p-5 sm:p-6 max-w-md w-full shadow-2xl flex flex-col border border-slate-100 max-h-[calc(100vh-4px)] overflow-y-auto">
+    <div class="fixed-obligation-page bg-white rounded-[26px] p-6 max-w-md w-full min-w-0 max-h-[calc(100dvh-24px)] overflow-y-auto overflow-x-hidden no-scrollbar shadow-2xl border border-slate-100">
       <div class="w-12 h-1 rounded-full bg-[#c7d6e8] mx-auto mb-4 sm:hidden"></div>
       <div class="flex items-center justify-between mb-5">
         <h3 class="font-extrabold text-lg text-[#0b1c30]">${title}</h3>
