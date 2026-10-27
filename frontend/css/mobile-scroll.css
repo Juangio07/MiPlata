@@ -1,0 +1,32 @@
+/* Keep mobile browser overscroll from exposing blank space past the app. */
+html,
+body {
+  min-height: 100%;
+  background-color: var(--bg-main);
+  overscroll-behavior-y: none;
+}
+
+body {
+  min-height: 100dvh;
+  overflow-x: hidden;
+}
+
+#app {
+  min-height: 100dvh;
+}
+
+/* Advice cards change only through their controls; horizontal pointer dragging
+   can desynchronize the active card from the rendered height. */
+.financial-tips-scroll {
+  overflow-x: hidden;
+  overflow-y: hidden;
+  touch-action: pan-y;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+}
+
+.financial-tips-scroll * {
+  user-select: none;
+  -webkit-user-select: none;
+}
