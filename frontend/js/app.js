@@ -4262,19 +4262,19 @@ function renderAuth() {
 // Quick Add Transaction Modal (<10s Keypad)
 const SMART_CATEGORY_RULES = {
   gasto: [
-    { category: 'Alimentación', keywords: ['almuerzo', 'desayuno', 'cena', 'comida', 'restaurante', 'supermercado', 'mercado', 'carulla', 'exito', 'd1', 'fruta', 'pan', 'cafe', 'empanada', 'domicilio', 'rappi', 'comida rapida'] },
-    { category: 'Transporte', keywords: ['uber', 'taxi', 'bus', 'transmilenio', 'metro', 'gasolina', 'combustible', 'parqueadero', 'peaje', 'soat', 'pasaje', 'moto', 'bicicleta'] },
-    { category: 'Compras', keywords: ['compra', 'ropa', 'zapatos', 'electronica', 'amazon', 'mercado libre', 'falabella', 'regalo', 'hogar'] },
-    { category: 'Servicios', keywords: ['arriendo', 'alquiler', 'luz', 'agua', 'energia', 'gas', 'internet', 'telefono', 'celular', 'factura', 'servicio'] },
-    { category: 'Salud', keywords: ['salud', 'medico', 'medicina', 'medicamento', 'medicamentos', 'farmacia', 'drogueria', 'consulta', 'hospital', 'laboratorio', 'examen', 'urgencias', 'odontologo', 'dentista', 'terapia', 'psicologo', 'vitamina', 'vitaminas', 'eps', 'seguro'] },
-    { category: 'Entretenimiento', keywords: ['cine', 'concierto', 'netflix', 'spotify', 'juego', 'videojuego', 'gimnasio', 'bar', 'fiesta', 'ocio'] },
-    { category: 'Educación', keywords: ['colegio', 'universidad', 'curso', 'clase', 'libro', 'matricula', 'educacion', 'papeleria'] },
+    { category: 'Alimentación', keywords: ['alimentacion', 'almuerzo', 'desayuno', 'cena', 'comida', 'restaurante', 'supermercado', 'mercado', 'mercado mensual', 'carulla', 'exito', 'd1', 'ara', 'olimpica', 'fruver', 'fruta', 'frutas', 'verduras', 'pan', 'panaderia', 'cafe', 'cafeteria', 'empanada', 'domicilio', 'rappi', 'ifood', 'uber eats', 'comida rapida', 'pizza', 'hamburguesa', 'pollo', 'carne', 'tienda', 'plaza de mercado', 'minimercado', 'snacks', 'refresco', 'bebida'] },
+    { category: 'Transporte', keywords: ['transporte', 'uber', 'didi', 'cabify', 'taxi', 'bus', 'buseta', 'transmilenio', 'transmi', 'metro', 'metroplus', 'gasolina', 'combustible', 'parqueadero', 'parqueo', 'peaje', 'soat', 'pasaje', 'moto', 'motocicleta', 'bicicleta', 'bici', 'carro', 'vehiculo', 'mantenimiento carro', 'taller', 'llanta', 'llantas', 'reparacion carro', 'lavado carro'] },
+    { category: 'Compras', keywords: ['compra', 'compras', 'ropa', 'zapatos', 'tenis', 'vestido', 'electronica', 'electrodomestico', 'celular', 'computador', 'portatil', 'tablet', 'amazon', 'mercado libre', 'mercadolibre', 'falabella', 'regalo', 'hogar', 'muebles', 'accesorio', 'accesorios', 'juguete', 'maquillaje', 'cosmeticos', 'ferreteria', 'decoracion'] },
+    { category: 'Servicios', keywords: ['arriendo', 'alquiler', 'administracion', 'luz', 'agua', 'energia', 'gas', 'internet', 'wifi', 'telefono', 'telefonia', 'celular', 'plan celular', 'factura', 'factura de servicios', 'servicio', 'servicios', 'tv', 'cable', 'suscripcion', 'suscripciones'] },
+    { category: 'Salud', keywords: ['salud', 'medico', 'medicina', 'medicamento', 'medicamentos', 'farmacia', 'drogueria', 'consulta', 'cita medica', 'hospital', 'clinica', 'laboratorio', 'examen', 'urgencias', 'odontologo', 'dentista', 'terapia', 'psicologo', 'fisioterapia', 'vitamina', 'vitaminas', 'eps', 'seguro', 'cirugia', 'optica', 'lentes'] },
+    { category: 'Entretenimiento', keywords: ['cine', 'pelicula', 'concierto', 'teatro', 'netflix', 'spotify', 'disney', 'hbo', 'youtube premium', 'prime video', 'juego', 'videojuego', 'gimnasio', 'bar', 'fiesta', 'ocio', 'parque'] },
+    { category: 'Educación', keywords: ['colegio', 'universidad', 'curso', 'clase', 'libro', 'matricula', 'educacion', 'papeleria', 'cuaderno', 'lapiz', 'seminario', 'diplomado'] },
   ],
   ingreso: [
-    { category: 'Nómina', keywords: ['salario', 'sueldo', 'nomina', 'nomina', 'quincena', 'pago laboral', 'empresa'] },
-    { category: 'Honorarios', keywords: ['honorario', 'freelance', 'consultoria', 'asesoria', 'servicio profesional', 'cliente'] },
-    { category: 'Negocio', keywords: ['venta', 'negocio', 'cliente', 'pedido', 'emprendimiento', 'producto'] },
-    { category: 'Inversión', keywords: ['inversion', 'dividendos', 'intereses', 'rendimiento', 'interes', 'fondo'] },
+    { category: 'Nómina', keywords: ['salario', 'sueldo', 'nomina', 'quincena', 'pago laboral', 'pago de nomina', 'empresa', 'liquidacion', 'prima', 'cesantias', 'vacaciones', 'bonificacion', 'bono', 'prestaciones', 'pago de sueldo'] },
+    { category: 'Honorarios', keywords: ['honorario', 'honorarios', 'freelance', 'consultoria', 'asesoria', 'servicio profesional', 'servicios profesionales', 'proyecto', 'contrato', 'trabajo independiente', 'comision profesional', 'prestacion de servicios'] },
+    { category: 'Negocio', keywords: ['venta', 'ventas', 'negocio', 'cliente', 'pedido', 'emprendimiento', 'producto', 'tienda', 'factura cobrada', 'cobro', 'comercio', 'mi negocio', 'servicio vendido'] },
+    { category: 'Inversión', keywords: ['inversion', 'dividendos', 'intereses', 'rendimiento', 'interes', 'fondo', 'acciones', 'accion', 'rentabilidad', 'ganancia inversion', 'cdt', 'interes cdt', 'arriendo recibido', 'alquiler recibido', 'renta'] },
   ],
 };
 
@@ -4283,7 +4283,20 @@ function normalizeSmartCategoryText(value) {
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
     .trim();
+}
+
+function containsSmartCategoryKeyword(text, keyword) {
+  const words = text.split(' ').filter(Boolean);
+  const keywordWords = normalizeSmartCategoryText(keyword).split(' ').filter(Boolean);
+  if (!keywordWords.length || keywordWords.length > words.length) return false;
+
+  for (let index = 0; index <= words.length - keywordWords.length; index += 1) {
+    if (keywordWords.every((word, offset) => words[index + offset] === word)) return true;
+  }
+  return false;
 }
 
 function suggestCategoryFromDescription(type, description) {
@@ -4296,7 +4309,9 @@ function suggestCategoryFromDescription(type, description) {
   rules.forEach((rule) => {
     const score = rule.keywords.reduce((total, keyword) => {
       const normalizedKeyword = normalizeSmartCategoryText(keyword);
-      return total + (text.includes(normalizedKeyword) ? normalizedKeyword.length : 0);
+      if (!containsSmartCategoryKeyword(text, normalizedKeyword)) return total;
+      const phraseBonus = Math.max(0, normalizedKeyword.split(' ').length - 1) * 4;
+      return total + normalizedKeyword.length + phraseBonus;
     }, 0);
     if (score > bestMatch.score) bestMatch = { category: rule.category, score };
   });
