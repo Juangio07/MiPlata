@@ -2392,7 +2392,7 @@ function renderExpenses() {
     groupedTxs[label].push(tx);
   });
 
-  const expenseCategoriesList = ['Alimentación', 'Transporte', 'Compras', 'Servicios', 'Salud', 'Entretenimiento', 'Educación', 'Ahorro / Metas', 'Otros'];
+  const expenseCategoriesList = ['Alimentación', 'Transporte', 'Compras', 'Servicios', 'Salud', 'Entretenimiento', 'Educación', 'Viajes', 'Mascotas', 'Donaciones', 'Ahorro / Metas', 'Otros'];
   const incomeCategoriesList = ['Nómina', 'Honorarios', 'Negocio', 'Inversión', 'Otros'];
   const categoriesList = [
     'Todos',
@@ -4269,6 +4269,9 @@ const SMART_CATEGORY_RULES = {
     { category: 'Salud', keywords: ['salud', 'medico', 'medicina', 'medicamento', 'medicamentos', 'farmacia', 'drogueria', 'consulta', 'cita medica', 'hospital', 'clinica', 'laboratorio', 'examen', 'urgencias', 'odontologo', 'dentista', 'terapia', 'psicologo', 'fisioterapia', 'vitamina', 'vitaminas', 'eps', 'seguro', 'cirugia', 'optica', 'lentes'] },
     { category: 'Entretenimiento', keywords: ['cine', 'pelicula', 'concierto', 'teatro', 'netflix', 'spotify', 'disney', 'hbo', 'youtube premium', 'prime video', 'juego', 'videojuego', 'gimnasio', 'bar', 'fiesta', 'ocio', 'parque'] },
     { category: 'Educación', keywords: ['colegio', 'universidad', 'curso', 'clase', 'libro', 'matricula', 'educacion', 'papeleria', 'cuaderno', 'lapiz', 'seminario', 'diplomado'] },
+    { category: 'Viajes', keywords: ['viaje', 'viajes', 'hotel', 'hospedaje', 'hostal', 'vuelo', 'vuelos', 'avion', 'aeropuerto', 'pasaje avion', 'pasaje aereo', 'airbnb', 'reserva hotel', 'tour', 'turismo', 'vacaciones', 'maleta', 'agencia de viajes', 'boleto'] },
+    { category: 'Mascotas', keywords: ['mascota', 'mascotas', 'perro', 'perros', 'gato', 'gatos', 'veterinario', 'veterinaria', 'alimento para perro', 'alimento perro', 'alimento para mi perro', 'comida para perro', 'comida perro', 'comida para mi perro', 'alimento para gato', 'alimento gato', 'alimento para mi gato', 'comida para gato', 'comida gato', 'comida para mi gato', 'concentrado', 'arena para gato', 'accesorios para mascota', 'baño mascota', 'vacuna mascota', 'petshop'] },
+    { category: 'Donaciones', keywords: ['donacion', 'donaciones', 'donar', 'aporte solidario', 'ayuda humanitaria', 'caridad', 'fundacion', 'iglesia', 'diezmo', 'colecta', 'solidaridad', 'voluntariado', 'ong'] },
   ],
   ingreso: [
     { category: 'Nómina', keywords: ['salario', 'sueldo', 'nomina', 'quincena', 'pago laboral', 'pago de nomina', 'empresa', 'liquidacion', 'prima', 'cesantias', 'vacaciones', 'bonificacion', 'bono', 'prestaciones', 'pago de sueldo'] },
@@ -4357,6 +4360,9 @@ function renderQuickAddModalContent() {
     { name: 'Salud', label: 'Salud', icon: 'heartPulse' },
     { name: 'Entretenimiento', label: 'Ocio', icon: 'gamepad2' },
     { name: 'Educación', label: 'Educación', icon: 'graduationCap' },
+    { name: 'Viajes', label: 'Viajes', icon: 'plane' },
+    { name: 'Mascotas', label: 'Mascotas', icon: 'heartPulse' },
+    { name: 'Donaciones', label: 'Donaciones', icon: 'gift' },
     { name: 'Otros', label: 'Otros', icon: 'moreHorizontal' },
   ];
 

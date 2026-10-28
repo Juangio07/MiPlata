@@ -1,13 +1,13 @@
-const CACHE_NAME = 'miplata-static-v109';
+const CACHE_NAME = 'miplata-static-v111';
 const APP_SHELL = [
   '/css/tailwind.generated.css?v=20261020-mutation-fast-v1',
   '/css/style.min.css?v=20261021-monthly-pdf-design-v3',
-  '/css/quick-add.css?v=20261020-quick-add-mobile-v15',
+  '/css/quick-add.css?v=20261027-quick-add-mobile-v18',
   '/css/mobile-scroll.css?v=20261026-mobile-scroll-v3',
   '/js/demo-login-performance.js?v=20261021-demo-login-v4',
   '/js/network-guard.js?v=20261021-network-v1',
   '/js/auth-bootstrap-guard.js?v=20261022-auth-data-first-v3',
-  '/js/app.bundle.delete-fix.js?v=20261027-smart-category-v1',
+  '/js/app.bundle.delete-fix.js?v=20261027-expense-categories-v1',
   '/js/goal-image-controls.js?v=20261027-goal-image-v1',
   '/assets/optimized/Logo.png',
 ];

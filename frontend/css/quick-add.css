@@ -612,3 +612,17 @@
     max-width: 300px;
   }
 }
+
+/* Keep the transaction card aligned with the Nueva Meta card on mobile:
+   same outer breathing room, width and a slightly taller vertical surface. */
+#modal-quick-add {
+  padding: 1rem;
+}
+
+@media (max-width: 640px) {
+  #modal-quick-add .quick-add-page.qa-form-shell {
+    height: auto;
+    min-height: 0;
+    max-height: calc(100vh - 40px);
+  }
+}

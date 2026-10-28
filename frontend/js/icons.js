@@ -152,6 +152,12 @@ export function getCategoryIconSvg(category, className = 'w-5 h-5') {
       return `<span class="text-rose-600">${getIconSvg('gamepad2', className)}</span>`;
     case 'Educación':
       return `<span class="text-purple-600">${getIconSvg('graduationCap', className)}</span>`;
+    case 'Viajes':
+      return `<span class="text-cyan-600">${getIconSvg('plane', className)}</span>`;
+    case 'Mascotas':
+      return `<span class="text-amber-700">${getIconSvg('heartPulse', className)}</span>`;
+    case 'Donaciones':
+      return `<span class="text-rose-600">${getIconSvg('gift', className)}</span>`;
     case 'Nómina':
       return `<span class="text-[#006c49]">${getIconSvg('briefcase', className)}</span>`;
     case 'Honorarios':
