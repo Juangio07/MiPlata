@@ -2392,7 +2392,7 @@ function renderExpenses() {
     groupedTxs[label].push(tx);
   });
 
-  const expenseCategoriesList = ['Alimentación', 'Transporte', 'Compras', 'Servicios', 'Salud', 'Entretenimiento', 'Educación', 'Ahorro / Metas', 'Otros'];
+  const expenseCategoriesList = ['Alimentación', 'Transporte', 'Compras', 'Servicios', 'Salud', 'Entretenimiento', 'Educación', 'Viajes', 'Mascotas', 'Donaciones', 'Ahorro / Metas', 'Otros'];
   const incomeCategoriesList = ['Nómina', 'Honorarios', 'Negocio', 'Inversión', 'Otros'];
   const categoriesList = [
     'Todos',
@@ -3361,7 +3361,9 @@ function renderGoals() {
           `).join('')}
         </div>
       </section>` : ''}
+      ${availableForGoals > 0 ? `
       <div class="rounded-3xl bg-[#eef3ff] border border-[#cfe0ff] p-4 flex gap-3"><div class="w-14 h-14 rounded-2xl bg-white flex items-center justify-center text-[#0058bc] shrink-0 shadow-sm">${getIconSvg('lightbulb', 'w-7 h-7')}</div><div class="min-w-0"><div class="flex items-center gap-2 flex-wrap"><p class="text-sm font-bold text-[#0058bc]">Consejo Inteligente</p><span class="text-[11px] text-slate-500">• Basado en tus datos</span></div><p class="text-sm font-semibold text-[#0b1c30] mt-1">${tipTitle}</p><p class="text-sm text-slate-600 leading-relaxed mt-1">${tip}</p></div></div>
+      ` : ''}
       <section class="flex flex-col gap-2"><div class="flex items-center justify-between px-1"><h2 class="text-lg font-bold">Últimos Aportes</h2><span class="text-sm font-semibold text-[#0058bc]">Registro protegido</span></div><div class="rounded-3xl bg-white px-4 shadow-sm border border-slate-200/80 divide-y divide-slate-100">${state.goalContributions.length ? state.goalContributions.slice(0, 3).map((c) => `<div class="flex items-center justify-between gap-3 py-3"><div class="flex items-center gap-3 min-w-0"><div class="w-11 h-11 rounded-full bg-[#c7f7e3] text-[#006c49] flex items-center justify-center shrink-0">${getIconSvg('wallet', 'w-5 h-5')}</div><div class="min-w-0"><p class="text-sm font-semibold truncate">${c.goalName}</p><p class="text-xs text-slate-500 mt-0.5">${c.date} • ${c.type}</p></div></div><div class="text-right shrink-0"><span class="text-base font-bold text-[#006c49]">+${formatCOP(c.amount)}</span><small class="block text-[10px] text-slate-500">COP</small></div></div>`).join('') : `<p class="py-5 text-center text-sm text-slate-500">Aún no hay aportes registrados.</p>`}</div></section>
     </div>
   `;
@@ -4260,19 +4262,22 @@ function renderAuth() {
 // Quick Add Transaction Modal (<10s Keypad)
 const SMART_CATEGORY_RULES = {
   gasto: [
-    { category: 'Alimentación', keywords: ['almuerzo', 'desayuno', 'cena', 'comida', 'restaurante', 'supermercado', 'mercado', 'carulla', 'exito', 'd1', 'fruta', 'pan', 'cafe', 'empanada', 'domicilio', 'rappi', 'comida rapida'] },
-    { category: 'Transporte', keywords: ['uber', 'taxi', 'bus', 'transmilenio', 'metro', 'gasolina', 'combustible', 'parqueadero', 'peaje', 'soat', 'pasaje', 'moto', 'bicicleta'] },
-    { category: 'Compras', keywords: ['compra', 'ropa', 'zapatos', 'electronica', 'amazon', 'mercado libre', 'falabella', 'regalo', 'hogar'] },
-    { category: 'Servicios', keywords: ['arriendo', 'alquiler', 'luz', 'agua', 'energia', 'gas', 'internet', 'telefono', 'celular', 'factura', 'servicio'] },
-    { category: 'Salud', keywords: ['salud', 'medico', 'medicina', 'medicamento', 'medicamentos', 'farmacia', 'drogueria', 'consulta', 'hospital', 'laboratorio', 'examen', 'urgencias', 'odontologo', 'dentista', 'terapia', 'psicologo', 'vitamina', 'vitaminas', 'eps', 'seguro'] },
-    { category: 'Entretenimiento', keywords: ['cine', 'concierto', 'netflix', 'spotify', 'juego', 'videojuego', 'gimnasio', 'bar', 'fiesta', 'ocio'] },
-    { category: 'Educación', keywords: ['colegio', 'universidad', 'curso', 'clase', 'libro', 'matricula', 'educacion', 'papeleria'] },
+    { category: 'Alimentación', keywords: ['alimentacion', 'almuerzo', 'desayuno', 'cena', 'comida', 'restaurante', 'supermercado', 'mercado', 'mercado mensual', 'carulla', 'exito', 'd1', 'ara', 'olimpica', 'fruver', 'fruta', 'frutas', 'verduras', 'pan', 'panaderia', 'cafe', 'cafeteria', 'empanada', 'domicilio', 'rappi', 'ifood', 'uber eats', 'comida rapida', 'pizza', 'hamburguesa', 'pollo', 'carne', 'tienda', 'plaza de mercado', 'minimercado', 'snacks', 'refresco', 'bebida'] },
+    { category: 'Transporte', keywords: ['transporte', 'uber', 'didi', 'cabify', 'taxi', 'bus', 'buseta', 'transmilenio', 'transmi', 'metro', 'metroplus', 'gasolina', 'combustible', 'parqueadero', 'parqueo', 'peaje', 'soat', 'pasaje', 'moto', 'motocicleta', 'bicicleta', 'bici', 'carro', 'vehiculo', 'mantenimiento carro', 'taller', 'llanta', 'llantas', 'reparacion carro', 'lavado carro'] },
+    { category: 'Compras', keywords: ['compra', 'compras', 'ropa', 'zapatos', 'tenis', 'vestido', 'electronica', 'electrodomestico', 'celular', 'computador', 'portatil', 'tablet', 'amazon', 'mercado libre', 'mercadolibre', 'falabella', 'regalo', 'hogar', 'muebles', 'accesorio', 'accesorios', 'juguete', 'maquillaje', 'cosmeticos', 'ferreteria', 'decoracion'] },
+    { category: 'Servicios', keywords: ['arriendo', 'alquiler', 'administracion', 'luz', 'agua', 'energia', 'gas', 'internet', 'wifi', 'telefono', 'telefonia', 'celular', 'plan celular', 'factura', 'factura de servicios', 'servicio', 'servicios', 'tv', 'cable', 'suscripcion', 'suscripciones'] },
+    { category: 'Salud', keywords: ['salud', 'medico', 'medicina', 'medicamento', 'medicamentos', 'farmacia', 'drogueria', 'consulta', 'cita medica', 'hospital', 'clinica', 'laboratorio', 'examen', 'urgencias', 'odontologo', 'dentista', 'terapia', 'psicologo', 'fisioterapia', 'vitamina', 'vitaminas', 'eps', 'seguro', 'cirugia', 'optica', 'lentes'] },
+    { category: 'Entretenimiento', keywords: ['cine', 'pelicula', 'concierto', 'teatro', 'netflix', 'spotify', 'disney', 'hbo', 'youtube premium', 'prime video', 'juego', 'videojuego', 'gimnasio', 'bar', 'fiesta', 'ocio', 'parque'] },
+    { category: 'Educación', keywords: ['colegio', 'universidad', 'curso', 'clase', 'libro', 'matricula', 'educacion', 'papeleria', 'cuaderno', 'lapiz', 'seminario', 'diplomado'] },
+    { category: 'Viajes', keywords: ['viaje', 'viajes', 'hotel', 'hospedaje', 'hostal', 'vuelo', 'vuelos', 'avion', 'aeropuerto', 'pasaje avion', 'pasaje aereo', 'airbnb', 'reserva hotel', 'tour', 'turismo', 'vacaciones', 'maleta', 'agencia de viajes', 'boleto'] },
+    { category: 'Mascotas', keywords: ['mascota', 'mascotas', 'perro', 'perros', 'gato', 'gatos', 'veterinario', 'veterinaria', 'alimento para perro', 'alimento perro', 'alimento para mi perro', 'comida para perro', 'comida perro', 'comida para mi perro', 'alimento para gato', 'alimento gato', 'alimento para mi gato', 'comida para gato', 'comida gato', 'comida para mi gato', 'concentrado', 'arena para gato', 'accesorios para mascota', 'baño mascota', 'vacuna mascota', 'petshop'] },
+    { category: 'Donaciones', keywords: ['donacion', 'donaciones', 'donar', 'aporte solidario', 'ayuda humanitaria', 'caridad', 'fundacion', 'iglesia', 'diezmo', 'colecta', 'solidaridad', 'voluntariado', 'ong'] },
   ],
   ingreso: [
-    { category: 'Nómina', keywords: ['salario', 'sueldo', 'nomina', 'nomina', 'quincena', 'pago laboral', 'empresa'] },
-    { category: 'Honorarios', keywords: ['honorario', 'freelance', 'consultoria', 'asesoria', 'servicio profesional', 'cliente'] },
-    { category: 'Negocio', keywords: ['venta', 'negocio', 'cliente', 'pedido', 'emprendimiento', 'producto'] },
-    { category: 'Inversión', keywords: ['inversion', 'dividendos', 'intereses', 'rendimiento', 'interes', 'fondo'] },
+    { category: 'Nómina', keywords: ['salario', 'sueldo', 'nomina', 'quincena', 'pago laboral', 'pago de nomina', 'empresa', 'liquidacion', 'prima', 'cesantias', 'vacaciones', 'bonificacion', 'bono', 'prestaciones', 'pago de sueldo'] },
+    { category: 'Honorarios', keywords: ['honorario', 'honorarios', 'freelance', 'consultoria', 'asesoria', 'servicio profesional', 'servicios profesionales', 'proyecto', 'contrato', 'trabajo independiente', 'comision profesional', 'prestacion de servicios'] },
+    { category: 'Negocio', keywords: ['venta', 'ventas', 'negocio', 'cliente', 'pedido', 'emprendimiento', 'producto', 'tienda', 'factura cobrada', 'cobro', 'comercio', 'mi negocio', 'servicio vendido'] },
+    { category: 'Inversión', keywords: ['inversion', 'dividendos', 'intereses', 'rendimiento', 'interes', 'fondo', 'acciones', 'accion', 'rentabilidad', 'ganancia inversion', 'cdt', 'interes cdt', 'arriendo recibido', 'alquiler recibido', 'renta'] },
   ],
 };
 
@@ -4281,7 +4286,20 @@ function normalizeSmartCategoryText(value) {
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
     .trim();
+}
+
+function containsSmartCategoryKeyword(text, keyword) {
+  const words = text.split(' ').filter(Boolean);
+  const keywordWords = normalizeSmartCategoryText(keyword).split(' ').filter(Boolean);
+  if (!keywordWords.length || keywordWords.length > words.length) return false;
+
+  for (let index = 0; index <= words.length - keywordWords.length; index += 1) {
+    if (keywordWords.every((word, offset) => words[index + offset] === word)) return true;
+  }
+  return false;
 }
 
 function suggestCategoryFromDescription(type, description) {
@@ -4294,7 +4312,9 @@ function suggestCategoryFromDescription(type, description) {
   rules.forEach((rule) => {
     const score = rule.keywords.reduce((total, keyword) => {
       const normalizedKeyword = normalizeSmartCategoryText(keyword);
-      return total + (text.includes(normalizedKeyword) ? normalizedKeyword.length : 0);
+      if (!containsSmartCategoryKeyword(text, normalizedKeyword)) return total;
+      const phraseBonus = Math.max(0, normalizedKeyword.split(' ').length - 1) * 4;
+      return total + normalizedKeyword.length + phraseBonus;
     }, 0);
     if (score > bestMatch.score) bestMatch = { category: rule.category, score };
   });
@@ -4340,6 +4360,9 @@ function renderQuickAddModalContent() {
     { name: 'Salud', label: 'Salud', icon: 'heartPulse' },
     { name: 'Entretenimiento', label: 'Ocio', icon: 'gamepad2' },
     { name: 'Educación', label: 'Educación', icon: 'graduationCap' },
+    { name: 'Viajes', label: 'Viajes', icon: 'plane' },
+    { name: 'Mascotas', label: 'Mascotas', icon: 'heartPulse' },
+    { name: 'Donaciones', label: 'Donaciones', icon: 'gift' },
     { name: 'Otros', label: 'Otros', icon: 'moreHorizontal' },
   ];
 
