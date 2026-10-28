@@ -3361,7 +3361,9 @@ function renderGoals() {
           `).join('')}
         </div>
       </section>` : ''}
+      ${availableForGoals > 0 ? `
       <div class="rounded-3xl bg-[#eef3ff] border border-[#cfe0ff] p-4 flex gap-3"><div class="w-14 h-14 rounded-2xl bg-white flex items-center justify-center text-[#0058bc] shrink-0 shadow-sm">${getIconSvg('lightbulb', 'w-7 h-7')}</div><div class="min-w-0"><div class="flex items-center gap-2 flex-wrap"><p class="text-sm font-bold text-[#0058bc]">Consejo Inteligente</p><span class="text-[11px] text-slate-500">• Basado en tus datos</span></div><p class="text-sm font-semibold text-[#0b1c30] mt-1">${tipTitle}</p><p class="text-sm text-slate-600 leading-relaxed mt-1">${tip}</p></div></div>
+      ` : ''}
       <section class="flex flex-col gap-2"><div class="flex items-center justify-between px-1"><h2 class="text-lg font-bold">Últimos Aportes</h2><span class="text-sm font-semibold text-[#0058bc]">Registro protegido</span></div><div class="rounded-3xl bg-white px-4 shadow-sm border border-slate-200/80 divide-y divide-slate-100">${state.goalContributions.length ? state.goalContributions.slice(0, 3).map((c) => `<div class="flex items-center justify-between gap-3 py-3"><div class="flex items-center gap-3 min-w-0"><div class="w-11 h-11 rounded-full bg-[#c7f7e3] text-[#006c49] flex items-center justify-center shrink-0">${getIconSvg('wallet', 'w-5 h-5')}</div><div class="min-w-0"><p class="text-sm font-semibold truncate">${c.goalName}</p><p class="text-xs text-slate-500 mt-0.5">${c.date} • ${c.type}</p></div></div><div class="text-right shrink-0"><span class="text-base font-bold text-[#006c49]">+${formatCOP(c.amount)}</span><small class="block text-[10px] text-slate-500">COP</small></div></div>`).join('') : `<p class="py-5 text-center text-sm text-slate-500">Aún no hay aportes registrados.</p>`}</div></section>
     </div>
   `;
