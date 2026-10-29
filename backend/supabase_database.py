@@ -180,8 +180,12 @@ def get_user_by_email(email):
     return _profile_to_dict(rows[0]) if rows else None
 
 
-def ensure_user_defaults(user_id, name=None, email=None, monthly_salary=0, avatar_url="", apply_default_preferences=False):
-    """Complete the profile created by the auth trigger and seed its budgets."""
+def ensure_user_defaults(user_id, name=None, email=None, monthly_salary=None, avatar_url="", apply_default_preferences=False):
+    """Complete the auth profile and budgets without creating income records.
+
+    ``monthly_salary`` is the user's planning estimate. It is not money
+    received, so this function must never insert a transaction for it.
+    """
     current_rows = sb.rest_request("profiles", params={"id": f"eq.{user_id}", "limit": 1}) or []
     if not current_rows:
         # The auth trigger normally creates this row.  This fallback is useful
@@ -244,7 +248,7 @@ def initialize_registered_user(user_id, name, email, monthly_salary=0, avatar_ur
     user = ensure_user_defaults(user_id, name, email, monthly_salary, avatar_url, apply_default_preferences)
     # The salary selected during registration is only an estimate used for
     # planning. It is not an income that has already been received.
-    return get_user_by_id(user_id)
+    return user
 
 
 def ensure_demo_data(user_id):

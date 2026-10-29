@@ -1,6 +1,7 @@
 import os
 import pathlib
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -16,6 +17,7 @@ os.environ.setdefault("SUPABASE_PUBLISHABLE_KEY", "test-publishable-key")
 os.environ.setdefault("SUPABASE_SECRET_KEY", "test-secret-key")
 
 import app as app_module  # noqa: E402
+import database as local_database  # noqa: E402
 from supabase_client import SupabaseError  # noqa: E402
 
 
@@ -100,6 +102,22 @@ class AuthApiTests(unittest.TestCase):
         self.assertIn("recibirás un enlace", response.get_json()["message"])
         request_reset.assert_called_once()
 
+    def test_recovery_retries_transient_connection_failure(self):
+        with patch.object(
+            app_module.sb,
+            "auth_request_password_reset",
+            side_effect=[SupabaseError("offline"), None],
+        ) as request_reset:
+            response = self.client.post(
+                "/api/auth/password-reset/request",
+                json={
+                    "email": "user@example.com",
+                    "redirectTo": "http://127.0.0.1:5000/?password_reset=1",
+                },
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(request_reset.call_count, 2)
+
     def test_recovery_maps_supabase_rate_limit(self):
         with patch.object(
             app_module.sb,
@@ -136,6 +154,19 @@ class AuthApiTests(unittest.TestCase):
             )
         self.assertEqual(response.status_code, 200)
         update_password.assert_called_once_with("token", "secret123")
+
+    def test_password_confirm_retries_transient_connection_failure(self):
+        with patch.object(
+            app_module.sb,
+            "auth_update_password",
+            side_effect=[SupabaseError("offline"), None],
+        ) as update_password:
+            response = self.client.post(
+                "/api/auth/password-reset/confirm",
+                json={"accessToken": "token", "password": "secret123"},
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(update_password.call_count, 2)
 
     def test_duplicate_email_is_reported_as_conflict(self):
         duplicate = SupabaseError(
@@ -245,6 +276,72 @@ class AuthApiTests(unittest.TestCase):
         get_bootstrap.assert_not_called()
         ensure_user_defaults.assert_not_called()
 
+    def test_invalid_supabase_credentials_return_auth_error_status(self):
+        with patch.object(
+            app_module.sb,
+            "auth_sign_in",
+            side_effect=SupabaseError("invalid login", status=400),
+        ):
+            response = self.client.post(
+                "/api/auth/login",
+                json={"email": "user@example.com", "password": "wrong-password"},
+            )
+
+        self.assertEqual(response.status_code, 401)
+        self.assertIn("Correo o contraseña incorrectos", response.get_json()["error"])
+
+    def test_bootstrap_uses_auth_identity_when_profile_is_temporarily_unavailable(self):
+        fallback = {
+            "id": "user-1",
+            "name": "Usuario",
+            "email": "user@example.com",
+        }
+        with patch.object(app_module.db, "get_user_by_id", return_value=None):
+            with patch.object(app_module.db, "ensure_user_defaults", return_value=None):
+                with patch.object(app_module.db, "get_transactions", return_value=[]):
+                    with patch.object(app_module.db, "get_fixed_obligations", return_value=[]):
+                        with patch.object(app_module.db, "get_savings_goals", return_value=[]):
+                            with patch.object(app_module.db, "get_goal_contributions", return_value=[]):
+                                with patch.object(app_module.db, "get_category_budgets", return_value=[]):
+                                    with patch.object(app_module.db, "get_record_months", return_value=[]):
+                                        bootstrap = app_module.get_bootstrap_payload(
+                                            "user-1", fallback_user=fallback
+                                        )
+
+        self.assertEqual(bootstrap["user"], fallback)
+
+    def test_register_retries_transient_signin_and_keeps_salary_as_estimate(self):
+        auth_data = {
+            "user": {"id": "user-1", "email": "user@example.com"},
+            "access_token": "access-token",
+            "refresh_token": "refresh-token",
+        }
+        profile = {"id": "user-1", "name": "Usuario", "email": "user@example.com"}
+        with patch.object(app_module.sb, "auth_admin_create_user"):
+            with patch.object(
+                app_module.sb,
+                "auth_sign_in",
+                side_effect=[SupabaseError("offline"), auth_data],
+            ) as sign_in:
+                with patch.object(
+                    app_module.db,
+                    "initialize_registered_user",
+                    return_value=profile,
+                ) as initialize_user:
+                    response = self.client.post(
+                        "/api/auth/register",
+                        json={
+                            "name": "Usuario",
+                            "email": "user@example.com",
+                            "password": "secret123",
+                            "monthlySalary": 2000000,
+                        },
+                    )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(sign_in.call_count, 2)
+        self.assertEqual(initialize_user.call_args.args[3], 2000000)
+
     def test_demo_login_retries_transient_auth_connection_failure(self):
         auth_data = {
             "user": {"id": "demo-user", "email": "demo@miplata.app"},
@@ -342,6 +439,25 @@ class AuthApiTests(unittest.TestCase):
         self.assertEqual(contribution_params["date"], expected)
         self.assertNotIn("date.lt", transaction_params)
         self.assertNotIn("date.lt", contribution_params)
+
+
+class LocalRegistrationTests(unittest.TestCase):
+    def test_monthly_salary_estimate_does_not_create_income_transaction(self):
+        with tempfile.TemporaryDirectory(dir=ROOT) as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "registration-test.db"
+            with patch.object(local_database, "DB_PATH", str(database_path)):
+                local_database.init_db()
+                user = local_database.create_user(
+                    "Cuenta nueva",
+                    "cuenta-nueva@example.com",
+                    "secret123",
+                    monthly_salary=3_000_000,
+                )
+
+                self.assertEqual(user["monthlySalary"], 3_000_000)
+                self.assertEqual(user["monthlyBudgetLimit"], 3_000_000)
+                self.assertEqual(user["initialBalance"], 0)
+                self.assertEqual(local_database.get_transactions(user["id"]), [])
 
 
 if __name__ == "__main__":

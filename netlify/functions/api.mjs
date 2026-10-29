@@ -81,6 +81,18 @@ async function authRequest(path, method = 'GET', body = null, key = SUPABASE_PUB
   });
 }
 
+async function authRequestWithRetry(path, method = 'GET', body = null, key = SUPABASE_PUBLISHABLE_KEY, token = '') {
+  try {
+    return await authRequest(path, method, body, key, token);
+  } catch (error) {
+    // Retry transport failures only. Invalid credentials, expired links,
+    // rate limits and configuration errors must be returned immediately.
+    if (error?.status) throw error;
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    return authRequest(path, method, body, key, token);
+  }
+}
+
 async function restRequest(table, { method = 'GET', params = {}, body = null, returning = false, select = '' } = {}) {
   const url = new URL(`${SUPABASE_URL}/rest/v1/${table}`);
   Object.entries(params).forEach(([key, value]) => {
@@ -339,30 +351,34 @@ async function addTransaction(userId, tx) {
 }
 
 async function initializeRegisteredUser(userId, name, email, salary, avatarUrl, applyDefaultPreferences = true) {
+  // The selected salary is a planning estimate, not money already received.
+  // New accounts must start with no transactions and available balance 0.
   const profile = await ensureUserDefaults(userId, name, email, salary, avatarUrl, applyDefaultPreferences);
-  if (number(salary) > 0) {
-    const existing = await restRequest('transactions', {
-      params: {
-        user_id: `eq.${userId}`,
-        category: 'eq.Nómina',
-        description: 'eq.Nómina / Ingreso mensual registrado',
-        limit: '1',
-      },
-    });
-    if (!existing?.length) {
-      await addTransaction(userId, {
-        id: `tx_sal_${Date.now()}`,
-        type: 'ingreso',
-        amount: number(salary),
-        category: 'Nómina',
-        description: 'Nómina / Ingreso mensual registrado',
-        date: dateOnly(null, true),
-        time: new Date().toTimeString().slice(0, 8),
-        accountMethod: 'Cuenta Principal',
-      });
-    }
-  }
   return profile;
+}
+
+function profileFallbackFromAuthUser(user) {
+  const metadata = user?.user_metadata || {};
+  return {
+    id: user?.id,
+    name: metadata.name || 'MiPlata',
+    email: user?.email || '',
+    password: null,
+    avatarUrl: metadata.avatar_url || '',
+    plan: 'Plan Personal Activo',
+    memberSince: monthLabel(),
+    isLocalOnly: false,
+    monthlySalary: 0,
+    initialBalance: 0,
+    monthlyBudgetLimit: 0,
+    budgetRule: { needs: 50, wants: 30, savings: 20 },
+    alert80Percent: true,
+    autoAdjustVariable: true,
+    currency: 'COP',
+    quickKeypad: true,
+    resetDay: 1,
+    smartCategorization: true,
+  };
 }
 
 function demoDate(offset) {
@@ -577,20 +593,28 @@ async function userRecordMonths(userId) {
   return [...months].sort().reverse();
 }
 
-async function userBootstrap(userId) {
+async function userBootstrap(userId, authUser = null) {
   const currentMonth = monthKey();
+  const safeRead = async (label, operation, fallback) => {
+    try {
+      return await operation();
+    } catch (error) {
+      console.warn(`Bootstrap read failed: ${label}`, error?.message || error);
+      return fallback;
+    }
+  };
   const [profile, transactions, fixedObligations, savingsGoals, goalContributions, categoryBudgets] = await Promise.all([
-    getProfile(userId),
-    userTransactions(userId, currentMonth),
-    userFixed(userId),
-    userGoals(userId),
-    userContributions(userId, currentMonth),
-    userBudgets(userId),
+    safeRead('perfil', () => getProfile(userId), null),
+    safeRead('movimientos', () => userTransactions(userId, currentMonth), []),
+    safeRead('gastos fijos', () => userFixed(userId), []),
+    safeRead('metas', () => userGoals(userId), []),
+    safeRead('aportes', () => userContributions(userId, currentMonth), []),
+    safeRead('presupuestos', () => userBudgets(userId), []),
   ]);
-  const availableMonths = await userRecordMonths(userId);
+  const availableMonths = await safeRead('meses', () => userRecordMonths(userId), [currentMonth]);
   // userGoals already synchronizes currentAmount from the complete history;
   // only the current month's movements are intentionally sent to the client.
-  return { user: profile, transactions, fixedObligations, savingsGoals, goalContributions, categoryBudgets, availableMonths };
+  return { user: profile || profileFallbackFromAuthUser(authUser || { id: userId }), transactions, fixedObligations, savingsGoals, goalContributions, categoryBudgets, availableMonths };
 }
 
 async function deleteUserData(userId) {
@@ -608,30 +632,52 @@ async function handleAuth(route, request) {
     const email = 'demo@miplata.app';
     const password = 'MiPlataDemo2026!';
     try {
-      await authRequest('/admin/users', 'POST', { email, password, email_confirm: true, user_metadata: { name: 'Fixelar' } }, SUPABASE_SECRET_KEY, SUPABASE_SECRET_KEY);
+      await authRequestWithRetry('/admin/users', 'POST', { email, password, email_confirm: true, user_metadata: { name: 'Fixelar' } }, SUPABASE_SECRET_KEY, SUPABASE_SECRET_KEY);
     } catch (error) {
       if (![400, 409, 422].includes(error.status)) throw error;
     }
-    const auth = await authRequest('/token?grant_type=password', 'POST', { email, password });
+    const auth = await authRequestWithRetry('/token?grant_type=password', 'POST', { email, password });
     const user = auth.user || {};
-    const profile = await ensureUserDefaults(user.id, 'Fixelar', email, null, '');
-    await ensureDemoData(user.id);
+    let profile;
+    try {
+      profile = await ensureUserDefaults(user.id, 'Fixelar', email, null, '');
+    } catch (error) {
+      console.warn('Demo profile setup failed; continuing with Auth profile', error?.message || error);
+      profile = profileFallbackFromAuthUser(user);
+    }
+    try {
+      await ensureDemoData(user.id);
+    } catch (error) {
+      console.warn('Demo seed refresh failed; continuing with available data', error?.message || error);
+    }
     return json({
       ...sessionResponse(auth, profile, 'Sesión de demostración iniciada'),
-      bootstrap: await userBootstrap(user.id),
+      bootstrap: await userBootstrap(user.id, user),
     });
   }
 
   if (route === 'auth/login' && request.method === 'POST') {
     if (!body.email || !body.password) return json({ error: 'Correo y contraseña son requeridos' }, 400);
     try {
-      const auth = await authRequest('/token?grant_type=password', 'POST', { email: body.email.trim().toLowerCase(), password: body.password });
+      const auth = await authRequestWithRetry('/token?grant_type=password', 'POST', { email: body.email.trim().toLowerCase(), password: body.password });
       const user = auth.user || {};
       const metadata = user.user_metadata || {};
-      const profile = await ensureUserDefaults(user.id, metadata.name || 'MiPlata', user.email || body.email, null, metadata.avatar_url || '');
+      let profile;
+      try {
+        profile = await ensureUserDefaults(user.id, metadata.name || 'MiPlata', user.email || body.email, null, metadata.avatar_url || '');
+      } catch (profileError) {
+        console.warn('Login profile setup failed; continuing with Auth profile', profileError?.message || profileError);
+        profile = profileFallbackFromAuthUser(user);
+      }
       return json(sessionResponse(auth, profile, `¡Bienvenido de nuevo, ${(profile.name || 'usuario').split(' ')[0]}!`));
     } catch (error) {
-      return json({ error: 'Correo o contraseña incorrectos' }, [400, 401].includes(error.status) ? 401 : 502);
+      if ([400, 401].includes(error?.status)) {
+        return json({ error: 'Correo o contraseña incorrectos' }, 401);
+      }
+      if (!error?.status) {
+        return json({ error: 'No se pudo conectar con MiPlata. Intenta nuevamente.' }, 503);
+      }
+      return json({ error: 'No se pudieron cargar tus datos. Intenta nuevamente.' }, 502);
     }
   }
 
@@ -641,7 +687,7 @@ async function handleAuth(route, request) {
     if (!isValidEmail(email)) return json({ error: 'Ingresa un correo electrónico válido' }, 400);
     if (!/^https?:\/\/\S+$/.test(redirectTo)) return json({ error: 'La URL de recuperación no es válida' }, 400);
     try {
-      await authRequest('/recover', 'POST', { email, redirect_to: redirectTo });
+      await authRequestWithRetry('/recover', 'POST', { email, redirect_to: redirectTo });
       return json({ message: 'Si el correo está registrado, recibirás un enlace para recuperar tu contraseña.' });
     } catch (error) {
       console.warn('Password recovery email failed', { status: error.status, message: error.message });
@@ -664,7 +710,7 @@ async function handleAuth(route, request) {
     if (!accessToken) return json({ error: 'El enlace de recuperación no es válido o ya expiró' }, 401);
     if (password.length < 6) return json({ error: 'La contraseña debe tener al menos 6 caracteres' }, 400);
     try {
-      await authRequest('/user', 'PUT', { password }, SUPABASE_PUBLISHABLE_KEY, accessToken);
+      await authRequestWithRetry('/user', 'PUT', { password }, SUPABASE_PUBLISHABLE_KEY, accessToken);
       return json({ message: 'Contraseña actualizada correctamente' });
     } catch (error) {
       if ([400, 401, 403, 404].includes(error.status)) {
@@ -686,12 +732,18 @@ async function handleAuth(route, request) {
     if (password.length < 6) return json({ error: 'La contraseña debe tener al menos 6 caracteres' }, 400);
     if (avatarUrl.startsWith('data:') && avatarUrl.length > MAX_EMBEDDED_IMAGE_DATA_URL_LENGTH) return json({ error: 'La imagen es demasiado grande. Elige una imagen más pequeña' }, 400);
     try {
-      await authRequest('/admin/users', 'POST', {
+      await authRequestWithRetry('/admin/users', 'POST', {
         email, password, email_confirm: true, user_metadata: { name, avatar_url: body.avatarUrl || '' },
       }, SUPABASE_SECRET_KEY, SUPABASE_SECRET_KEY);
-      const auth = await authRequest('/token?grant_type=password', 'POST', { email, password });
+      const auth = await authRequestWithRetry('/token?grant_type=password', 'POST', { email, password });
       const user = auth.user || {};
-      const profile = await initializeRegisteredUser(user.id, name, email, number(body.monthlySalary), body.avatarUrl || '');
+      let profile;
+      try {
+        profile = await initializeRegisteredUser(user.id, name, email, number(body.monthlySalary), body.avatarUrl || '');
+      } catch (profileError) {
+        console.warn('New profile setup failed; continuing with Auth profile', profileError?.message || profileError);
+        profile = profileFallbackFromAuthUser({ ...user, user_metadata: { ...(user.user_metadata || {}), name, avatar_url: body.avatarUrl || '' } });
+      }
       return json(sessionResponse(auth, profile, `¡Bienvenido a MiPlata, ${name.split(' ')[0]}! Todo listo y limpio en 0 para comenzar.`));
     } catch (error) {
       if (isDuplicateEmailError(error)) {
@@ -704,7 +756,7 @@ async function handleAuth(route, request) {
   if (route === 'auth/refresh' && request.method === 'POST') {
     if (!body.refreshToken) return json({ error: 'Sesión expirada' }, 401);
     try {
-      const auth = await authRequest('/token?grant_type=refresh_token', 'POST', { refresh_token: body.refreshToken });
+      const auth = await authRequestWithRetry('/token?grant_type=refresh_token', 'POST', { refresh_token: body.refreshToken });
       const user = auth.user || {};
       const metadata = user.user_metadata || {};
       const profile = await ensureUserDefaults(user.id, metadata.name || 'MiPlata', user.email || '', null, metadata.avatar_url || '');
@@ -723,7 +775,7 @@ async function handleProtected(route, request, user) {
   const body = await readBody(request);
 
   if (route === 'bootstrap' && request.method === 'GET') {
-    return json(await userBootstrap(userId));
+    return json(await userBootstrap(userId, user));
   }
 
   const monthlyReportMatch = route === 'reports/monthly' && request.method === 'GET';
