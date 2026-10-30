@@ -1638,6 +1638,10 @@ function renderDashboard() {
   const tipScroller = document.getElementById('financial-tips-scroll');
   if (tipScroller && tips.length) {
     const tipCards = Array.from(tipScroller.querySelectorAll('.financial-tip-card'));
+    const getVisibleTipIndex = () => {
+      const width = Math.max(tipScroller.clientWidth, 1);
+      return Math.max(0, Math.min(tips.length - 1, Math.round(tipScroller.scrollLeft / width)));
+    };
     const syncTipHeight = (index = state.activeTipIndex) => {
       const activeCard = tipCards[index] || tipCards[0];
       if (!activeCard) return;
@@ -1645,13 +1649,14 @@ function renderDashboard() {
     };
 
     const syncTipFromScroll = () => {
-      const nextIndex = Math.max(0, Math.min(tips.length - 1, Math.round(tipScroller.scrollLeft / Math.max(tipScroller.clientWidth, 1))));
+      const nextIndex = getVisibleTipIndex();
       state.activeTipIndex = nextIndex;
       syncTipHeight(nextIndex);
     };
 
     const scrollToTip = (offset) => {
-      const nextIndex = (state.activeTipIndex + offset + tips.length) % tips.length;
+      const currentIndex = getVisibleTipIndex();
+      const nextIndex = (currentIndex + offset + tips.length) % tips.length;
       state.activeTipIndex = nextIndex;
       syncTipHeight(nextIndex);
       tipScroller.scrollTo({ left: nextIndex * tipScroller.clientWidth, behavior: 'smooth' });
@@ -1671,7 +1676,10 @@ function renderDashboard() {
       button.onclick = () => switchTab(button.dataset.tipTab || 'inicio');
     });
     requestAnimationFrame(() => {
-      tipScroller.scrollLeft = tipIndex * tipScroller.clientWidth;
+      const initialIndex = Math.max(0, Math.min(tips.length - 1, tipIndex));
+      state.activeTipIndex = initialIndex;
+      tipScroller.scrollTo({ left: initialIndex * tipScroller.clientWidth, behavior: 'auto' });
+      syncTipHeight(initialIndex);
     });
   }
   document.getElementById('btn-toggle-hide-balance')?.addEventListener('click', () => { state.hideBalance = !state.hideBalance; renderDashboard(); });
@@ -3706,9 +3714,7 @@ let recoveryNotice = '';
 let recoveryError = '';
 
 function recoveryRedirectUrl() {
-  const url = new URL(window.location.origin);
-  url.searchParams.set('password_reset', '1');
-  return url.toString();
+  return new URL('/reset-password', window.location.origin).toString();
 }
 
 function readRecoveryAccessToken() {
@@ -3748,7 +3754,12 @@ function prepareRecoveryFromUrl() {
     window.history.replaceState({}, document.title, `${cleanUrl.pathname}${cleanUrl.search}`);
     return true;
   }
-  if (new URLSearchParams(window.location.search).get('password_reset') === '1') {
+  const pathname = window.location.pathname.replace(/\/+$/, '') || '/';
+  if (
+    pathname === '/reset-password'
+    || pathname === '/reset-password/index.html'
+    || new URLSearchParams(window.location.search).get('password_reset') === '1'
+  ) {
     authRecoveryMode = 'request';
     return true;
   }
@@ -3879,6 +3890,7 @@ function renderPasswordRecovery() {
       await api.confirmPasswordReset(recoveryAccessToken, password);
       const cleanUrl = new URL(window.location.href);
       cleanUrl.searchParams.delete('password_reset');
+      if (cleanUrl.pathname === '/reset-password') cleanUrl.pathname = '/';
       cleanUrl.hash = '';
       window.history.replaceState({}, document.title, `${cleanUrl.pathname}${cleanUrl.search}`);
       authRecoveryMode = null;

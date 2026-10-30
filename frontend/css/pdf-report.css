@@ -1,0 +1,592 @@
+/* MiPlata monthly PDF — dedicated print-only stylesheet. */
+@page {
+  size: A4 portrait;
+  margin: 13mm 13mm 15mm;
+}
+
+html,
+body {
+  background: #ffffff !important;
+  color: #10243d !important;
+}
+
+#past-month-report {
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px !important;
+  width: 100% !important;
+  max-width: 184mm !important;
+  margin: 0 auto !important;
+  padding: 0 !important;
+}
+
+#past-month-report::before {
+  content: '';
+  grid-column: 1 / -1;
+  display: block;
+  height: 34px;
+  padding: 0 0 7px;
+  border-bottom: 1px solid #d8e2ff;
+  background-image: url('../assets/optimized/Imagotipo.png');
+  background-repeat: no-repeat;
+  background-position: left center;
+  background-size: 108px auto;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+
+#past-month-report > div:first-child,
+#past-month-report > div:nth-child(2),
+#past-month-report .past-month-report__transactions-card {
+  grid-column: 1 / -1;
+}
+
+#past-month-report > section {
+  display: none !important;
+}
+
+/* Report heading */
+#past-month-report > div:first-child {
+  display: flex !important;
+  align-items: center !important;
+  min-height: 50px;
+  padding: 7px 0 9px !important;
+  border: 0 !important;
+  border-bottom: 1px solid #dbe5f2 !important;
+  border-radius: 0 !important;
+  background: #ffffff !important;
+  box-shadow: none !important;
+}
+
+#past-month-report > div:first-child > div:first-child {
+  gap: 11px !important;
+}
+
+#past-month-report > div:first-child > div:first-child > div:first-child {
+  width: 31px !important;
+  height: 31px !important;
+  border-radius: 10px !important;
+  background: #eaf1ff !important;
+  color: #0058bc !important;
+  box-shadow: none !important;
+}
+
+#past-month-report > div:first-child p:first-child {
+  color: #10243d !important;
+  font-size: 13px !important;
+  font-weight: 800 !important;
+  line-height: 1.2 !important;
+}
+
+#past-month-report > div:first-child p:last-child {
+  margin-top: 2px;
+  color: #718096 !important;
+  font-size: 9px !important;
+  line-height: 1.2 !important;
+}
+
+#past-month-report .screen-report-title {
+  display: none !important;
+}
+
+#past-month-report .print-report-title {
+  display: inline !important;
+}
+
+#past-month-report > div:first-child::after {
+  content: 'REPORTE MENSUAL';
+  margin-left: auto;
+  color: #0058bc;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: .12em;
+  white-space: nowrap;
+}
+
+/* Executive summary: the same navy-and-blue language as the MiPlata home card. */
+#past-month-report > div:nth-child(2) {
+  position: relative;
+  overflow: hidden !important;
+  padding: 18px !important;
+  border: 1px solid #173b63 !important;
+  border-radius: 24px !important;
+  background: linear-gradient(135deg, #0b1c30 0%, #102b4b 62%, #0058bc 150%) !important;
+  box-shadow: 0 12px 24px rgba(11, 28, 48, .18) !important;
+  color: #ffffff !important;
+}
+
+#past-month-report > div:nth-child(2) > div:first-child > div:first-child {
+  padding-bottom: 11px !important;
+  border-bottom-color: #dbe5f2 !important;
+}
+
+#past-month-report > div:nth-child(2) .bg-emerald-500\/20 {
+  background: rgba(108, 248, 187, .16) !important;
+  color: #6cf8bb !important;
+}
+
+#past-month-report > div:nth-child(2) .bg-emerald-500\/20 span {
+  background: #6cf8bb !important;
+}
+
+#past-month-report > div:nth-child(2) h2,
+#past-month-report > div:nth-child(2) .text-white {
+  color: #ffffff !important;
+}
+
+#past-month-report > div:nth-child(2) .text-slate-300 {
+  color: #c8d8eb !important;
+}
+
+#past-month-report > div:nth-child(2) .text-slate-400 {
+  color: #a5bbd2 !important;
+}
+
+#past-month-report > div:nth-child(2) > div:first-child > div:nth-child(2) {
+  grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+  gap: 8px !important;
+}
+
+#past-month-report > div:nth-child(2) > div:first-child > div:nth-child(2) > div {
+  min-width: 0;
+  min-height: 70px;
+  padding: 10px !important;
+  border: 1px solid rgba(255, 255, 255, .14) !important;
+  border-top: 3px solid #4e9bff !important;
+  border-radius: 13px !important;
+  background: rgba(255, 255, 255, .08) !important;
+}
+
+#past-month-report > div:nth-child(2) > div:first-child > div:nth-child(2) > div:nth-child(2) {
+  border-top-color: #ff8297 !important;
+}
+
+#past-month-report > div:nth-child(2) > div:first-child > div:nth-child(2) > div:nth-child(3) {
+  border-top-color: #6cf8bb !important;
+}
+
+#past-month-report > div:nth-child(2) > div:first-child > div:nth-child(2) > div:nth-child(4) {
+  border-top-color: #ffc857 !important;
+}
+
+#past-month-report > div:nth-child(2) > div:first-child > div:nth-child(2) > div p {
+  overflow-wrap: anywhere;
+  font-size: 12px !important;
+}
+
+#past-month-report > div:nth-child(2) > div:first-child > div:nth-child(2) > div span {
+  font-size: 8px !important;
+}
+
+#past-month-report > div:nth-child(2) > div:first-child > div:last-child {
+  border-top-color: rgba(255, 255, 255, .22) !important;
+}
+
+#past-month-report > div:nth-child(2) .bg-white\/10 {
+  background: rgba(255, 255, 255, .14) !important;
+}
+
+#past-month-report > div:nth-child(2) .bg-\[\#6cf8bb\] {
+  background: #6cf8bb !important;
+}
+
+/* Category and income analysis */
+#past-month-report > div:nth-child(4),
+#past-month-report > div:nth-child(5) {
+  min-width: 0;
+  padding: 14px !important;
+  border: 1px solid #dbe5f2 !important;
+  border-radius: 18px !important;
+  background: #ffffff !important;
+  box-shadow: none !important;
+}
+
+#past-month-report > div:nth-child(4) {
+  border-top: 3px solid #0058bc !important;
+}
+
+#past-month-report > div:nth-child(5) {
+  border-top: 3px solid #006c49 !important;
+}
+
+#past-month-report > div:nth-child(4) h3,
+#past-month-report > div:nth-child(5) h3 {
+  color: #10243d !important;
+  font-size: 11px !important;
+}
+
+#past-month-report > div:nth-child(4) .text-xs,
+#past-month-report > div:nth-child(5) .text-xs {
+  font-size: 9px !important;
+}
+
+#past-month-report > div:nth-child(4) .bg-\[\#0058bc\],
+#past-month-report > div:nth-child(5) .bg-\[\#006c49\] {
+  height: 5px !important;
+}
+
+/* Movement ledger */
+#past-month-report .past-month-report__transactions-card {
+  margin-top: 2px;
+  padding: 15px !important;
+  border: 1px solid #d8e2ff !important;
+  border-top: 4px solid #0058bc !important;
+  border-radius: 18px !important;
+  background: #ffffff !important;
+  box-shadow: none !important;
+}
+
+#past-month-report .past-month-report__transactions-card > div:first-child {
+  padding-bottom: 10px;
+  border-bottom: 2px solid #0058bc;
+}
+
+#past-month-report .past-month-report__transactions-card h3 {
+  color: #10243d !important;
+  font-size: 14px !important;
+}
+
+#past-month-report .past-month-report__filters {
+  display: none !important;
+}
+
+#past-month-report .past-month-report__transaction-list {
+  max-height: none !important;
+  overflow: visible !important;
+  margin-top: 4px;
+}
+
+#past-month-report .past-month-report__transaction-list > div {
+  min-height: 35px;
+  padding: 7px 3px !important;
+  border-bottom: 1px solid #edf2f7;
+  border-radius: 7px;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+#past-month-report .past-month-report__transaction-list > div:nth-child(even) {
+  background: #f8fbff;
+}
+
+#past-month-report .past-month-report__transaction-list > div:last-child {
+  border-bottom: 0;
+}
+
+#past-month-report .past-month-report__transaction-list .w-8 {
+  width: 25px !important;
+  height: 25px !important;
+  border-radius: 8px !important;
+  background: #eef3f9 !important;
+}
+
+#past-month-report .past-month-report__transaction-list .w-8 svg {
+  width: 13px !important;
+  height: 13px !important;
+}
+
+#past-month-report .past-month-report__transaction-list > div > span:last-child {
+  margin-left: 10px;
+  color: #10243d !important;
+  font-size: 10px !important;
+  white-space: nowrap !important;
+}
+
+#past-month-report .past-month-report__transaction-list .text-\[10px\] {
+  font-size: 8px !important;
+}
+
+#past-month-report .truncate,
+#past-month-report > div:first-child p {
+  overflow: visible !important;
+  text-overflow: clip !important;
+  white-space: normal !important;
+}
+
+/* PDF report v7: premium financial dashboard. This final layer is restricted
+   to the print stylesheet and intentionally leaves the app UI unchanged. */
+@media print {
+  @page {
+    size: A4 portrait;
+    margin: 10mm 12mm 13mm;
+  }
+
+  html,
+  body {
+    background: #f7f9fd !important;
+    color: #0b1c30 !important;
+  }
+
+  #past-month-report {
+    display: grid !important;
+    grid-template-columns: minmax(0, 1.15fr) minmax(0, .85fr);
+    gap: 12px !important;
+    max-width: 186mm !important;
+    padding: 0 !important;
+  }
+
+  #past-month-report::before {
+    grid-column: 1 / -1;
+    height: 48px;
+    padding: 0 !important;
+    border: 0 !important;
+    border-radius: 16px;
+    background-image:
+      url('../assets/optimized/ImagotipoClaroFixelar.png'),
+      radial-gradient(circle at 88% 20%, rgba(108, 248, 187, .28), transparent 27%),
+      linear-gradient(115deg, #0b1c30 0%, #12375f 58%, #0058bc 100%);
+    background-repeat: no-repeat;
+    background-position: 16px center, center, center;
+    background-size: 104px auto, 100% 100%, 100% 100%;
+    box-shadow: 0 8px 18px rgba(11, 28, 48, .16);
+  }
+
+  #past-month-report > div:first-child {
+    grid-column: 1 / -1;
+    min-height: 54px;
+    padding: 8px 2px 10px !important;
+    border-bottom: 1px solid #cbd9eb !important;
+    background: transparent !important;
+  }
+
+  #past-month-report > div:first-child > div:first-child > div:first-child {
+    width: 34px !important;
+    height: 34px !important;
+    border-radius: 11px !important;
+    background: #dce8ff !important;
+    color: #0058bc !important;
+  }
+
+  #past-month-report > div:first-child p:first-child {
+    color: #0b1c30 !important;
+    font-size: 17px !important;
+    letter-spacing: -.02em;
+  }
+
+  #past-month-report > div:first-child p:last-child {
+    color: #657b94 !important;
+    font-size: 9px !important;
+  }
+
+  #past-month-report > div:first-child::after {
+    content: 'CORTE MENSUAL';
+    padding: 5px 9px;
+    border: 1px solid #b8cdf0;
+    border-radius: 999px;
+    background: #eef4ff;
+    color: #0058bc;
+    font-size: 8px;
+    font-weight: 800;
+    letter-spacing: .12em;
+  }
+
+  /* Hero balance */
+  #past-month-report > div:nth-child(2) {
+    grid-column: 1 / -1;
+    min-height: 188px;
+    padding: 20px !important;
+    border: 0 !important;
+    border-radius: 28px !important;
+    background:
+      radial-gradient(circle at 92% 12%, rgba(78, 155, 255, .34), transparent 23%),
+      radial-gradient(circle at 4% 105%, rgba(108, 248, 187, .2), transparent 26%),
+      linear-gradient(135deg, #08192b 0%, #0d2745 58%, #0058bc 145%) !important;
+    box-shadow: 0 14px 28px rgba(11, 28, 48, .2) !important;
+  }
+
+  #past-month-report > div:nth-child(2)::before {
+    content: 'MIPLATA  /  BALANCE FINANCIERO';
+    position: absolute;
+    top: 17px;
+    right: 20px;
+    color: rgba(255, 255, 255, .6);
+    font-size: 8px;
+    font-weight: 800;
+    letter-spacing: .16em;
+  }
+
+  #past-month-report > div:nth-child(2) > div:first-child > div:first-child {
+    padding-bottom: 13px !important;
+    border-bottom-color: rgba(255, 255, 255, .18) !important;
+  }
+
+  #past-month-report > div:nth-child(2) h2,
+  #past-month-report > div:nth-child(2) .text-white {
+    color: #ffffff !important;
+  }
+
+  #past-month-report > div:nth-child(2) h2 {
+    max-width: 70%;
+    font-size: 23px !important;
+    line-height: 1.1 !important;
+  }
+
+  #past-month-report > div:nth-child(2) .text-slate-300 {
+    color: #c5d8ed !important;
+  }
+
+  #past-month-report > div:nth-child(2) .text-slate-400 {
+    color: #9db7d3 !important;
+  }
+
+  #past-month-report > div:nth-child(2) > div:first-child > div:nth-child(2) {
+    grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+    gap: 8px !important;
+    margin-top: 3px;
+  }
+
+  #past-month-report > div:nth-child(2) > div:first-child > div:nth-child(2) > div {
+    min-height: 68px;
+    padding: 10px !important;
+    border: 1px solid rgba(255, 255, 255, .15) !important;
+    border-radius: 15px !important;
+    background: rgba(255, 255, 255, .09) !important;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, .08);
+  }
+
+  #past-month-report > div:nth-child(2) > div:first-child > div:nth-child(2) > div:nth-child(1) {
+    border-left: 3px solid #4e9bff !important;
+  }
+
+  #past-month-report > div:nth-child(2) > div:first-child > div:nth-child(2) > div:nth-child(2) {
+    border-left: 3px solid #ff8297 !important;
+  }
+
+  #past-month-report > div:nth-child(2) > div:first-child > div:nth-child(2) > div:nth-child(3) {
+    border-left: 3px solid #6cf8bb !important;
+  }
+
+  #past-month-report > div:nth-child(2) > div:first-child > div:nth-child(2) > div:nth-child(4) {
+    border-left: 3px solid #ffc857 !important;
+  }
+
+  #past-month-report > div:nth-child(2) > div:first-child > div:last-child {
+    margin-top: 4px;
+  }
+
+  /* Analysis cards become a two-column comparison board. */
+  #past-month-report > div:nth-child(4),
+  #past-month-report > div:nth-child(5) {
+    grid-column: span 1;
+    align-self: start;
+    min-height: 118px;
+    padding: 15px !important;
+    border: 1px solid #d6e1ef !important;
+    border-radius: 20px !important;
+    background: #ffffff !important;
+    box-shadow: 0 6px 14px rgba(11, 28, 48, .06) !important;
+  }
+
+  #past-month-report > div:nth-child(4) {
+    border-top: 4px solid #0058bc !important;
+  }
+
+  #past-month-report > div:nth-child(5) {
+    border-top: 4px solid #006c49 !important;
+  }
+
+  #past-month-report > div:nth-child(4)::before,
+  #past-month-report > div:nth-child(5)::before {
+    display: block;
+    margin-bottom: 6px;
+    font-size: 8px;
+    font-weight: 800;
+    letter-spacing: .14em;
+  }
+
+  #past-month-report > div:nth-child(4)::before {
+    content: 'EGRESOS';
+    color: #0058bc;
+  }
+
+  #past-month-report > div:nth-child(5)::before {
+    content: 'ENTRADAS';
+    color: #006c49;
+  }
+
+  #past-month-report > div:nth-child(4) h3,
+  #past-month-report > div:nth-child(5) h3 {
+    color: #0b1c30 !important;
+    font-size: 12px !important;
+  }
+
+  #past-month-report > div:nth-child(4) .text-xs,
+  #past-month-report > div:nth-child(5) .text-xs {
+    font-size: 9px !important;
+  }
+
+  /* Movement ledger */
+  #past-month-report .past-month-report__transactions-card {
+    grid-column: 1 / -1;
+    margin-top: 1px;
+    padding: 16px !important;
+    border: 1px solid #d6e1ef !important;
+    border-top: 4px solid #0b1c30 !important;
+    border-radius: 22px !important;
+    background: #ffffff !important;
+    box-shadow: 0 6px 14px rgba(11, 28, 48, .06) !important;
+  }
+
+  #past-month-report .past-month-report__transactions-card > div:first-child {
+    padding-bottom: 10px;
+    border-bottom: 1px solid #d8e2ff;
+  }
+
+  #past-month-report .past-month-report__transactions-card h3 {
+    color: #0b1c30 !important;
+    font-size: 14px !important;
+  }
+
+  #past-month-report .past-month-report__transaction-list > div {
+    min-height: 37px;
+    padding: 7px 5px !important;
+    border-bottom: 1px solid #edf2f7;
+    border-radius: 9px;
+  }
+
+  #past-month-report .past-month-report__transaction-list > div:nth-child(even) {
+    background: #f7faff;
+  }
+
+  #past-month-report .past-month-report__transaction-list > div > span:last-child {
+    color: #0b1c30 !important;
+    font-size: 10px !important;
+    font-weight: 800 !important;
+  }
+}
+
+/* PDF report v8: remove neutral corner outlines and leave a clean white page. */
+@media print {
+  html,
+  body,
+  #app,
+  #main-content,
+  #tab-inicio,
+  #past-month-report {
+    background: #ffffff !important;
+  }
+
+  #past-month-report > div:first-child {
+    border-bottom-color: #d8e2ff !important;
+    box-shadow: none !important;
+  }
+
+  #past-month-report > div:nth-child(2) {
+    border: 0 !important;
+    outline: 0 !important;
+    box-shadow: 0 14px 28px rgba(0, 88, 188, .14) !important;
+  }
+
+  #past-month-report > div:nth-child(4),
+  #past-month-report > div:nth-child(5),
+  #past-month-report .past-month-report__transactions-card {
+    border-right-color: transparent !important;
+    border-bottom-color: transparent !important;
+    border-left-color: transparent !important;
+    box-shadow: 0 6px 16px rgba(0, 88, 188, .07) !important;
+  }
+
+  #past-month-report .past-month-report__transactions-card {
+    border-top-color: #0b1c30 !important;
+  }
+}
