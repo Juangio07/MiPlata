@@ -187,6 +187,25 @@ class AuthApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertIn("Correo ya registrado", response.get_json()["error"])
 
+    def test_duplicate_email_variants_are_reported_as_conflict(self):
+        duplicate = SupabaseError(
+            "Email address is already in use",
+            status=422,
+            payload={"message": "Email address is already in use"},
+        )
+        with patch.object(app_module.sb, "auth_admin_create_user", side_effect=duplicate):
+            response = self.client.post(
+                "/api/auth/register",
+                json={
+                    "name": "Usuario",
+                    "email": "user@example.com",
+                    "password": "secret123",
+                    "monthlySalary": 2000000,
+                },
+            )
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.get_json()["error"], "Correo ya registrado.")
+
     def test_register_rejects_oversized_avatar(self):
         response = self.client.post(
             "/api/auth/register",
@@ -341,6 +360,32 @@ class AuthApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(sign_in.call_count, 2)
         self.assertEqual(initialize_user.call_args.args[3], 2000000)
+
+    def test_register_cleans_up_auth_user_when_signin_fails_after_creation(self):
+        created_auth_user = {"id": "user-created-before-signin"}
+        with patch.object(
+            app_module.sb,
+            "auth_admin_create_user",
+            return_value=created_auth_user,
+        ):
+            with patch.object(
+                app_module.sb,
+                "auth_sign_in",
+                side_effect=SupabaseError("auth unavailable", status=503),
+            ):
+                with patch.object(app_module.sb, "auth_admin_delete_user") as delete_auth_user:
+                    response = self.client.post(
+                        "/api/auth/register",
+                        json={
+                            "name": "Usuario",
+                            "email": "user@example.com",
+                            "password": "secret123",
+                            "monthlySalary": 2000000,
+                        },
+                    )
+
+        self.assertEqual(response.status_code, 502)
+        delete_auth_user.assert_called_once_with("user-created-before-signin")
 
     def test_demo_login_retries_transient_auth_connection_failure(self):
         auth_data = {

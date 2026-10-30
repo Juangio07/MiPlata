@@ -15,15 +15,41 @@ body {
   min-height: 100dvh;
 }
 
-/* Advice cards change only through their controls; horizontal pointer dragging
-   can desynchronize the active card from the rendered height. */
-.financial-tips-scroll {
-  overflow-x: hidden;
-  overflow-y: hidden;
-  touch-action: pan-y;
-  user-select: none;
-  -webkit-user-select: none;
-  cursor: default;
+/* Advice cards use a controlled horizontal carousel on phones. The cards do
+   not create their own vertical scroll; vertical gestures remain available
+   for the page while horizontal swipes move one complete card at a time. */
+@media (max-width: 640px) {
+  .financial-tips-scroll {
+    display: flex;
+    width: 100%;
+    min-width: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scroll-snap-type: x mandatory;
+    scroll-snap-stop: always;
+    scroll-behavior: smooth;
+    overscroll-behavior-x: contain;
+    touch-action: pan-x pan-y;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    user-select: none;
+    -webkit-user-select: none;
+    cursor: default;
+  }
+
+  .financial-tips-scroll::-webkit-scrollbar {
+    display: none;
+    width: 0;
+    height: 0;
+  }
+
+  .financial-tip-card {
+    flex: 0 0 100%;
+    min-width: 100%;
+    max-width: 100%;
+    scroll-snap-align: start;
+    scroll-snap-stop: always;
+  }
 }
 
 .financial-tips-scroll * {

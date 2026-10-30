@@ -167,6 +167,13 @@ function isDuplicateEmailError(error) {
     'already registered',
     'already been registered',
     'already exists',
+    'user already exists',
+    'email address is already registered',
+    'email is already registered',
+    'email already in use',
+    'already in use',
+    'duplicate key',
+    'duplicate email',
   ].some((marker) => details.includes(marker));
 }
 
@@ -731,10 +738,12 @@ async function handleAuth(route, request) {
     if (!password) return json({ error: 'La contraseña es requerida' }, 400);
     if (password.length < 6) return json({ error: 'La contraseña debe tener al menos 6 caracteres' }, 400);
     if (avatarUrl.startsWith('data:') && avatarUrl.length > MAX_EMBEDDED_IMAGE_DATA_URL_LENGTH) return json({ error: 'La imagen es demasiado grande. Elige una imagen más pequeña' }, 400);
+    let createdAuthUserId = null;
     try {
-      await authRequestWithRetry('/admin/users', 'POST', {
+      const createdAuthUser = await authRequestWithRetry('/admin/users', 'POST', {
         email, password, email_confirm: true, user_metadata: { name, avatar_url: body.avatarUrl || '' },
       }, SUPABASE_SECRET_KEY, SUPABASE_SECRET_KEY);
+      createdAuthUserId = createdAuthUser?.id || createdAuthUser?.user?.id || null;
       const auth = await authRequestWithRetry('/token?grant_type=password', 'POST', { email, password });
       const user = auth.user || {};
       let profile;
@@ -746,6 +755,13 @@ async function handleAuth(route, request) {
       }
       return json(sessionResponse(auth, profile, `¡Bienvenido a MiPlata, ${name.split(' ')[0]}! Todo listo y limpio en 0 para comenzar.`));
     } catch (error) {
+      if (createdAuthUserId) {
+        try {
+          await authRequestWithRetry(`/admin/users/${createdAuthUserId}`, 'DELETE', null, SUPABASE_SECRET_KEY, SUPABASE_SECRET_KEY);
+        } catch (cleanupError) {
+          console.warn('Could not clean up partially created Auth user', cleanupError?.message || cleanupError);
+        }
+      }
       if (isDuplicateEmailError(error)) {
         return json({ error: 'Correo ya registrado.' }, 409);
       }

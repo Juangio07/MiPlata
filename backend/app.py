@@ -269,6 +269,13 @@ def _is_duplicate_email_error(error):
         "already registered",
         "already been registered",
         "already exists",
+        "user already exists",
+        "email address is already registered",
+        "email is already registered",
+        "email already in use",
+        "already in use",
+        "duplicate key",
+        "duplicate email",
     )
     return error.status == 409 or any(marker in details for marker in duplicate_markers)
 
@@ -494,8 +501,10 @@ def auth_register():
         return jsonify({"error": "El ingreso mensual no es válido"}), 400
 
     if SUPABASE_ENABLED:
+        created_auth_user_id = None
         try:
-            sb.auth_admin_create_user(email, password, name, avatar_url)
+            created_auth_user = sb.auth_admin_create_user(email, password, name, avatar_url)
+            created_auth_user_id = (created_auth_user or {}).get("id")
             auth_data = _auth_request_with_retry(
                 lambda: sb.auth_sign_in(email, password)
             )
@@ -518,6 +527,15 @@ def auth_register():
                 f"¡Cuenta creada, {name.split()[0]}!",
             ))
         except sb.SupabaseError as error:
+            if created_auth_user_id:
+                try:
+                    sb.auth_admin_delete_user(created_auth_user_id)
+                except sb.SupabaseError as cleanup_error:
+                    app.logger.warning(
+                        "No se pudo limpiar la cuenta Auth creada parcialmente (%s): %s",
+                        created_auth_user_id,
+                        cleanup_error,
+                    )
             if _is_duplicate_email_error(error):
                 return jsonify({"error": "Correo ya registrado."}), 409
             return jsonify({"error": "No se pudo crear la cuenta. Intenta nuevamente."}), 502
