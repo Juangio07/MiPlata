@@ -479,6 +479,9 @@ def get_user_by_email(email):
     return user_to_dict(row)
 
 def create_user(name, email, password, monthly_salary=0, avatar_url=''):
+    # The selected monthly salary is only a planning estimate. It is stored on
+    # the profile and budget configuration, never as a received income.
+    # The first income transaction must be created explicitly by the user.
     conn = get_connection()
     cursor = conn.cursor()
     user_id = f"usr_{int(time.time() * 1000)}"

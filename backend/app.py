@@ -405,17 +405,13 @@ def auth_login():
                 lambda: sb.auth_sign_in(email.strip().lower(), password)
             )
             auth_user = auth_data.get("user") or {}
-            # Do not make a second Supabase REST request before responding to
-            # the login. The browser loads the complete profile and current
-            # data through /api/bootstrap immediately in the background. This
-            # keeps the first screen responsive on slower mobile connections.
             profile = _profile_from_auth_user(auth_user, email.strip().lower())
             return jsonify(_session_response(auth_data, profile, f"¡Bienvenido de nuevo, {profile['name'].split()[0]}!"))
         except sb.SupabaseError as error:
             if error.status in (400, 401):
                 return jsonify({
                     "error": "Correo o contraseña incorrectos."
-                }), 400
+                }), 401
             return jsonify({"error": "No se pudo iniciar sesión. Intenta nuevamente."}), 502
 
     user = db.get_user_by_email(email)
@@ -436,7 +432,9 @@ def auth_password_reset_request():
     if not re.fullmatch(r"https?://[^\s]+", redirect_to):
         return jsonify({"error": "La URL de recuperación no es válida"}), 400
     try:
-        sb.auth_request_password_reset(email, redirect_to)
+        _auth_request_with_retry(
+            lambda: sb.auth_request_password_reset(email, redirect_to)
+        )
         return jsonify({"message": "Si el correo está registrado, recibirás un enlace para recuperar tu contraseña."})
     except sb.SupabaseError as error:
         app.logger.warning("Password recovery email failed (status=%s): %s", error.status, error)
@@ -461,7 +459,9 @@ def auth_password_reset_confirm():
     if len(password) < 6:
         return jsonify({"error": "La contraseña debe tener al menos 6 caracteres"}), 400
     try:
-        sb.auth_update_password(access_token, password)
+        _auth_request_with_retry(
+            lambda: sb.auth_update_password(access_token, password)
+        )
         return jsonify({"message": "Contraseña actualizada correctamente"})
     except sb.SupabaseError as error:
         if error.status in (400, 401, 403, 404):
@@ -475,7 +475,7 @@ def auth_register():
     name = data.get("name", "").strip()
     email = data.get("email", "").strip().lower()
     password = str(data.get("password") or "")
-    monthly_salary = data.get("monthlySalary", 0)
+    monthly_salary = _parse_amount(data.get("monthlySalary", 0))
     avatar_url = data.get("avatarUrl", "")
     if str(avatar_url or "").startswith("data:") and len(str(avatar_url)) > MAX_EMBEDDED_IMAGE_DATA_URL_LENGTH:
         return jsonify({"error": "La imagen es demasiado grande. Elige una imagen más pequeña"}), 400
@@ -490,16 +490,28 @@ def auth_register():
         return jsonify({"error": "La contraseña es requerida"}), 400
     if len(password) < 6:
         return jsonify({"error": "La contraseña debe tener al menos 6 caracteres"}), 400
+    if monthly_salary is None:
+        return jsonify({"error": "El ingreso mensual no es válido"}), 400
 
     if SUPABASE_ENABLED:
         try:
             sb.auth_admin_create_user(email, password, name, avatar_url)
-            auth_data = sb.auth_sign_in(email, password)
-            auth_user = auth_data.get("user") or {}
-            profile = db.initialize_registered_user(
-                auth_user.get("id"), name, email, float(monthly_salary or 0), avatar_url,
-                apply_default_preferences=True,
+            auth_data = _auth_request_with_retry(
+                lambda: sb.auth_sign_in(email, password)
             )
+            auth_user = auth_data.get("user") or {}
+            try:
+                profile = db.initialize_registered_user(
+                    auth_user.get("id"), name, email, monthly_salary, avatar_url,
+                    apply_default_preferences=True,
+                )
+            except Exception as profile_error:
+                # Auth already succeeded. Do not report a false registration
+                # failure just because profile seeding is temporarily down.
+                app.logger.warning("No se pudo completar el perfil nuevo: %s", profile_error)
+                profile = None
+            if not profile:
+                profile = _profile_from_auth_user(auth_user, email, monthly_salary)
             return jsonify(_session_response(
                 auth_data,
                 profile,
@@ -533,7 +545,9 @@ def auth_refresh():
     if not refresh_token:
         return jsonify({"error": "Sesión expirada"}), 401
     try:
-        auth_data = sb.auth_refresh(refresh_token)
+        auth_data = _auth_request_with_retry(
+            lambda: sb.auth_refresh(refresh_token)
+        )
         auth_user = auth_data.get("user") or {}
         metadata = auth_user.get("user_metadata") or {}
         profile = db.ensure_user_defaults(
@@ -555,7 +569,7 @@ def get_user():
     user = db.get_user_by_id(user_id)
     return jsonify({"user": user})
 
-def get_bootstrap_payload(user_id, known_user=None):
+def get_bootstrap_payload(user_id, known_user=None, fallback_user=None):
     current_month = db.get_current_month_key()
     # Supabase calls are independent reads. Keep one browser request while
     # fetching them concurrently so slower mobile connections do not wait for
@@ -615,6 +629,20 @@ def get_bootstrap_payload(user_id, known_user=None):
                 [],
             )
             user = known_user if known_user is not None else user_future.result()
+            if not user:
+                user = fallback_user
+            if not user and fallback_user:
+                try:
+                    user = db.ensure_user_defaults(
+                        user_id,
+                        fallback_user.get("name"),
+                        fallback_user.get("email"),
+                        None,
+                        fallback_user.get("avatarUrl") or "",
+                    ) or fallback_user
+                except Exception as error:
+                    app.logger.warning("No se pudo completar el perfil durante bootstrap: %s", error)
+                    user = fallback_user
             transactions = transactions_future.result()
             fixed_obligations = fixed_future.result()
             savings_goals = goals_future.result()
@@ -707,10 +735,15 @@ def get_demo_bootstrap(user_id, known_user=None):
 
 @app.route("/api/bootstrap", methods=["GET"])
 def bootstrap():
-    user_id = get_current_user_id_from_req()
+    auth_user = get_auth_user_from_req() if SUPABASE_ENABLED else None
+    user_id = auth_user.get("id") if auth_user else get_current_user_id_from_req()
     if not user_id:
         return jsonify({"error": "No autorizado"}), 401
-    return jsonify(get_bootstrap_payload(user_id))
+    fallback_user = (
+        _profile_from_auth_user(auth_user, auth_user.get("email", ""))
+        if auth_user else None
+    )
+    return jsonify(get_bootstrap_payload(user_id, fallback_user=fallback_user))
 
 @app.route("/api/user/profile", methods=["PUT"])
 def update_profile():
